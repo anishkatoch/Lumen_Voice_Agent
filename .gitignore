@@ -1,0 +1,49 @@
+# Secrets — never commit
+.env
+*.env.local
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.so
+
+# uv / pip virtual environments
+.venv/
+venv/
+env/
+.uv/
+
+# uv lock (commit uv.lock if you want reproducible installs, otherwise ignore)
+# uv.lock
+
+# Build / dist
+dist/
+build/
+*.egg-info/
+
+# Next.js
+frontend/.next/
+frontend/out/
+frontend/node_modules/
+
+# Torch hub cache (downloaded model weights — large)
+hub/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# macOS
+.DS_Store
+
+# Logs
+*.log
+
+# Private planning — never push to GitHub or Hugging Face
+nextinnovation/
+problems/
