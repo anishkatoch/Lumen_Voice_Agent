@@ -95,6 +95,89 @@ async def test_generate_memory_summary_no_old_summary_returns_empty(mocker):
     assert result == ""
 
 
+# ── generate_response_stream ──────────────────────────────────────────
+
+async def test_generate_response_stream_yields_sentences(mocker):
+    """Streaming splits full response into sentences and yields each."""
+    async def fake_stream(*args, **kwargs):
+        class FakeChunk:
+            def __init__(self, text):
+                self.choices = [MagicMock(delta=MagicMock(content=text))]
+        # Simulate OpenAI streaming token by token
+        for token in ["Hello world. ", "How are ", "you? ", "I am fine."]:
+            yield FakeChunk(token)
+
+    mock_client = AsyncMock()
+    mock_client.chat.completions.create = AsyncMock(return_value=fake_stream())
+    mocker.patch("app.llm_service._get_openai", return_value=mock_client)
+
+    from app.llm_service import generate_response_stream
+    sentences = []
+    async for sentence in generate_response_stream("Hi", [], "", None):
+        sentences.append(sentence)
+
+    assert len(sentences) >= 2
+    full = " ".join(sentences)
+    assert "Hello world" in full
+    assert "fine" in full
+
+
+async def test_generate_response_stream_timeout(mocker):
+    """Stream yields timeout message on TimeoutError."""
+    import asyncio
+    mock_client = AsyncMock()
+    mock_client.chat.completions.create = AsyncMock(side_effect=asyncio.TimeoutError)
+    mocker.patch("app.llm_service._get_openai", return_value=mock_client)
+
+    from app.llm_service import generate_response_stream
+    sentences = []
+    async for sentence in generate_response_stream("Hi", [], "", None):
+        sentences.append(sentence)
+
+    assert len(sentences) == 1
+    assert "too long" in sentences[0].lower()
+
+
+async def test_generate_response_stream_with_memory(mocker):
+    """Memory context is included in system message."""
+    async def fake_stream(*args, **kwargs):
+        class FakeChunk:
+            def __init__(self):
+                self.choices = [MagicMock(delta=MagicMock(content="Reply."))]
+        yield FakeChunk()
+
+    mock_client = AsyncMock()
+    mock_client.chat.completions.create = AsyncMock(return_value=fake_stream())
+    mocker.patch("app.llm_service._get_openai", return_value=mock_client)
+
+    from app.llm_service import generate_response_stream
+    async for _ in generate_response_stream("Hi", [], "", "User likes Python."):
+        pass
+
+    system_msg = mock_client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
+    assert "Python" in system_msg
+
+
+async def test_generate_response_stream_no_rag(mocker):
+    """No RAG context injects fallback message."""
+    async def fake_stream(*args, **kwargs):
+        class FakeChunk:
+            def __init__(self):
+                self.choices = [MagicMock(delta=MagicMock(content="Answer."))]
+        yield FakeChunk()
+
+    mock_client = AsyncMock()
+    mock_client.chat.completions.create = AsyncMock(return_value=fake_stream())
+    mocker.patch("app.llm_service._get_openai", return_value=mock_client)
+
+    from app.llm_service import generate_response_stream
+    async for _ in generate_response_stream("What is X?", [], "", None):
+        pass
+
+    system_msg = mock_client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
+    assert "No relevant documents" in system_msg
+
+
 # ── rag_service ───────────────────────────────────────────────────────
 
 async def test_embed_text(mocker):

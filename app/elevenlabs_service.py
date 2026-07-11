@@ -8,7 +8,16 @@ from app.config import (
 
 
 async def text_to_speech_stream(text: str):
-    """Async generator that yields audio chunks from ElevenLabs TTS."""
+    """Async generator that yields PCM audio chunks from the configured TTS provider."""
+    from app.admin_config_service import get as get_config
+    if get_config("tts_provider") == "openai_tts":
+        from app.openai_tts_service import text_to_speech_openai
+        voice = get_config("tts_openai_voice") or "alloy"
+        model = get_config("tts_openai_model") or "tts-1"
+        async for chunk in text_to_speech_openai(text, voice=voice, model=model):
+            yield chunk
+        return
+
     client = ElevenLabs(api_key=ELEVENLABS_API_KEY)
 
     settings = VoiceSettings(

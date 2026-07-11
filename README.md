@@ -131,7 +131,7 @@ uv run alembic upgrade head
 
 # 4. Upload knowledge base documents
 #    Put your .md files in Supabase Storage bucket "documents", then:
-uv run uvicorn app.main:app --host 0.0.0.0 --port 8003 --reload
+uv run uvicorn app.main:app --host 0.0.0.0 --port 8004 --reload
 # Call POST /api/ingest-all-dev (no auth) once to index the documents
 
 # 5. That's it — the server is running
@@ -151,7 +151,7 @@ docker build -t lumen-agent-backend .
 
 # Run — pass secrets as environment variables
 docker run -d \
-  -p 8003:8003 \
+  -p 8004:8004 \
   -e DATABASE_URL="postgresql://..." \
   -e SUPABASE_URL="https://..." \
   -e SUPABASE_ANON_KEY="..." \
@@ -182,7 +182,7 @@ nano .env
 uv run alembic upgrade head
 
 # Start server (use systemd or screen/tmux to keep it running)
-uv run uvicorn app.main:app --host 0.0.0.0 --port 8003
+uv run uvicorn app.main:app --host 0.0.0.0 --port 8004
 ```
 
 ---
@@ -247,7 +247,7 @@ uv run alembic current
 ### WebSocket
 
 ```
-ws://host:8003/ws/{supabase_jwt_token}
+ws://host:8004/ws/{supabase_jwt_token}
 ```
 
 **Client → Server messages (binary):** Raw PCM audio, 16 kHz, mono, int16

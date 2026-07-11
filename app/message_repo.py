@@ -33,7 +33,7 @@ def get_conversation_history(conversation_id: str) -> list[dict]:
     return result.data
 
 
-def get_session_messages(conversation_id: str) -> list[dict]:
-    """Return messages formatted for LLM context."""
+def get_session_messages(conversation_id: str, limit: int = 20) -> list[dict]:
+    """Return last `limit` messages formatted for LLM context."""
     rows = get_conversation_history(conversation_id)
-    return [{"role": r["role"], "content": r["content"]} for r in rows]
+    return [{"role": r["role"], "content": r["content"]} for r in rows[-limit:]]

@@ -34,7 +34,12 @@ export default function AuthCallback() {
       setMode("reset");
     } else if (type === "signup") {
       // Email confirmation — sign them in with the token
-      const refreshToken = params.get("refresh_token") ?? "";
+      const refreshToken = params.get("refresh_token");
+      if (!refreshToken) {
+        setMode("error");
+        setError("Invalid confirmation link. Please request a new one.");
+        return;
+      }
       setTokens(token, refreshToken);
       API.me().then(user => {
         setUser(user);

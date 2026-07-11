@@ -6,7 +6,7 @@ import { isLoggedIn } from "@/lib/auth";
 export default function Root() {
   const router = useRouter();
   useEffect(() => {
-    router.replace(isLoggedIn() ? "/agent" : "/signin");
+    router.replace(isLoggedIn() ? "/agents" : "/signin");
   }, [router]);
   return (
     <div className="min-h-screen flex items-center justify-center" style={{ background: "var(--bg)" }}>

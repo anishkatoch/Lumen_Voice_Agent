@@ -7,7 +7,7 @@ import json
 from dataclasses import dataclass, field
 from enum import Enum
 from fastapi import WebSocket
-from app.config import WS_MAX_USERS, VAD_SENSITIVITY
+from app.config import WS_MAX_USERS, VAD_SENSITIVITY, VAD_BARGE_IN_SENSITIVITY
 
 
 class AgentState(str, Enum):
@@ -23,9 +23,12 @@ class UserSession:
     conversation_id: str
     state: AgentState = AgentState.LISTENING
     sensitivity: float = field(default_factory=lambda: VAD_SENSITIVITY)
+    barge_in_sensitivity: float = field(default_factory=lambda: VAD_BARGE_IN_SENSITIVITY)
     audio_buffer: bytearray = field(default_factory=bytearray)
     message_count: int = 0
     tts_task: asyncio.Task | None = None
+    speaking_started_at: float = 0.0
+    barge_in_armed: bool = False
 
     def reset_audio(self):
         self.audio_buffer = bytearray()

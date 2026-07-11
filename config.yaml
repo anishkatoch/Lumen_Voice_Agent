@@ -1,7 +1,7 @@
 # ─── Server ──────────────────────────────────────────────────────────
 server:
   host: "0.0.0.0"
-  port: 8003
+  port: 8004
   reload: true                  # set false in production
 
 # ─── CORS ────────────────────────────────────────────────────────────
@@ -9,22 +9,45 @@ cors:
   allowed_origins:
     - "https://lumen-agent-phi.vercel.app"
     - "http://localhost:3000"    # Next.js dev server
-    - "http://localhost:8003"    # frontend served by FastAPI
-    - "http://0.0.0.0:8003"     # accessed via 0.0.0.0
+    - "http://localhost:8004"    # frontend served by FastAPI
+    - "http://0.0.0.0:8004"     # accessed via 0.0.0.0
 
 # ─── Supabase Storage ────────────────────────────────────────────────
 storage:
   bucket: "documents"           # Supabase Storage bucket name
 
 # ─── Voice / VAD ─────────────────────────────────────────────────────
+#
+#  How Silero threshold is calculated:
+#    threshold = silero_threshold_min + (1.0 - sensitivity) * (silero_threshold_max - silero_threshold_min)
+#
+#  Quick reference for speech_sensitivity:
+#    1.0  →  threshold = 0.20  (very easy  — triggers on whispers, noisy rooms)
+#    0.80 →  threshold = 0.32  (easy)
+#    0.70 →  threshold = 0.38  (balanced  — good default for most mics)
+#    0.60 →  threshold = 0.44  (moderate)
+#    0.50 →  threshold = 0.50  (normal)
+#    0.30 →  threshold = 0.62  (strict)
+#    0.00 →  threshold = 0.80  (very strict — only loud clear speech)
+#
+#  Quick reference for barge_in_sensitivity:
+#    0.70 →  threshold = 0.38  (interrupts on soft speech while AI speaks)
+#    0.50 →  threshold = 0.50  (balanced — only clear speech interrupts)
+#    0.30 →  threshold = 0.62  (strict  — only loud intentional interrupts)
+#
 vad:
-  barge_in_sensitivity: 0.05    # very sensitive for barge-in (0.0=most sensitive, 1.0=hard)
-  silence_limit_chunks: 6       # chunks of silence before utterance ends (6 × 250ms = 1.5s)
-  min_speech_chunks: 2          # minimum speech chunks to trigger pipeline
+  speech_sensitivity:    0.85   # how easily user speech triggers the pipeline
+  barge_in_sensitivity:  0.20   # how easily user speech interrupts the AI mid-response
+  silence_limit_chunks:  3      # silence chunks before utterance ends (3 × 250ms = 750 ms)
+  min_speech_chunks:     1      # minimum speech chunks needed     (1 × 250ms = 250 ms)
+
+  # Silero threshold range — formula: min + (1 - sensitivity) × (max - min)
+  silero_threshold_min:  0.20   # threshold when sensitivity = 1.0 (easiest trigger)
+  silero_threshold_max:  0.80   # threshold when sensitivity = 0.0 (hardest trigger)
 
 # ─── LLM ─────────────────────────────────────────────────────────────
 llm:
-  model: "gpt-4o"
+  model: "gpt-4o-mini"
   timeout_seconds: 10
   max_tokens: 500
   temperature: 0.7
@@ -36,14 +59,15 @@ llm:
 stt:
   model: "nova-2"
   language: "en-US"
-  timeout_seconds: 8
+  timeout_seconds: 15
 
 # ─── ElevenLabs TTS ──────────────────────────────────────────────────
 tts:
-  model_id: "eleven_turbo_v2_5"
+  model_id: "eleven_flash_v2_5"
   voice_id: "JBFqnCBsd6RMkjVDRZzb"   # override with ELEVENLABS_VOICE_ID env var
-  output_format: "mp3_44100_128"
+  output_format: "pcm_16000"
   stability: 0.5
+  
   similarity_boost: 0.75
   style: 0.0
   use_speaker_boost: true
@@ -51,6 +75,26 @@ tts:
 # ─── WebSocket ───────────────────────────────────────────────────────
 websocket:
   max_concurrent_users: 50
+
+# ─── Sentiment Analysis ──────────────────────────────────────────────
+#
+#  Uses HuggingFace Inference API — free tier, no local model.
+#  Model is trained on dialogue/conversation datasets (MELD, IEMOCAP).
+#
+#  Concurrency: max_concurrent_calls limits simultaneous HF API requests
+#  so 5-6 sessions ending together never hit rate limits.
+#
+sentiment:
+  model: "j-hartmann/emotion-english-distilroberta-base"
+  timeout_seconds: 35        # HF cold start can take 20-30s on free tier
+  max_retries: 3             # retries on 503 (model loading) or 429 (rate limit)
+  max_concurrent_calls: 3    # semaphore — max simultaneous HF API calls
+  max_text_chars: 2000       # truncate long transcripts (model max ~512 tokens)
+
+# ─── Session Limits (authorized users only, not guests) ──────────────
+sessions:
+  max_per_user:    5   # keep only the latest N sessions; oldest auto-deleted when exceeded
+  expiry_days:     5   # delete sessions whose last message is older than N days
 
 # ─── RAG ─────────────────────────────────────────────────────────────
 rag:

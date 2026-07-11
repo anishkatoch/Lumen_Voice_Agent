@@ -25,6 +25,9 @@ dependencies = [
     "sqlalchemy>=2.0",
     "alembic>=1.13",
     "psycopg2-binary>=2.9",
+    "torchaudio",
+    "pymupdf>=1.24.0",
+    "python-docx>=1.1.0",
 ]
 
 [build-system]
