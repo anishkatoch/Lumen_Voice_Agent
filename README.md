@@ -1,6 +1,19 @@
-# Lumen Agent Backend
+---
+title: Lumen Voice Agent
+emoji: 🎙️
+colorFrom: blue
+colorTo: purple
+sdk: docker
+sdk_version: latest
+app_port: 8004
+pinned: false
+---
 
-Real-time voice AI backend. The user speaks into the browser, audio streams over WebSocket, the server transcribes it (Deepgram), retrieves relevant context from a knowledge base (RAG via Supabase + pgvector), generates a reply (OpenAI GPT-4o), and streams audio back (ElevenLabs TTS).
+Check out the configuration reference at https://huggingface.co/docs/hub/spaces-config-reference
+
+# Lumen Voice Agent
+
+A platform for building and deploying custom voice AI agents in real-time. Users speak into the browser, audio streams over WebSocket, the server transcribes it (Deepgram), retrieves relevant context from a knowledge base (RAG via Supabase + pgvector), generates a reply (OpenAI GPT-4o), and streams audio back (ElevenLabs TTS). Deploy multiple specialized agents — HR recruiting, customer support, sales, or any voice-based workflow.
 
 ---
 
@@ -58,9 +71,9 @@ Every 10 messages, GPT-4o-mini summarises the conversation and upserts a `user_m
 ## Project structure
 
 ```
-lumen_agent_backend/
+lumen/
 ├── app/
-│   ├── main.py              # FastAPI app, all routes, WebSocket pipeline
+│   ├── main.py              # FastAPI app, all routes, WebSocket pipeline, multi-agent support
 │   ├── config.py            # Single source of config — reads .env + config.yaml
 │   ├── models.py            # SQLAlchemy models (schema source of truth)
 │   ├── database.py          # Supabase client singleton
