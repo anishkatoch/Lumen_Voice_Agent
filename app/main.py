@@ -2341,8 +2341,8 @@ async def agent_websocket_endpoint(websocket: WebSocket, agent_id: str, token: s
             loop.create_task(_analyze_agent_session_sentiment(conversation_id))
 
 
-# ─── Serve Next.js frontend ────────────────────────────────────────────
-_FRONTEND = os.path.join(os.path.dirname(__file__), "..", "frontend", ".next")
+# ─── Serve Next.js static export ────────────────────────────────────────────
+_FRONTEND = os.path.join(os.path.dirname(__file__), "..", "frontend", "out")
 
 if os.path.isdir(_FRONTEND):
     # Mount _next JS/CSS chunks
