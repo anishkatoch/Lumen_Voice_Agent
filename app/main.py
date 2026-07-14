@@ -1144,16 +1144,19 @@ async def twilio_voice_webhook(request: Request):
 
     form = await request.form()
     to_number = str(form.get("To", ""))
+    print(f"[Twilio Voice] Inbound call, To={to_number!r}")
 
     # Look up the number record to find the owner's webhook base URL
     number_record = await asyncio.to_thread(get_number_by_phone, to_number)
     if not number_record or not number_record.get("agent_id"):
+        print(f"[Twilio Voice] No active number_record with agent_id for To={to_number!r} (record={number_record})")
         xml = '<?xml version="1.0"?><Response><Say>This number is not connected to an agent.</Say></Response>'
         return Response(content=xml, media_type="application/xml")
 
     settings = await asyncio.to_thread(get_twilio_settings, number_record["user_id"])
     base_url = (settings.get("webhook_base_url") or "").strip().rstrip("/")
     if not base_url:
+        print(f"[Twilio Voice] No webhook_base_url configured for user_id={number_record['user_id']!r}")
         xml = '<?xml version="1.0"?><Response><Say>This number is not configured yet.</Say></Response>'
         return Response(content=xml, media_type="application/xml")
 
@@ -1235,16 +1238,21 @@ async def twilio_stream_endpoint(websocket: WebSocket, to: str = "", interview_i
     else:
         # Inbound call — resolve via phone number
         from app.twilio_repo import get_number_by_phone
+        print(f"[Twilio Stream] Inbound call, to={to!r}")
         number_record = await asyncio.to_thread(get_number_by_phone, to) if to else None
         if not number_record or not number_record.get("agent_id"):
+            print(f"[Twilio Stream] Closing: no active number_record with agent_id for to={to!r} (record={number_record})")
             await websocket.close(); return
         agent_id = number_record["agent_id"]
         user_id = number_record["user_id"]
+        print(f"[Twilio Stream] Resolved agent_id={agent_id} user_id={user_id}")
 
     agent = await asyncio.to_thread(get_agent, agent_id)
     if not agent:
+        print(f"[Twilio Stream] Closing: get_agent({agent_id!r}) returned None")
         await websocket.close()
         return
+    print(f"[Twilio Stream] Agent loaded: {agent.get('name')}")
 
     # Create conversation record
     from app.database import get_supabase
