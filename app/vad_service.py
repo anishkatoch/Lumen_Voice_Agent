@@ -50,8 +50,13 @@ def _detect_speech_sync(audio_bytes: bytes, sensitivity: float = 0.5) -> bool:
         # sensitivity=0.0 → threshold=0.80 (very strict)
         silero_threshold = VAD_SILERO_MIN + (1.0 - sensitivity) * (VAD_SILERO_MAX - VAD_SILERO_MIN)
 
-        # Silero requires exactly 512 samples per call at 16kHz (32ms windows)
+        # Silero requires exactly 512 samples per call at 16kHz (32ms windows).
+        # Twilio media events are only 20ms (320 samples after upsampling) —
+        # shorter than one window — so pad up to WINDOW instead of silently
+        # skipping the model call (which would always yield prob=0.0).
         WINDOW = 512
+        if len(audio_array) < WINDOW:
+            audio_array = torch.nn.functional.pad(audio_array, (0, WINDOW - len(audio_array)))
         with torch.no_grad():
             model.reset_states()
             probs = []
