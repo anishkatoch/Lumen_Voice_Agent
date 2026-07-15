@@ -19,14 +19,15 @@ _ENCODE_TABLE: np.ndarray | None = None
 
 def _build_decode_table() -> np.ndarray:
     """Build the standard ITU-T G.711 μ-law → linear decode table (256 entries)."""
-    idx = np.arange(256, dtype=np.uint8)
-    inverted = (idx ^ 0xFF).astype(np.int16)
-    sign = inverted >> 7
-    exp = (inverted >> 4) & 0x07
-    mantissa = inverted & 0x0F
-    magnitude = ((mantissa + 0x21) << (exp + 2)).astype(np.int32)
-    sample = np.where(sign, -magnitude, magnitude).astype(np.int16)
-    return sample
+    BIAS = 0x84
+    idx = np.arange(256, dtype=np.int32)
+    u = (~idx) & 0xFF
+    sign = u & 0x80
+    exp = (u & 0x70) >> 4
+    mantissa = u & 0x0F
+    magnitude = ((mantissa << 3) + BIAS) << exp
+    sample = np.where(sign != 0, BIAS - magnitude, magnitude - BIAS)
+    return sample.astype(np.int16)
 
 
 def _build_encode_table() -> np.ndarray:
