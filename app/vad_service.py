@@ -21,6 +21,7 @@ def _load_model():
             model="silero_vad",
             force_reload=False,
             onnx=False,
+            trust_repo=True,
         )
     return _model
 

@@ -1356,7 +1356,7 @@ async def twilio_stream_endpoint(websocket: WebSocket):
         is_processing = True
         try:
             session_msgs = await asyncio.to_thread(get_session_messages, conversation_id)
-            await asyncio.to_thread(save_message, conversation_id, "user", user_message, user_id)
+            await asyncio.to_thread(save_message, conversation_id, user_id, "user", user_message)
 
             doc_ids = agent.get("selected_kb_doc_ids") or []
             rag_ctx = ""
@@ -1415,7 +1415,7 @@ async def twilio_stream_endpoint(websocket: WebSocket):
 
             full_reply = " ".join(full_reply_parts).strip()
             if full_reply:
-                await asyncio.to_thread(save_message, conversation_id, "assistant", full_reply, user_id)
+                await asyncio.to_thread(save_message, conversation_id, user_id, "assistant", full_reply)
         finally:
             is_processing = False
 
