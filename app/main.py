@@ -1365,8 +1365,10 @@ async def twilio_stream_endpoint(websocket: WebSocket):
                     retrieve_agent_context, user_message, agent_id, user_id, ["personal", "global"]
                 )
                 rag_ctx = format_agent_context(raw)
+            from app.user_kb_repo import get_user_documents
+            user_doc_ids = [d["id"] for d in await asyncio.to_thread(get_user_documents, user_id)]
             kb_rag = await asyncio.to_thread(
-                retrieve_user_kb_context, user_id=user_id, query=user_message
+                retrieve_user_kb_context, user_message, user_doc_ids
             )
             kb_ctx = format_user_kb_context(kb_rag) if kb_rag else ""
             full_rag = "\n\n".join(filter(None, [rag_ctx, kb_ctx]))
