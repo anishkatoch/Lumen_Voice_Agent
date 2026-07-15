@@ -2403,3 +2403,9 @@ if os.path.isdir(_FRONTEND):
     @app.get("/", include_in_schema=False)
     async def _root_page():
         return FileResponse(os.path.join(_FRONTEND, "index.html"))
+else:
+    print(f"[Startup] WARNING: frontend build not found at {_FRONTEND} — serving API-only root")
+
+    @app.get("/", include_in_schema=False)
+    async def _root_page_fallback():
+        return {"status": "ok", "note": "frontend build not found in this container"}
