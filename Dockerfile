@@ -31,6 +31,11 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
 WORKDIR /app
 
+# Force unbuffered stdout/stderr so print() logs show up immediately in
+# container logs instead of sitting in a buffer (Python defaults to
+# block-buffering when stdout isn't a TTY, which Docker's log capture isn't).
+ENV PYTHONUNBUFFERED=1
+
 # Copy Python dependency files
 COPY pyproject.toml uv.lock ./
 
