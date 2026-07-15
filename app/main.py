@@ -939,7 +939,6 @@ async def delete_interview_route(interview_id: str, current_user: dict = Depends
 @app.get("/twilio/outbound/voice")
 async def twilio_outbound_twiml(interview_id: str = "", request: Request = None):
     """Twilio fetches this TwiML when an outbound call connects."""
-    import urllib.parse
     from app.hr_repo import get_interview
 
     interview = await asyncio.to_thread(get_interview, interview_id) if interview_id else None
@@ -955,11 +954,15 @@ async def twilio_outbound_twiml(interview_id: str = "", request: Request = None)
         return Response(content=xml, media_type="application/xml")
 
     host = base_url.replace("https://", "").replace("http://", "")
-    ws_url = f"wss://{host}/twilio/stream?interview_id={urllib.parse.quote(interview_id)}"
+    ws_url = f"wss://{host}/twilio/stream"
+    # Custom data must travel via <Parameter>, not a query string on the Stream
+    # url — Twilio does not reliably forward URL query params to the WebSocket.
     twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Connect>
-    <Stream url="{ws_url}" />
+    <Stream url="{ws_url}">
+      <Parameter name="interview_id" value="{interview_id}" />
+    </Stream>
   </Connect>
 </Response>"""
     return Response(content=twiml, media_type="application/xml")
@@ -1140,7 +1143,6 @@ async def twilio_voice_webhook(request: Request):
     """Twilio calls this when someone dials a connected number. Returns TwiML."""
     from app.twilio_repo import get_number_by_phone
     from app.user_twilio_settings_repo import get_twilio_settings
-    import urllib.parse
 
     form = await request.form()
     to_number = str(form.get("To", ""))
@@ -1162,19 +1164,23 @@ async def twilio_voice_webhook(request: Request):
 
     # Strip protocol — WebSocket URL needs just host+path
     host = base_url.replace("https://", "").replace("http://", "")
-    ws_url = f"wss://{host}/twilio/stream?to={urllib.parse.quote(to_number)}"
+    ws_url = f"wss://{host}/twilio/stream"
 
+    # Custom data must travel via <Parameter>, not a query string on the Stream
+    # url — Twilio does not reliably forward URL query params to the WebSocket.
     twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Connect>
-    <Stream url="{ws_url}" />
+    <Stream url="{ws_url}">
+      <Parameter name="to" value="{to_number}" />
+    </Stream>
   </Connect>
 </Response>"""
     return Response(content=twiml, media_type="application/xml")
 
 
 @app.websocket("/twilio/stream")
-async def twilio_stream_endpoint(websocket: WebSocket, to: str = "", interview_id: str = ""):
+async def twilio_stream_endpoint(websocket: WebSocket):
     """Handles Twilio Media Streams — bidirectional audio for inbound and outbound phone calls."""
     from app.twilio_call_service import twilio_payload_to_pcm16k, text_to_speech_twilio
     from app.vad_service import detect_speech
@@ -1196,84 +1202,13 @@ async def twilio_stream_endpoint(websocket: WebSocket, to: str = "", interview_i
 
     agent_id: str = ""
     user_id: str = ""
+    interview_id: str = ""
     extra_system_context: str = ""  # injected for outbound HR calls
     greeting_override: str | None = None
-
-    if interview_id:
-        # Outbound HR call — load candidate + interview context
-        from app.hr_repo import get_interview, mark_interview_completed
-        interview = await asyncio.to_thread(get_interview, interview_id)
-        if not interview:
-            await websocket.close(); return
-        agent_id = interview["agent_id"]
-        user_id = interview["user_id"]
-        candidate = interview.get("hr_candidates") or {}
-        c_name = candidate.get("name", "the candidate")
-        c_role = candidate.get("role", "")
-        c_resume = candidate.get("resume_text", "")
-        c_notes = candidate.get("notes", "")
-        questions = interview.get("specific_questions", "")
-        call_lead = interview.get("call_lead_minutes", 30)
-        sched_at_raw = interview.get("scheduled_at", "")
-        sched_formatted = ""
-        if sched_at_raw:
-            try:
-                from datetime import datetime as _dt
-                _sdt = _dt.fromisoformat(sched_at_raw.replace("Z", "+00:00"))
-                sched_formatted = _sdt.strftime("%A, %B %d, %Y at %I:%M %p UTC")
-            except Exception:
-                sched_formatted = sched_at_raw
-        extra_system_context = (
-            f"\n\n--- CURRENT CALL CONTEXT ---"
-            f"\nYou are calling {c_name} for a{'n' if c_role and c_role[0].lower() in 'aeiou' else ''} {c_role or 'interview'} interview."
-            + (f"\nThe interview is scheduled for: {sched_formatted}." if sched_formatted else "")
-            + f"\nYou are calling {call_lead} minutes before the interview time as a pre-interview reminder."
-            + (f"\n\nCandidate resume:\n{c_resume}" if c_resume else "")
-            + (f"\n\nHR notes about this candidate:\n{c_notes}" if c_notes else "")
-            + (f"\n\nSpecific questions to ask this candidate:\n{questions}" if questions else "")
-            + "\n\nStart by greeting them by name and confirming you're calling from HR."
-            + "\nMention the interview time when greeting them. Ask the specific questions listed. Be professional and friendly."
-        )
-        greeting_override = f"Hello, may I speak with {c_name}? This is an automated call from HR regarding your upcoming interview."
-    else:
-        # Inbound call — resolve via phone number
-        from app.twilio_repo import get_number_by_phone
-        print(f"[Twilio Stream] Inbound call, to={to!r}")
-        number_record = await asyncio.to_thread(get_number_by_phone, to) if to else None
-        if not number_record or not number_record.get("agent_id"):
-            print(f"[Twilio Stream] Closing: no active number_record with agent_id for to={to!r} (record={number_record})")
-            await websocket.close(); return
-        agent_id = number_record["agent_id"]
-        user_id = number_record["user_id"]
-        print(f"[Twilio Stream] Resolved agent_id={agent_id} user_id={user_id}")
-
-    agent = await asyncio.to_thread(get_agent, agent_id)
-    if not agent:
-        print(f"[Twilio Stream] Closing: get_agent({agent_id!r}) returned None")
-        await websocket.close()
-        return
-    print(f"[Twilio Stream] Agent loaded: {agent.get('name')}")
-
-    # Create conversation record
-    from app.database import get_supabase
-    _db = get_supabase()
-    def _create_conv():
-        res = _db.table("conversations").insert({
-            "user_id": user_id,
-            "title": f"Phone call — {agent['name']}",
-            "agent_id": agent_id,
-        }).execute()
-        return res.data[0]
-    conversation = await asyncio.to_thread(_create_conv)
-    conversation_id = conversation["id"]
-
-    # Load tool functions and memory
-    _all_fns = await asyncio.to_thread(get_agent_functions, agent_id)
-    _tool_functions = [f for f in _all_fns if f.get("url") and f.get("trigger_type") == "llm_tool_call"]
-    try:
-        initial_memory = await asyncio.to_thread(get_user_memory, user_id)
-    except Exception:
-        initial_memory = None
+    agent: dict | None = None
+    conversation_id: str | None = None
+    _tool_functions: list = []
+    initial_memory = None
 
     stream_sid: str | None = None
     is_speaking = False     # True while TTS audio is being sent to Twilio
@@ -1284,6 +1219,95 @@ async def twilio_stream_endpoint(websocket: WebSocket, to: str = "", interview_i
     silence_chunks = 0
     SPEECH_THRESHOLD = 3    # chunks needed to confirm speech started
     SILENCE_THRESHOLD = 25  # ~1.5 s at 8 kHz / 20 ms chunks
+
+    async def _setup_call(custom_params: dict) -> bool:
+        """Resolve agent/user/conversation from the Twilio 'start' event's
+        customParameters. Twilio does not reliably forward query strings on the
+        <Stream> url, so call context (to / interview_id) travels via <Parameter>
+        tags instead, which arrive here once the stream actually starts."""
+        nonlocal agent_id, user_id, interview_id, extra_system_context, greeting_override
+        nonlocal agent, conversation_id, _tool_functions, initial_memory
+
+        interview_id = custom_params.get("interview_id", "")
+        to = custom_params.get("to", "")
+
+        if interview_id:
+            # Outbound HR call — load candidate + interview context
+            from app.hr_repo import get_interview
+            interview = await asyncio.to_thread(get_interview, interview_id)
+            if not interview:
+                print(f"[Twilio Stream] Closing: no interview found for interview_id={interview_id!r}")
+                return False
+            agent_id = interview["agent_id"]
+            user_id = interview["user_id"]
+            candidate = interview.get("hr_candidates") or {}
+            c_name = candidate.get("name", "the candidate")
+            c_role = candidate.get("role", "")
+            c_resume = candidate.get("resume_text", "")
+            c_notes = candidate.get("notes", "")
+            questions = interview.get("specific_questions", "")
+            call_lead = interview.get("call_lead_minutes", 30)
+            sched_at_raw = interview.get("scheduled_at", "")
+            sched_formatted = ""
+            if sched_at_raw:
+                try:
+                    from datetime import datetime as _dt
+                    _sdt = _dt.fromisoformat(sched_at_raw.replace("Z", "+00:00"))
+                    sched_formatted = _sdt.strftime("%A, %B %d, %Y at %I:%M %p UTC")
+                except Exception:
+                    sched_formatted = sched_at_raw
+            extra_system_context = (
+                f"\n\n--- CURRENT CALL CONTEXT ---"
+                f"\nYou are calling {c_name} for a{'n' if c_role and c_role[0].lower() in 'aeiou' else ''} {c_role or 'interview'} interview."
+                + (f"\nThe interview is scheduled for: {sched_formatted}." if sched_formatted else "")
+                + f"\nYou are calling {call_lead} minutes before the interview time as a pre-interview reminder."
+                + (f"\n\nCandidate resume:\n{c_resume}" if c_resume else "")
+                + (f"\n\nHR notes about this candidate:\n{c_notes}" if c_notes else "")
+                + (f"\n\nSpecific questions to ask this candidate:\n{questions}" if questions else "")
+                + "\n\nStart by greeting them by name and confirming you're calling from HR."
+                + "\nMention the interview time when greeting them. Ask the specific questions listed. Be professional and friendly."
+            )
+            greeting_override = f"Hello, may I speak with {c_name}? This is an automated call from HR regarding your upcoming interview."
+        else:
+            # Inbound call — resolve via phone number
+            from app.twilio_repo import get_number_by_phone
+            print(f"[Twilio Stream] Inbound call, to={to!r}")
+            number_record = await asyncio.to_thread(get_number_by_phone, to) if to else None
+            if not number_record or not number_record.get("agent_id"):
+                print(f"[Twilio Stream] Closing: no active number_record with agent_id for to={to!r} (record={number_record})")
+                return False
+            agent_id = number_record["agent_id"]
+            user_id = number_record["user_id"]
+            print(f"[Twilio Stream] Resolved agent_id={agent_id} user_id={user_id}")
+
+        agent = await asyncio.to_thread(get_agent, agent_id)
+        if not agent:
+            print(f"[Twilio Stream] Closing: get_agent({agent_id!r}) returned None")
+            return False
+        print(f"[Twilio Stream] Agent loaded: {agent.get('name')}")
+
+        # Create conversation record
+        from app.database import get_supabase
+        _db = get_supabase()
+        def _create_conv():
+            res = _db.table("conversations").insert({
+                "user_id": user_id,
+                "title": f"Phone call — {agent['name']}",
+                "agent_id": agent_id,
+            }).execute()
+            return res.data[0]
+        conversation = await asyncio.to_thread(_create_conv)
+        conversation_id = conversation["id"]
+
+        # Load tool functions and memory
+        _all_fns = await asyncio.to_thread(get_agent_functions, agent_id)
+        _tool_functions = [f for f in _all_fns if f.get("url") and f.get("trigger_type") == "llm_tool_call"]
+        try:
+            initial_memory = await asyncio.to_thread(get_user_memory, user_id)
+        except Exception:
+            initial_memory = None
+
+        return True
 
     async def _send_mulaw(mulaw_bytes: bytes):
         """Send raw μ-law 8 kHz bytes to Twilio (base64-encoded)."""
@@ -1403,6 +1427,10 @@ async def twilio_stream_endpoint(websocket: WebSocket, to: str = "", interview_i
 
             if event == "start":
                 stream_sid = data["start"]["streamSid"]
+                custom_params = data["start"].get("customParameters") or {}
+                print(f"[Twilio Stream] start event — customParameters={custom_params}")
+                if not await _setup_call(custom_params):
+                    break
                 print(f"[Twilio] Call started — stream {stream_sid}, agent {agent['name']}")
                 greeting = greeting_override or (
                     agent.get("first_message") if agent.get("first_message_enabled") else None
@@ -1411,6 +1439,8 @@ async def twilio_stream_endpoint(websocket: WebSocket, to: str = "", interview_i
                     asyncio.create_task(_speak(greeting))
 
             elif event == "media":
+                if not agent:
+                    continue  # "start" hasn't completed setup yet
                 # Drop audio while agent is speaking or pipeline is running
                 if is_speaking or is_processing:
                     if _dg_stream:
