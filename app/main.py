@@ -1215,6 +1215,7 @@ async def twilio_stream_endpoint(websocket: WebSocket):
     is_processing = False   # True while LLM pipeline is running
     _call_ended = False     # tracks whether we've already marked the interview done
     _dg_stream = None       # active StreamingTranscriber (opened on first speech chunk)
+    _active_task: asyncio.Task | None = None  # current greeting/run_pipeline task, cancellable on barge-in
     speech_chunks = 0
     silence_chunks = 0
     SPEECH_THRESHOLD = 3    # chunks needed to confirm speech started
@@ -1438,24 +1439,40 @@ async def twilio_stream_endpoint(websocket: WebSocket):
                     agent.get("first_message") if agent.get("first_message_enabled") else None
                 )
                 if greeting:
-                    asyncio.create_task(_speak(greeting))
+                    _active_task = asyncio.create_task(_speak(greeting))
 
             elif event == "media":
                 if not agent:
                     continue  # "start" hasn't completed setup yet
-                # Drop audio while agent is speaking or pipeline is running
-                if is_speaking or is_processing:
-                    if _dg_stream:
-                        try:
-                            await _dg_stream.finish()
-                        except Exception:
-                            pass
-                        _dg_stream = None
-                        speech_chunks = 0
-                        silence_chunks = 0
-                    continue
 
                 pcm16k = twilio_payload_to_pcm16k(data["media"]["payload"])
+
+                if is_speaking or is_processing:
+                    # Barge-in: check if the caller is talking over the agent.
+                    barge_sensitivity = agent.get("barge_in_sensitivity", VAD_BARGE_IN_SENSITIVITY)
+                    has_speech = await detect_speech(pcm16k, barge_sensitivity)
+                    if not has_speech:
+                        if _dg_stream:
+                            try:
+                                await _dg_stream.finish()
+                            except Exception:
+                                pass
+                            _dg_stream = None
+                            speech_chunks = 0
+                            silence_chunks = 0
+                        continue
+                    print("[Twilio] Barge-in detected — interrupting agent")
+                    if _active_task and not _active_task.done():
+                        _active_task.cancel()
+                    is_speaking = False
+                    is_processing = False
+                    if stream_sid:
+                        await websocket.send_text(json.dumps({"event": "clear", "streamSid": stream_sid}))
+                    _dg_stream = None
+                    speech_chunks = 0
+                    silence_chunks = 0
+                    # fall through — treat this chunk as the start of new speech
+
                 has_speech = await detect_speech(pcm16k)
 
                 if has_speech:
@@ -1486,7 +1503,7 @@ async def twilio_stream_endpoint(websocket: WebSocket):
                             transcript = await dg.finish()
                             if transcript and transcript.strip():
                                 print(f"[Twilio] User said: {transcript.strip()}")
-                                asyncio.create_task(run_pipeline(transcript.strip()))
+                                _active_task = asyncio.create_task(run_pipeline(transcript.strip()))
 
             elif event == "stop":
                 print(f"[Twilio] Call ended — stream {stream_sid}")
