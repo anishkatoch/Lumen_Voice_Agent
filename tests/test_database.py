@@ -1,5 +1,5 @@
 """
-Tests for database repo functions — verifies correct Supabase calls are made.
+Tests for database repo functions - verifies correct Supabase calls are made.
 All tests are sync (repos are sync functions).
 """
 import pytest

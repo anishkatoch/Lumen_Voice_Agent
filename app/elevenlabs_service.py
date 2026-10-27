@@ -42,7 +42,7 @@ async def text_to_speech_stream(text: str):
             if chunk:
                 chunk_count += 1
                 yield chunk
-        print(f"[ElevenLabs] Done — sent {chunk_count} chunks")
+        print(f"[ElevenLabs] Done - sent {chunk_count} chunks")
     except Exception as e:
         import traceback
         print(f"[ElevenLabs] TTS error: {type(e).__name__}: {e}")

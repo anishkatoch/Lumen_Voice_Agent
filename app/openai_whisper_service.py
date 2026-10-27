@@ -1,5 +1,5 @@
 """
-OpenAI Whisper STT — drop-in for deepgram_service when stt_provider = "openai_whisper".
+OpenAI Whisper STT - drop-in for deepgram_service when stt_provider = "openai_whisper".
 StreamingWhisperTranscriber buffers audio and transcribes at finish() time (Whisper is batch-only).
 """
 import io

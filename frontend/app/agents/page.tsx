@@ -27,64 +27,139 @@ function formatBytes(b: number) {
   return `${(b / 1024 / 1024).toFixed(1)} MB`;
 }
 
+function isToday(dateStr: string): boolean {
+  const d = new Date(dateStr);
+  const now = new Date();
+  return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+}
+
+const AGENT_PALETTE = [
+  { bg: "#7c3aed", soft: "#efe8ff" },
+  { bg: "#2563eb", soft: "#e6f0ff" },
+  { bg: "#ea580c", soft: "#ffeee0" },
+  { bg: "#0d9488", soft: "#e2f7f4" },
+  { bg: "#db2777", soft: "#fde4f0" },
+  { bg: "#4f46e5", soft: "#eceafd" },
+];
+
+function agentColor(id: string) {
+  let hash = 0;
+  for (let i = 0; i < id.length; i++) hash = (hash * 31 + id.charCodeAt(i)) >>> 0;
+  return AGENT_PALETTE[hash % AGENT_PALETTE.length];
+}
+
+function agentInitials(name: string) {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return "A";
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return (parts[0][0] + parts[1][0]).toUpperCase();
+}
+
 // ── Sidebar ───────────────────────────────────────────────────────────────────
 
 type View = "agents" | "knowledge-base" | "sessions" | "phone-numbers";
+
+const SIDEBAR_ICONS: Record<View, JSX.Element> = {
+  "agents": (
+    <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="4" y="4" width="7" height="7" rx="1.5" /><rect x="13" y="4" width="7" height="7" rx="1.5" />
+      <rect x="4" y="13" width="7" height="7" rx="1.5" /><rect x="13" y="13" width="7" height="7" rx="1.5" />
+    </svg>
+  ),
+  "knowledge-base": (
+    <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" /><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
+    </svg>
+  ),
+  "sessions": (
+    <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 6h18" /><path d="M3 12h18" /><path d="M3 18h18" />
+    </svg>
+  ),
+  "phone-numbers": (
+    <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.362 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.338 1.85.573 2.81.7A2 2 0 0 1 22 16.92z" />
+    </svg>
+  ),
+};
 
 function Sidebar({ view, onView }: { view: View; onView: (v: View) => void }) {
   const userEmail = typeof window !== "undefined" ? (getUser()?.email ?? "") : "";
   return (
     <aside style={{
-      width: 260, minHeight: "100vh", background: "#fff", borderRight: "1px solid #f0f0f0",
-      display: "flex", flexDirection: "column", padding: "20px 0", flexShrink: 0,
+      width: 272, minHeight: "100vh", background: "#fff", borderRight: "1px solid #ececf1",
+      display: "flex", flexDirection: "column", padding: "22px 0", flexShrink: 0,
+      boxShadow: "1px 0 0 rgba(17,17,17,0.02)",
     }}>
-      <div style={{ padding: "0 20px 24px", display: "flex", alignItems: "center", gap: 10 }}>
+      <style>{`
+        .lumen-nav-item { position: relative; transition: background-color .15s ease, color .15s ease; }
+        .lumen-nav-item:hover { background: #f5f5f9 !important; color: #111 !important; }
+        .lumen-nav-item.active:hover { background: #eeeeff !important; }
+        .lumen-trial-badge { transition: box-shadow .2s ease; }
+        .lumen-trial-badge:hover { box-shadow: 0 2px 10px rgba(99,102,241,0.18); }
+      `}</style>
+
+      <div style={{ padding: "0 22px 26px", display: "flex", alignItems: "center", gap: 11 }}>
         <div style={{
-          width: 32, height: 32, borderRadius: "50%",
-          background: "radial-gradient(circle at 35% 35%, #6366f1, #8b5cf6)",
-          boxShadow: "0 0 12px #6366f155",
-        }} />
-        <span style={{ fontSize: 18, fontWeight: 700, color: "#111", letterSpacing: "-0.5px" }}>Lumen</span>
+          width: 36, height: 36, borderRadius: 10,
+          background: "linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)",
+          boxShadow: "0 4px 14px rgba(99,102,241,0.35)",
+          display: "flex", alignItems: "center", justifyContent: "center",
+          color: "#fff", fontSize: 17, fontWeight: 700, flexShrink: 0,
+        }}>L</div>
+        <span style={{ fontSize: 21, fontWeight: 700, color: "#111", letterSpacing: "-0.6px" }}>Lumen</span>
       </div>
 
-      <nav style={{ flex: 1, padding: "0 12px" }}>
+      <nav style={{ flex: 1, padding: "0 14px" }}>
         {([
-          { id: "agents", label: "Agents", icon: "●" },
-          { id: "knowledge-base", label: "Knowledge Base", icon: "◆" },
-          { id: "sessions", label: "Sessions", icon: "≡" },
-          { id: "phone-numbers", label: "Phone Numbers", icon: "#" },
-        ] as const).map(({ id, label, icon }) => (
+          { id: "agents", label: "Agents" },
+          { id: "knowledge-base", label: "Knowledge Base" },
+          { id: "sessions", label: "Call Analytics" },
+          { id: "phone-numbers", label: "Phone Numbers" },
+        ] as const).map(({ id, label }) => (
           <button key={id} onClick={() => onView(id)}
+            className={`lumen-nav-item${view === id ? " active" : ""}`}
             style={{
-              width: "100%", display: "flex", alignItems: "center", gap: 10,
-              padding: "9px 12px", borderRadius: 8, border: "none", cursor: "pointer",
-              background: view === id ? "#f5f5ff" : "transparent",
-              color: view === id ? "#6366f1" : "#666",
-              fontWeight: view === id ? 600 : 400,
-              fontSize: 14, marginBottom: 2, textAlign: "left",
+              width: "100%", display: "flex", alignItems: "center", gap: 12,
+              padding: "11px 14px", borderRadius: 10, border: "none", cursor: "pointer",
+              background: view === id ? "#f0f0ff" : "transparent",
+              color: view === id ? "#5558e8" : "#555",
+              fontWeight: view === id ? 600 : 500,
+              fontSize: 15, marginBottom: 4, textAlign: "left",
             }}>
-            <span style={{ fontSize: 10 }}>{icon}</span>
+            {view === id && (
+              <span style={{
+                position: "absolute", left: 0, top: "50%", transform: "translateY(-50%)",
+                width: 3, height: 18, borderRadius: 2, background: "#6366f1",
+              }} />
+            )}
+            <span style={{ display: "flex", flexShrink: 0 }}>{SIDEBAR_ICONS[id]}</span>
             {label}
           </button>
         ))}
       </nav>
 
-      <div style={{ padding: "0 16px" }}>
-        <div style={{
-          background: "#f9f9ff", border: "1px solid #e8e8ff", borderRadius: 8,
-          padding: "8px 12px", marginBottom: 12, fontSize: 12, color: "#6366f1", fontWeight: 500,
+      <div style={{ padding: "0 18px" }}>
+        <div className="lumen-trial-badge" style={{
+          background: "linear-gradient(135deg, #f7f7ff 0%, #f0f0ff 100%)", border: "1px solid #e2e2ff", borderRadius: 10,
+          padding: "11px 14px", marginBottom: 16, fontSize: 13.5, color: "#5558e8", fontWeight: 600,
+          display: "flex", alignItems: "center", gap: 8,
         }}>
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z" />
+          </svg>
           Free Trial
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 0 0", borderTop: "1px solid #f0f0f0" }}>
           <div style={{
-            width: 30, height: 30, borderRadius: "50%", background: "#6366f1",
+            width: 34, height: 34, borderRadius: "50%",
+            background: "linear-gradient(135deg, #6366f1, #8b5cf6)",
             display: "flex", alignItems: "center", justifyContent: "center",
-            color: "#fff", fontSize: 12, fontWeight: 600, flexShrink: 0,
+            color: "#fff", fontSize: 14, fontWeight: 600, flexShrink: 0,
           }}>
             {userEmail[0]?.toUpperCase() ?? "U"}
           </div>
-          <span style={{ fontSize: 11, color: "#888", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          <span style={{ fontSize: 13, color: "#444", fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
             {userEmail}
           </span>
         </div>
@@ -101,56 +176,80 @@ function AgentCard({ agent, onClick, onToggle }: {
   onToggle: (active: boolean) => Promise<void>;
 }) {
   const [toggling, setToggling] = useState(false);
+  const color = agentColor(agent.id);
 
   return (
     <div onClick={onClick}
       style={{
-        background: "#fff", borderRadius: 14, padding: "20px",
+        background: "#fff", borderRadius: 14, padding: "18px",
         border: "1px solid #f0f0f0", cursor: "pointer",
         transition: "box-shadow 0.15s, transform 0.1s",
-        position: "relative",
+        position: "relative", overflow: "hidden",
       }}
       onMouseEnter={e => { (e.currentTarget as HTMLDivElement).style.boxShadow = "0 4px 24px rgba(0,0,0,0.08)"; (e.currentTarget as HTMLDivElement).style.transform = "translateY(-1px)"; }}
       onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.boxShadow = "none"; (e.currentTarget as HTMLDivElement).style.transform = "none"; }}
     >
+      <div style={{
+        position: "absolute", top: -26, right: -26, width: 90, height: 90, borderRadius: "50%",
+        background: color.soft, opacity: 0.9, pointerEvents: "none",
+      }} />
 
-      <div style={{ position: "absolute", top: 16, right: 16 }}
-        onClick={async e => {
-          e.stopPropagation();
-          if (toggling) return;
-          setToggling(true);
-          try { await onToggle(!agent.is_active); } finally { setToggling(false); }
-        }}>
+      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 14 }}>
         <div style={{
-          width: 36, height: 20, borderRadius: 10,
-          background: agent.is_active ? "#6366f1" : "#e0e0e0",
-          position: "relative", transition: "background 0.2s", cursor: "pointer",
+          width: 38, height: 38, borderRadius: 10, background: color.bg,
+          display: "flex", alignItems: "center", justifyContent: "center",
+          color: "#fff", fontSize: 13, fontWeight: 700, flexShrink: 0, zIndex: 1,
         }}>
+          {agentInitials(agent.name)}
+        </div>
+
+        <div style={{ zIndex: 1 }}
+          onClick={async e => {
+            e.stopPropagation();
+            if (toggling) return;
+            setToggling(true);
+            try { await onToggle(!agent.is_active); } finally { setToggling(false); }
+          }}>
           <div style={{
-            position: "absolute", top: 2, left: agent.is_active ? 18 : 2,
-            width: 16, height: 16, borderRadius: "50%", background: "#fff",
-            transition: "left 0.2s", boxShadow: "0 1px 3px rgba(0,0,0,0.2)",
-          }} />
+            width: 36, height: 20, borderRadius: 10,
+            background: agent.is_active ? "#6366f1" : "#e0e0e0",
+            position: "relative", transition: "background 0.2s", cursor: "pointer",
+            opacity: toggling ? 0.6 : 1,
+          }}>
+            <div style={{
+              position: "absolute", top: 2, left: agent.is_active ? 18 : 2,
+              width: 16, height: 16, borderRadius: "50%", background: "#fff",
+              transition: "left 0.2s", boxShadow: "0 1px 3px rgba(0,0,0,0.2)",
+            }} />
+          </div>
         </div>
       </div>
 
-      <div style={{ fontWeight: 600, fontSize: 15, color: "#111", marginBottom: 4 }}>{agent.name}</div>
-      <div style={{ fontSize: 12, color: "#aaa", marginBottom: 12 }}>
+      <div style={{ fontWeight: 600, fontSize: 15, color: "#111", marginBottom: 4, zIndex: 1, position: "relative" }}>{agent.name}</div>
+      <div style={{ fontSize: 12, color: "#aaa", marginBottom: 12, zIndex: 1, position: "relative" }}>
         edited {timeAgo(agent.updated_at)}
       </div>
 
-      <div style={{
-        display: "inline-flex", alignItems: "center", gap: 5, padding: "4px 10px",
-        borderRadius: 20, background: agent.is_active ? "#f0fdf4" : "#f5f5f5",
-        border: `1px solid ${agent.is_active ? "#bbf7d0" : "#e5e5e5"}`,
-      }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", zIndex: 1, position: "relative" }}>
         <div style={{
-          width: 6, height: 6, borderRadius: "50%",
-          background: agent.is_active ? "#22c55e" : "#bbb",
-        }} />
-        <span style={{ fontSize: 11, fontWeight: 500, color: agent.is_active ? "#16a34a" : "#888" }}>
-          {agent.is_active ? "Live" : "Off"}
-        </span>
+          display: "inline-flex", alignItems: "center", gap: 5, padding: "4px 10px",
+          borderRadius: 20, background: agent.is_active ? "#f0fdf4" : "#f5f5f5",
+          border: `1px solid ${agent.is_active ? "#bbf7d0" : "#e5e5e5"}`,
+        }}>
+          <div style={{
+            width: 6, height: 6, borderRadius: "50%",
+            background: agent.is_active ? "#22c55e" : "#bbb",
+          }} />
+          <span style={{ fontSize: 11, fontWeight: 500, color: agent.is_active ? "#16a34a" : "#888" }}>
+            {agent.is_active ? "Live" : "Off"}
+          </span>
+        </div>
+
+        <div style={{ display: "flex", alignItems: "flex-end", gap: 2, height: 14 }}>
+          {[6, 11, 8, 14, 5].map((h, i) => (
+            <div key={i} style={{ width: 2.5, height: h, borderRadius: 1, background: agent.is_active ? color.bg : "#e5e5e5" }} />
+          ))}
+        </div>
       </div>
     </div>
   );
@@ -335,11 +434,11 @@ function FunctionForm({
         <div style={{ fontSize: 11, color: "#aaa", marginTop: 6, lineHeight: 1.5 }}>
           A webhook is a URL your agent calls automatically when it needs external data.
           For example: check a calendar, look up a customer record, or submit a booking.
-          {method === "GET" && " GET — fetches data, no body sent."}
-          {method === "POST" && " POST — sends parameters in the request body."}
-          {method === "PUT" && " PUT — replaces a resource with the sent data."}
-          {method === "PATCH" && " PATCH — partially updates a resource."}
-          {method === "DELETE" && " DELETE — removes a resource."}
+          {method === "GET" && " GET - fetches data, no body sent."}
+          {method === "POST" && " POST - sends parameters in the request body."}
+          {method === "PUT" && " PUT - replaces a resource with the sent data."}
+          {method === "PATCH" && " PATCH - partially updates a resource."}
+          {method === "DELETE" && " DELETE - removes a resource."}
         </div>
       </div>
       <div style={{ marginBottom: 12 }} />
@@ -371,7 +470,7 @@ function FunctionForm({
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
           <div>
             <label style={{ fontSize: 11, color: "#888" }}>Headers</label>
-            <span style={{ fontSize: 10, color: "#bbb", marginLeft: 6 }}>optional — e.g. Authorization, API-Key</span>
+            <span style={{ fontSize: 10, color: "#bbb", marginLeft: 6 }}>optional - e.g. Authorization, API-Key</span>
           </div>
           <button onClick={addHeader}
             style={{ fontSize: 11, color: "#6366f1", background: "none", border: "none", cursor: "pointer", fontWeight: 500 }}>
@@ -633,13 +732,30 @@ function VoicePanel({ agentId, agentName, docIds }: { agentId: string; agentName
 // ── Section Card ──────────────────────────────────────────────────────────────
 
 function Section({ title, children, extra }: { title: string; children: React.ReactNode; extra?: React.ReactNode }) {
+  const [collapsed, setCollapsed] = useState(false);
   return (
     <div style={{ background: "#fff", borderRadius: 12, border: "1px solid #f0f0f0", marginBottom: 16, overflow: "hidden" }}>
-      <div style={{ padding: "14px 18px", borderBottom: "1px solid #f5f5f5", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <span style={{ fontWeight: 600, fontSize: 14, color: "#111" }}>{title}</span>
-        {extra}
+      <div style={{ padding: "14px 18px", borderBottom: collapsed ? "none" : "1px solid #f5f5f5", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+        <span style={{ fontWeight: 600, fontSize: 15, color: "#111" }}>{title}</span>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          {extra}
+          <button
+            type="button"
+            onClick={() => setCollapsed(c => !c)}
+            aria-label={collapsed ? `Expand ${title}` : `Collapse ${title}`}
+            aria-expanded={!collapsed}
+            title={collapsed ? "Show" : "Hide"}
+            style={{
+              background: "none", border: "none", cursor: "pointer", padding: 4,
+              color: "#999", fontSize: 13, lineHeight: 1, display: "flex", alignItems: "center",
+              transform: collapsed ? "rotate(-90deg)" : "rotate(0deg)", transition: "transform 0.15s",
+            }}
+          >
+            ▼
+          </button>
+        </div>
       </div>
-      <div style={{ padding: "16px 18px" }}>{children}</div>
+      {!collapsed && <div style={{ padding: "16px 18px" }}>{children}</div>}
     </div>
   );
 }
@@ -827,7 +943,7 @@ function AgentHRSection({ agentId, hrInstructions, onHrInstructionsChange }: {
                   {/* Scheduled calls for this candidate */}
                   {candInterviews.length === 0 ? (
                     <div style={{ padding: "8px 14px 8px 60px", fontSize: 11, color: "#ccc", borderTop: "1px solid #f5f5f5" }}>
-                      No calls scheduled — click &quot;+ Schedule Call&quot; to set one up
+                      No calls scheduled - click &quot;+ Schedule Call&quot; to set one up
                     </div>
                   ) : (
                     candInterviews.map(iv => {
@@ -905,7 +1021,7 @@ function AgentHRSection({ agentId, hrInstructions, onHrInstructionsChange }: {
                 )}
               </div>
             </div>
-            {/* Interview scheduling — optional, inline */}
+            {/* Interview scheduling - optional, inline */}
             <div style={{ margin: "16px 0 12px", borderTop: "1px solid #f0f0f0", paddingTop: 16 }}>
               <div style={{ fontSize: 12, fontWeight: 700, color: "#6366f1", marginBottom: 10 }}>Schedule Interview Call <span style={{ fontWeight: 400, color: "#aaa" }}>(optional)</span></div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 10 }}>
@@ -942,7 +1058,7 @@ function AgentHRSection({ agentId, hrInstructions, onHrInstructionsChange }: {
             <div style={{ fontSize: 15, fontWeight: 700, color: "#111", marginBottom: 6 }}>{editInt ? "Edit Scheduled Call" : "Schedule Call"}</div>
             {(() => { const c = candidates.find(x => x.id === iForm.candidate_id); return c ? (
               <div style={{ fontSize: 12, color: "#6366f1", background: "#f0f0ff", display: "inline-block", padding: "3px 10px", borderRadius: 20, marginBottom: 16 }}>
-                {c.name}{c.role ? ` — ${c.role}` : ""}
+                {c.name}{c.role ? ` - ${c.role}` : ""}
               </div>
             ) : null; })()}
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
@@ -1068,6 +1184,34 @@ function AgentDetail({ agent, onBack, onUpdate, onDuplicate, onGoToKb }: {
     Support: "You are a helpful customer support agent. Listen carefully to issues, empathize with the caller, and provide clear step-by-step solutions.",
     Sales: "You are a professional sales agent. Understand the prospect's needs, highlight relevant product benefits, and guide them toward a purchasing decision.",
     Assistant: "You are a helpful personal assistant. Complete tasks efficiently, provide accurate information, and proactively offer useful suggestions.",
+    HR: `# Identity & Role
+You are a helpful HR support agent. You assist employees and candidates with HR-related questions including: interview scheduling, onboarding steps, leave policies, benefits, and general HR inquiries. Be empathetic, professional, and concise. For interview scheduling, collect: candidate name, contact details, role applied for, and preferred interview slot. Confirm everything before finalizing. Respond naturally for a voice conversation - no bullet points or markdown.
+
+# Current Date & Time
+Today is {{current_time}}. Use this as the only source of truth for "today" - never your training data.
+
+## Voice & Persona
+
+### Personality
+**Friendly & Patient:** Sound warm, patient, and knowledgeable.
+**Concise & Direct:** **This is a strict rule.** Always get straight to the point. Avoid filler words and long explanations. Your goal is to resolve the query in as few turns as possible.
+**Natural & Conversational:** Use a human-like, conversational tone (e.g., "I'm," "don't," "it's").
+**Confident:** Speak with confidence, but if you don't know something, say "Hmm, let me check on that for you."
+
+### Speech Characteristics
+Use contractions (I'm, we'll, don't).
+**Keep responses short,** ideally under 30 words.
+Ask only one question at a time.
+
+### Tone
+Friendly
+Professional
+Clear and concise
+Confident, not pushy
+
+# Purpose
+
+#Knowledge Base`,
   };
 
   const funcBadge = (fn: AgentFunction) => (fn.url ? "ACTIVE" : "DRAFT");
@@ -1078,7 +1222,7 @@ function AgentDetail({ agent, onBack, onUpdate, onDuplicate, onGoToKb }: {
   };
 
   return (
-    <div style={{ display: "flex", flex: 1, minHeight: "100vh", background: "#f8f8f8" }}>
+    <div style={{ display: "flex", flex: 1, minHeight: "100vh", background: "#f8f8f8", zoom: 1.12 } as React.CSSProperties}>
       {/* Left content */}
       <div style={{ flex: 1, overflowY: "auto", padding: "28px 28px 80px" }}>
         {/* Breadcrumb + header */}
@@ -1103,7 +1247,7 @@ function AgentDetail({ agent, onBack, onUpdate, onDuplicate, onGoToKb }: {
             </div>
             <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
               <button onClick={handleDuplicate}
-                style={{ padding: "8px 14px", borderRadius: 8, border: "1px solid #e0e0e0", background: "#fff", cursor: "pointer", fontSize: 13 }}>
+                style={{ padding: "8px 14px", borderRadius: 8, border: "1px solid #e0e0e0", background: "#fff", color: "#111", cursor: "pointer", fontSize: 13, fontWeight: 500 }}>
                 Duplicate
               </button>
               <button onClick={saveAgent} disabled={saving}
@@ -1141,7 +1285,7 @@ function AgentDetail({ agent, onBack, onUpdate, onDuplicate, onGoToKb }: {
                   .join(" · ")}
               </div>
               <div style={{ fontSize: 11, color: "#999" }}>
-                Reference these in your prompt — e.g. &quot;When asked about [topic], refer to the attached documents.&quot;
+                Reference these in your prompt - e.g. &quot;When asked about [topic], refer to the attached documents.&quot;
               </div>
             </div>
           )}
@@ -1351,7 +1495,7 @@ function AgentDetail({ agent, onBack, onUpdate, onDuplicate, onGoToKb }: {
             <div>
               <label style={{ fontSize: 12, color: "#666", fontWeight: 500, display: "block", marginBottom: 6 }}>Behavior</label>
               <select value={firstMsgEnabled ? "agent" : "user"} onChange={e => setFirstMsgEnabled(e.target.value === "agent")}
-                style={{ padding: "9px 12px", borderRadius: 8, border: "1px solid #e5e5e5", fontSize: 13, outline: "none", background: "#fff", cursor: "pointer" }}>
+                style={{ padding: "9px 12px", borderRadius: 8, border: "1px solid #e5e5e5", fontSize: 13, outline: "none", background: "#fff", color: "#111827", cursor: "pointer" }}>
                 <option value="agent">Agent speaks first</option>
                 <option value="user">User speaks first</option>
               </select>
@@ -1361,13 +1505,13 @@ function AgentDetail({ agent, onBack, onUpdate, onDuplicate, onGoToKb }: {
                 <label style={{ fontSize: 12, color: "#666", fontWeight: 500, display: "block", marginBottom: 6 }}>Opening message</label>
                 <input value={firstMsg} onChange={e => setFirstMsg(e.target.value)}
                   placeholder="Hello! How can I help you today?"
-                  style={inp} />
+                  style={{ ...inp, color: "#111827" }} />
               </div>
             )}
           </div>
         </Section>
 
-        {/* HR Instructions + HR Call Manager — only for the HR Support Agent */}
+        {/* HR Instructions + HR Call Manager - only for the HR Support Agent */}
         {agent.name === "HR Support Agent" && (
           <AgentHRSection agentId={agent.id} hrInstructions={hrInstructions} onHrInstructionsChange={setHrInstructions} />
         )}
@@ -1458,17 +1602,31 @@ function KnowledgeBaseView() {
 
   const usedPct = Math.min(100, (usedBytes / limitBytes) * 100);
   const barColor = usedPct > 85 ? "#ef4444" : usedPct > 65 ? "#f59e0b" : "#6366f1";
+  const indexedCount = docs.length; // all stored docs are indexed synchronously on upload
 
   const inp = { display: "none" };
 
   return (
     <div style={{ flex: 1, padding: "28px 32px 60px", overflowY: "auto" as const }}>
       <div style={{ maxWidth: 760 }}>
-        <div style={{ marginBottom: 28 }}>
+        <div style={{ marginBottom: 24 }}>
           <h1 style={{ fontSize: 24, fontWeight: 700, color: "#111", margin: 0 }}>Knowledge Base</h1>
           <p style={{ color: "#aaa", fontSize: 14, margin: "4px 0 0" }}>
-            Your personal document library — attach documents to agents from their KB section
+            Your personal document library - attach documents to agents from their KB section
           </p>
+        </div>
+
+        {/* Stat cards */}
+        <div style={{ display: "flex", gap: 16, marginBottom: 20 }}>
+          <StatCard label="Documents" value={docs.length} color="#6366f1" />
+          <StatCard label="Indexed" value={indexedCount} color="#16a34a" />
+          <div style={{
+            flex: 1, background: "#fff", borderRadius: 14, padding: "16px 20px",
+            border: "1px solid #f0f0f0",
+          }}>
+            <div style={{ fontSize: 12.5, color: "#999", fontWeight: 500, marginBottom: 6 }}>Storage used</div>
+            <div style={{ fontSize: 22, fontWeight: 700, color: "#111" }}>{formatBytes(usedBytes)}</div>
+          </div>
         </div>
 
         {/* Storage bar */}
@@ -1502,7 +1660,22 @@ function KnowledgeBaseView() {
             textAlign: "center", cursor: "pointer", background: "#fff",
             transition: "border-color 0.15s, background 0.15s", marginBottom: 20,
           }}>
-          <div style={{ fontSize: 28, marginBottom: 8 }}>{uploading ? "⏳" : "📎"}</div>
+          <div style={{
+            width: 40, height: 40, borderRadius: "50%", background: "#eef0ff",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            margin: "0 auto 10px", color: "#6366f1",
+          }}>
+            {uploading ? (
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" style={{ animation: "lumen-spin 0.8s linear infinite" }}>
+                <path d="M21 12a9 9 0 1 1-9-9" />
+              </svg>
+            ) : (
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 3v12" /><path d="m7 8 5-5 5 5" /><path d="M5 21h14" />
+              </svg>
+            )}
+          </div>
+          <style>{`@keyframes lumen-spin { to { transform: rotate(360deg); } }`}</style>
           <div style={{ fontSize: 14, color: "#555", fontWeight: 500 }}>
             {uploading ? "Uploading..." : <>Drop files here or <span style={{ color: "#6366f1" }}>browse</span></>}
           </div>
@@ -1540,7 +1713,10 @@ function KnowledgeBaseView() {
                   background: "#fff", marginBottom: 8,
                 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                    <span style={{ padding: "3px 8px", borderRadius: 5, fontSize: 11, fontWeight: 700, background: badge.bg, color: badge.color }}>
+                    <span style={{
+                      width: 38, height: 38, borderRadius: 10, display: "flex", alignItems: "center", justifyContent: "center",
+                      fontSize: 10.5, fontWeight: 700, background: badge.bg, color: badge.color, flexShrink: 0,
+                    }}>
                       {badge.label}
                     </span>
                     <div>
@@ -1555,10 +1731,13 @@ function KnowledgeBaseView() {
                     </div>
                   </div>
                   <button onClick={() => handleDelete(doc.id, doc.file_size)}
-                    style={{ background: "none", border: "none", cursor: "pointer", color: "#ddd", fontSize: 16, padding: "4px 8px", borderRadius: 6, transition: "color 0.15s" }}
+                    style={{ background: "none", border: "none", cursor: "pointer", color: "#ccc", padding: 6, borderRadius: 6, transition: "color 0.15s", display: "flex" }}
                     onMouseEnter={e => (e.currentTarget.style.color = "#ef4444")}
-                    onMouseLeave={e => (e.currentTarget.style.color = "#ddd")}>
-                    🗑
+                    onMouseLeave={e => (e.currentTarget.style.color = "#ccc")}>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M3 6h18" /><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                      <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" />
+                    </svg>
                   </button>
                 </div>
               );
@@ -1570,7 +1749,7 @@ function KnowledgeBaseView() {
   );
 }
 
-// ── Sessions View ─────────────────────────────────────────────────────────────
+// ── Call Analytics View ───────────────────────────────────────────────────────
 
 interface ConvDetail {
   id: string;
@@ -1580,6 +1759,8 @@ interface ConvDetail {
   sentiment?: "POSITIVE" | "NEGATIVE" | "NEUTRAL" | null;
   dominant_emotion?: string | null;
   sentiment_score?: number | null;
+  call_status?: "ringing" | "in_progress" | "completed" | "failed" | "busy" | "no_answer" | null;
+  failure_reason?: string | null;
 }
 
 function sentimentStyle(s: string | null | undefined): { bg: string; color: string; label: string } {
@@ -1587,6 +1768,19 @@ function sentimentStyle(s: string | null | undefined): { bg: string; color: stri
   if (s === "NEGATIVE") return { bg: "#fff5f5", color: "#dc2626", label: "Negative" };
   return { bg: "#f5f5f5", color: "#888", label: "Neutral" };
 }
+
+function callStatusStyle(s: string | null | undefined): { bg: string; color: string; label: string } {
+  if (s === "failed") return { bg: "#fff5f5", color: "#dc2626", label: "Failed" };
+  if (s === "busy") return { bg: "#fff7ed", color: "#ea580c", label: "Busy" };
+  if (s === "no_answer") return { bg: "#fff7ed", color: "#ea580c", label: "No Answer" };
+  if (s === "in_progress") return { bg: "#eff6ff", color: "#2563eb", label: "In Progress" };
+  if (s === "ringing") return { bg: "#eff6ff", color: "#2563eb", label: "Ringing" };
+  return { bg: "#f0fdf4", color: "#16a34a", label: "Completed" };
+}
+
+const ACTIVE_CALL_STATUSES = new Set(["in_progress", "ringing"]);
+
+const FAILED_CALL_STATUSES = new Set(["failed", "busy", "no_answer"]);
 
 function durationLabel(msgs: import("@/lib/api").Message[]): string {
   if (msgs.length < 2) return "< 1 min";
@@ -1603,6 +1797,8 @@ function downloadTranscript(conv: ConvDetail, msgs: import("@/lib/api").Message[
     `Session: ${conv.title}`,
     `Date: ${new Date(conv.created_at).toLocaleString()}`,
     `Duration: ${durationLabel(msgs)}`,
+    `Call status: ${callStatusStyle(conv.call_status).label}`,
+    ...(conv.failure_reason ? [`Failure reason: ${conv.failure_reason}`] : []),
     `Sentiment: ${conv.sentiment ?? "N/A"}`,
     `Emotion: ${conv.dominant_emotion ?? "N/A"}`,
     "",
@@ -1626,6 +1822,8 @@ function SessionDetail({ conv, agents, onBack }: {
   const [loading, setLoading] = useState(true);
   const agentName = agents.find(a => a.id === conv.agent_id)?.name ?? "Voice Agent";
   const sStyle = sentimentStyle(conv.sentiment);
+  const cStyle = callStatusStyle(conv.call_status);
+  const failed = FAILED_CALL_STATUSES.has(conv.call_status ?? "");
 
   useEffect(() => {
     API.messages(conv.id).then(m => { setMsgs(m); setLoading(false); }).catch(() => setLoading(false));
@@ -1638,7 +1836,7 @@ function SessionDetail({ conv, agents, onBack }: {
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <button onClick={onBack}
             style={{ background: "none", border: "none", cursor: "pointer", color: "#999", fontSize: 12, padding: 0 }}>
-            ← Sessions
+            ← Call Analytics
           </button>
           <span style={{ color: "#ddd" }}>/</span>
           <span style={{ fontSize: 14, fontWeight: 600, color: "#111" }}>{conv.title}</span>
@@ -1648,6 +1846,19 @@ function SessionDetail({ conv, agents, onBack }: {
           ↓ Download
         </button>
       </div>
+
+      {/* Failure banner */}
+      {failed && (
+        <div style={{ padding: "12px 28px", background: "#fff5f5", borderBottom: "1px solid #fecaca", display: "flex", alignItems: "center", gap: 10 }}>
+          <span style={{ fontSize: 16 }}>⚠️</span>
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 600, color: "#dc2626" }}>Call {cStyle.label.toLowerCase()}</div>
+            <div style={{ fontSize: 12, color: "#b91c1c", marginTop: 1 }}>
+              {conv.failure_reason || "No further details were recorded for this call."}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Meta bar */}
       <div style={{ padding: "12px 28px", background: "#fafafa", borderBottom: "1px solid #f0f0f0", display: "flex", gap: 20, alignItems: "center", flexWrap: "wrap" }}>
@@ -1662,6 +1873,9 @@ function SessionDetail({ conv, agents, onBack }: {
             <span style={{ color: "#555", fontWeight: 500 }}>Duration:</span> {durationLabel(msgs)}
           </div>
         )}
+        <span style={{ fontSize: 11, fontWeight: 600, padding: "3px 10px", borderRadius: 20, background: cStyle.bg, color: cStyle.color }}>
+          {cStyle.label}
+        </span>
         {conv.sentiment && (
           <span style={{ fontSize: 11, fontWeight: 600, padding: "3px 10px", borderRadius: 20, background: sStyle.bg, color: sStyle.color }}>
             {sStyle.label}
@@ -1712,10 +1926,14 @@ function SessionDetail({ conv, agents, onBack }: {
   );
 }
 
+type CallFilter = "all" | "completed" | "failed";
+
 function SessionsView({ agents }: { agents: Agent[] }) {
   const [convs, setConvs] = useState<ConvDetail[]>([]);
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<ConvDetail | null>(null);
+  const [filter, setFilter] = useState<CallFilter>("all");
+  const [agentFilter, setAgentFilter] = useState<string>("all");
 
   useEffect(() => {
     API.conversations().then(data => {
@@ -1728,39 +1946,98 @@ function SessionsView({ agents }: { agents: Agent[] }) {
     return <SessionDetail conv={selected} agents={agents} onBack={() => setSelected(null)} />;
   }
 
+  const total = convs.length;
+  const failedCount = convs.filter(c => FAILED_CALL_STATUSES.has(c.call_status ?? "")).length;
+  const completedCount = convs.filter(c => (c.call_status ?? "completed") === "completed").length;
+  const inProgressCount = convs.filter(c => ACTIVE_CALL_STATUSES.has(c.call_status ?? "")).length;
+  const successRate = total > 0 ? Math.round((completedCount / total) * 100) : null;
+
+  const filtered = convs.filter(c => {
+    if (agentFilter !== "all" && c.agent_id !== agentFilter) return false;
+    if (filter === "failed") return FAILED_CALL_STATUSES.has(c.call_status ?? "");
+    if (filter === "completed") return (c.call_status ?? "completed") === "completed";
+    return true;
+  });
+
   return (
     <div style={{ flex: 1, padding: "28px 28px 60px", overflowY: "auto" as const }}>
       <div style={{ marginBottom: 24 }}>
-        <h1 style={{ fontSize: 24, fontWeight: 700, color: "#111", margin: 0 }}>Sessions</h1>
-        <p style={{ color: "#aaa", fontSize: 14, margin: "4px 0 0" }}>Your voice conversation history</p>
+        <h1 style={{ fontSize: 24, fontWeight: 700, color: "#111", margin: 0 }}>Call Analytics</h1>
+        <p style={{ color: "#aaa", fontSize: 14, margin: "4px 0 0" }}>Every voice conversation — outcomes, sentiment, and why calls fail</p>
       </div>
 
+      {!loading && total > 0 && (
+        <div style={{ display: "flex", gap: 14, marginBottom: 24, flexWrap: "wrap" }}>
+          <StatCard label="Total Calls" value={total} color="#111" />
+          <StatCard label="Completed" value={completedCount} color="#16a34a" />
+          <StatCard label="Failed / Busy / No Answer" value={failedCount} color="#dc2626" />
+          {inProgressCount > 0 && <StatCard label="In Progress" value={inProgressCount} color="#2563eb" />}
+          <div style={{ flex: 1, background: "#fff", borderRadius: 14, padding: "16px 20px", border: "1px solid #f0f0f0", minWidth: 140 }}>
+            <div style={{ fontSize: 12.5, color: "#999", fontWeight: 500, marginBottom: 6 }}>Success Rate</div>
+            <div style={{ fontSize: 22, fontWeight: 700, color: successRate !== null && successRate < 70 ? "#dc2626" : "#16a34a" }}>
+              {successRate !== null ? `${successRate}%` : "—"}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {!loading && total > 0 && (
+        <div style={{ display: "flex", gap: 10, marginBottom: 18, flexWrap: "wrap", alignItems: "center" }}>
+          <div style={{ display: "flex", gap: 6 }}>
+            {([["all", "All"], ["completed", "Completed"], ["failed", "Failed"]] as [CallFilter, string][]).map(([key, label]) => (
+              <button key={key} onClick={() => setFilter(key)}
+                style={{
+                  padding: "6px 14px", borderRadius: 20, border: "1px solid #e5e5e5", cursor: "pointer",
+                  fontSize: 12.5, fontWeight: 600,
+                  background: filter === key ? "#111" : "#fff",
+                  color: filter === key ? "#fff" : "#555",
+                }}>
+                {label}
+              </button>
+            ))}
+          </div>
+          {agents.length > 0 && (
+            <select value={agentFilter} onChange={e => setAgentFilter(e.target.value)}
+              style={{ padding: "6px 12px", borderRadius: 20, border: "1px solid #e5e5e5", fontSize: 12.5, color: "#555", background: "#fff", cursor: "pointer" }}>
+              <option value="all">All agents</option>
+              {agents.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+            </select>
+          )}
+        </div>
+      )}
+
       {loading ? (
-        <div style={{ color: "#aaa", fontSize: 14 }}>Loading sessions...</div>
+        <div style={{ color: "#aaa", fontSize: 14 }}>Loading call analytics...</div>
       ) : convs.length === 0 ? (
         <div style={{ color: "#bbb", fontSize: 14, textAlign: "center", padding: "60px 0" }}>
-          No sessions yet. Start a voice conversation with an agent.
+          No calls yet. Start a voice conversation with an agent.
+        </div>
+      ) : filtered.length === 0 ? (
+        <div style={{ color: "#bbb", fontSize: 14, textAlign: "center", padding: "60px 0" }}>
+          No calls match this filter.
         </div>
       ) : (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 14 }}>
-          {convs.map(conv => {
+          {filtered.map(conv => {
             const sStyle = sentimentStyle(conv.sentiment);
+            const cStyle = callStatusStyle(conv.call_status);
+            const isFailed = FAILED_CALL_STATUSES.has(conv.call_status ?? "");
             const agentName = agents.find(a => a.id === conv.agent_id)?.name;
             return (
               <div key={conv.id} onClick={() => setSelected(conv)}
                 style={{
                   background: "#fff", borderRadius: 14, padding: "18px 20px",
-                  border: "1px solid #f0f0f0", cursor: "pointer",
+                  border: isFailed ? "1px solid #fecaca" : "1px solid #f0f0f0", cursor: "pointer",
                   transition: "box-shadow 0.15s, transform 0.1s",
                 }}
                 onMouseEnter={e => { (e.currentTarget as HTMLDivElement).style.boxShadow = "0 4px 24px rgba(0,0,0,0.08)"; (e.currentTarget as HTMLDivElement).style.transform = "translateY(-1px)"; }}
                 onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.boxShadow = "none"; (e.currentTarget as HTMLDivElement).style.transform = "none"; }}>
                 {/* Icon */}
                 <div style={{
-                  width: 40, height: 40, borderRadius: 10, background: "#f0f0ff",
+                  width: 40, height: 40, borderRadius: 10, background: isFailed ? "#fff5f5" : "#f0f0ff",
                   display: "flex", alignItems: "center", justifyContent: "center",
                   fontSize: 18, marginBottom: 12,
-                }}>💬</div>
+                }}>{isFailed ? "⚠️" : "💬"}</div>
 
                 <div style={{ fontWeight: 600, fontSize: 15, color: "#111", marginBottom: 4 }}>{conv.title}</div>
                 {agentName && (
@@ -1768,15 +2045,27 @@ function SessionsView({ agents }: { agents: Agent[] }) {
                 )}
                 <div style={{ fontSize: 12, color: "#aaa", marginBottom: 12 }}>{timeAgo(conv.created_at)}</div>
 
-                {conv.sentiment ? (
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: isFailed ? 8 : 0 }}>
                   <span style={{
                     fontSize: 11, fontWeight: 600, padding: "3px 10px", borderRadius: 20,
-                    background: sStyle.bg, color: sStyle.color,
+                    background: cStyle.bg, color: cStyle.color,
                   }}>
-                    {sStyle.label}{conv.dominant_emotion ? ` · ${conv.dominant_emotion}` : ""}
+                    {cStyle.label}
                   </span>
-                ) : (
-                  <span style={{ fontSize: 11, color: "#ccc" }}>No sentiment data</span>
+                  {conv.sentiment && (
+                    <span style={{
+                      fontSize: 11, fontWeight: 600, padding: "3px 10px", borderRadius: 20,
+                      background: sStyle.bg, color: sStyle.color,
+                    }}>
+                      {sStyle.label}{conv.dominant_emotion ? ` · ${conv.dominant_emotion}` : ""}
+                    </span>
+                  )}
+                </div>
+
+                {isFailed && (
+                  <div style={{ fontSize: 11.5, color: "#b91c1c", lineHeight: 1.4, overflow: "hidden", textOverflow: "ellipsis", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>
+                    {conv.failure_reason || "No further details recorded."}
+                  </div>
                 )}
               </div>
             );
@@ -1789,31 +2078,85 @@ function SessionsView({ agents }: { agents: Agent[] }) {
 
 // ── Agents Grid ───────────────────────────────────────────────────────────────
 
+function StatCard({ label, value, color }: { label: string; value: number; color: string }) {
+  return (
+    <div style={{
+      flex: 1, background: "#fff", borderRadius: 14, padding: "16px 20px",
+      border: "1px solid #f0f0f0",
+    }}>
+      <div style={{ fontSize: 12.5, color: "#999", fontWeight: 500, marginBottom: 6 }}>{label}</div>
+      <div style={{ fontSize: 22, fontWeight: 700, color }}>{value}</div>
+    </div>
+  );
+}
+
 function AgentsGrid({ agents, onSelect, onToggle, onCreateClick }: {
   agents: Agent[];
   onSelect: (a: Agent) => void;
   onToggle: (id: string, active: boolean) => Promise<void>;
   onCreateClick: () => void;
 }) {
+  const [query, setQuery] = useState("");
+  const filtered = query.trim()
+    ? agents.filter(a => a.name.toLowerCase().includes(query.trim().toLowerCase()))
+    : agents;
+
+  const liveCount = agents.filter(a => a.is_active).length;
+  const updatedTodayCount = agents.filter(a => isToday(a.updated_at)).length;
+
   return (
     <div style={{ flex: 1, padding: "28px 28px 60px", overflowY: "auto" }}>
-      <div style={{ marginBottom: 24 }}>
-        <h1 style={{ fontSize: 24, fontWeight: 700, color: "#111", margin: 0 }}>Agents</h1>
-        <p style={{ color: "#aaa", fontSize: 14, margin: "4px 0 0" }}>Build and manage your voice AI agents</p>
+      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 24, gap: 16, flexWrap: "wrap" }}>
+        <div>
+          <h1 style={{ fontSize: 24, fontWeight: 700, color: "#111", margin: 0 }}>Agents</h1>
+          <p style={{ color: "#aaa", fontSize: 14, margin: "4px 0 0" }}>Build and manage your voice AI agents</p>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <div style={{ position: "relative" }}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#aaa" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+              style={{ position: "absolute", left: 11, top: "50%", transform: "translateY(-50%)" }}>
+              <circle cx="11" cy="11" r="8" /><path d="m21 21-4.3-4.3" />
+            </svg>
+            <input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search agents"
+              style={{
+                padding: "9px 12px 9px 32px", borderRadius: 9, border: "1px solid #e5e5e5",
+                fontSize: 13.5, width: 200, outline: "none", color: "#333",
+              }} />
+          </div>
+          <button onClick={onCreateClick} style={{
+            display: "flex", alignItems: "center", gap: 6, padding: "9px 16px", borderRadius: 9,
+            border: "none", background: "#6366f1", color: "#fff", fontSize: 13.5, fontWeight: 600, cursor: "pointer",
+          }}>
+            <span style={{ fontSize: 15, lineHeight: 1 }}>+</span> New agent
+          </button>
+        </div>
       </div>
+
+      <div style={{ display: "flex", gap: 16, marginBottom: 24 }}>
+        <StatCard label="Total agents" value={agents.length} color="#6366f1" />
+        <StatCard label="Live now" value={liveCount} color="#16a34a" />
+        <StatCard label="Updated today" value={updatedTodayCount} color="#111" />
+      </div>
+
       <div style={{
         background: "linear-gradient(135deg, #f0f0ff 0%, #fff0f8 50%, #f0f8ff 100%)",
         borderRadius: 16, padding: 24, border: "1px solid #ebebff",
       }}>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 16 }}>
-          {agents.map(agent => (
-            <AgentCard key={agent.id} agent={agent}
-              onClick={() => onSelect(agent)}
-              onToggle={active => onToggle(agent.id, active)}
-            />
-          ))}
-          <CreateCard onClick={onCreateClick} />
-        </div>
+        {filtered.length === 0 && query.trim() ? (
+          <div style={{ padding: "20px 4px", color: "#999", fontSize: 13.5 }}>
+            No agents match &quot;{query}&quot;
+          </div>
+        ) : (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 16 }}>
+            {filtered.map(agent => (
+              <AgentCard key={agent.id} agent={agent}
+                onClick={() => onSelect(agent)}
+                onToggle={active => onToggle(agent.id, active)}
+              />
+            ))}
+            {!query.trim() && <CreateCard onClick={onCreateClick} />}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1968,7 +2311,7 @@ function PhoneNumbersView({ agents }: { agents: Agent[] }) {
             </div>
             <div style={{ marginBottom: 12 }}>
               <label style={{ fontSize: 11, fontWeight: 600, color: "#666", display: "block", marginBottom: 4 }}>
-                Server Base URL <span style={{ fontWeight: 400, color: "#aaa" }}>(public URL of this server — use ngrok for local testing)</span>
+                Server Base URL <span style={{ fontWeight: 400, color: "#aaa" }}>(public URL of this server - use ngrok for local testing)</span>
               </label>
               <input
                 style={{ ...inp, fontSize: 12 }}
@@ -2217,9 +2560,9 @@ export default function AgentsPage() {
           />
         ) : (
           <div style={{ flex: 1, display: "flex", flexDirection: "column" }}>
-            <div style={{ padding: "14px 28px", borderBottom: "1px solid #f0f0f0", background: "#fff", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <span style={{ fontSize: 14, fontWeight: 600, color: "#111" }}>Voice Agents</span>
-              <button onClick={handleSignOut} style={{ fontSize: 12, color: "#999", background: "none", border: "none", cursor: "pointer" }}>Sign out</button>
+            <div style={{ padding: "12px 28px", borderBottom: "1px solid #f0f0f0", background: "#fff", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <span style={{ fontSize: 12.5, fontWeight: 500, color: "#999" }}>Agents</span>
+              <button onClick={handleSignOut} style={{ fontSize: 12.5, fontWeight: 500, color: "#999", background: "none", border: "none", cursor: "pointer" }}>Sign out</button>
             </div>
             {loading ? (
               <div style={{ padding: 40, color: "#aaa", fontSize: 14 }}>Loading agents...</div>

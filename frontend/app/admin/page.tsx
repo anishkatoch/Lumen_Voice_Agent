@@ -430,7 +430,7 @@ export default function AdminPage() {
         { method: "POST", body: JSON.stringify({ email: email.trim(), password }) }
       );
       if (res.user.email !== ADMIN_EMAIL) {
-        setLoginErr("Access denied — not the admin account.");
+        setLoginErr("Access denied - not the admin account.");
         return;
       }
       localStorage.setItem("access_token", res.access_token);

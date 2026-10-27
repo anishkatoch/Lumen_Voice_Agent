@@ -86,7 +86,7 @@ def _settings(**kw):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  SECTION 1 — Audio conversion (pure unit tests, no mocking)
+#  SECTION 1 - Audio conversion (pure unit tests, no mocking)
 # ══════════════════════════════════════════════════════════════════════════════
 
 class TestAudioConversion:
@@ -107,7 +107,7 @@ class TestAudioConversion:
         assert result == bytes([0xFF])
 
     def test_mulaw_round_trip_preserves_amplitude(self):
-        """Encode then decode a sine wave — peak amplitude within 10% tolerance."""
+        """Encode then decode a sine wave - peak amplitude within 10% tolerance."""
         from app.twilio_call_service import mulaw_encode, mulaw_decode
         t = np.linspace(0, 1, 160, dtype=np.float32)
         sine = (np.sin(2 * np.pi * 440 * t) * 16000).astype(np.int16)
@@ -115,7 +115,7 @@ class TestAudioConversion:
         decoded = np.frombuffer(mulaw_decode(encoded), dtype=np.int16)
         orig_peak = np.max(np.abs(sine.astype(np.float32)))
         decoded_peak = np.max(np.abs(decoded.astype(np.float32)))
-        # μ-law companding compresses high-amplitude signals — tolerate up to 30% loss
+        # μ-law companding compresses high-amplitude signals - tolerate up to 30% loss
         assert decoded_peak > orig_peak * 0.70
 
     def test_resample_8k_to_16k_doubles_samples(self):
@@ -161,7 +161,7 @@ class TestAudioConversion:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  SECTION 2 — TwiML routes
+#  SECTION 2 - TwiML routes
 # ══════════════════════════════════════════════════════════════════════════════
 
 class TestTwiMLRoutes:
@@ -251,7 +251,7 @@ class TestTwiMLRoutes:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  SECTION 3 — Phone number CRUD
+#  SECTION 3 - Phone number CRUD
 # ══════════════════════════════════════════════════════════════════════════════
 
 class TestPhoneNumberCRUD:
@@ -354,7 +354,7 @@ class TestPhoneNumberCRUD:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  SECTION 4 — Twilio settings
+#  SECTION 4 - Twilio settings
 # ══════════════════════════════════════════════════════════════════════════════
 
 class TestTwilioSettings:
@@ -437,7 +437,7 @@ class TestTwilioSettings:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  SECTION 5 — HR Candidates
+#  SECTION 5 - HR Candidates
 # ══════════════════════════════════════════════════════════════════════════════
 
 class TestHRCandidates:
@@ -519,7 +519,7 @@ class TestHRCandidates:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  SECTION 6 — HR Interviews
+#  SECTION 6 - HR Interviews
 # ══════════════════════════════════════════════════════════════════════════════
 
 class TestHRInterviews:
@@ -602,7 +602,7 @@ class TestHRInterviews:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  SECTION 7 — HR Scheduler timing logic (pure Python, no mocking)
+#  SECTION 7 - HR Scheduler timing logic (pure Python, no mocking)
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _timing_row(minutes_from_now, lead_minutes=30, status="pending"):
@@ -651,12 +651,12 @@ class TestSchedulerTiming:
         assert len(_apply_timing_filter([row])) == 0
 
     def test_interview_exactly_at_2h_boundary_excluded(self):
-        """Trigger at exactly 120 minutes ago is at the exclusive boundary — skip."""
+        """Trigger at exactly 120 minutes ago is at the exclusive boundary - skip."""
         row = _timing_row(minutes_from_now=-90, lead_minutes=30)  # trigger 120 min ago
         assert len(_apply_timing_filter([row])) == 0
 
     def test_trigger_just_inside_2h_window_returned(self):
-        """Trigger ~119 min ago is inside the window — should be returned."""
+        """Trigger ~119 min ago is inside the window - should be returned."""
         row = _timing_row(minutes_from_now=-89, lead_minutes=30)  # trigger ~119 min ago
         assert len(_apply_timing_filter([row])) == 1
 
@@ -691,7 +691,7 @@ class TestSchedulerTiming:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  SECTION 8 — Scheduler deduplication
+#  SECTION 8 - Scheduler deduplication
 # ══════════════════════════════════════════════════════════════════════════════
 
 class TestSchedulerDeduplication:
@@ -725,7 +725,7 @@ class TestSchedulerDeduplication:
 
         async def fake_initiate(*a, **kw):
             call_order.append("twilio_call")
-            return "CAtest123"
+            return "CAtest123", None
 
         mocker.patch("app.database.get_supabase", return_value=db)
         mocker.patch("app.hr_repo.get_due_interviews", return_value=[iv])
@@ -733,6 +733,7 @@ class TestSchedulerDeduplication:
         mocker.patch("app.hr_repo.mark_interview_calling")
         mocker.patch("app.hr_repo.mark_interview_failed")
         mocker.patch("app.hr_scheduler._initiate_outbound_call", side_effect=fake_initiate)
+        mocker.patch("app.conversation_repo.create_conversation")
 
         from app.hr_scheduler import _check_and_call
         await _check_and_call()
@@ -770,30 +771,35 @@ class TestSchedulerDeduplication:
         mocker.patch("app.user_twilio_settings_repo.get_twilio_settings",
                      return_value=_settings(webhook_base_url=""))
         mocker.patch("app.hr_repo.mark_interview_calling")
+        mock_record_failed = mocker.patch("app.conversation_repo.record_failed_call")
 
         from app.hr_scheduler import _check_and_call
         await _check_and_call()
 
         mock_twilio.assert_not_called()
         mock_fail.assert_called_once_with(TEST_INT_ID)
+        mock_record_failed.assert_called_once()
 
     async def test_twilio_call_failure_marks_interview_failed(self, mocker):
-        """If _initiate_outbound_call returns None, mark the interview failed."""
+        """If _initiate_outbound_call returns (None, reason), mark the interview failed."""
         iv = _interview()
         db = self._make_claim_db(mocker, claim_data=[iv])
 
         mocker.patch("app.hr_scheduler._initiate_outbound_call",
-                     new_callable=AsyncMock, return_value=None)
+                     new_callable=AsyncMock, return_value=(None, "Twilio rejected the call - check the phone number and account status"))
         mock_fail = mocker.patch("app.hr_repo.mark_interview_failed")
         mocker.patch("app.database.get_supabase", return_value=db)
         mocker.patch("app.hr_repo.get_due_interviews", return_value=[iv])
         mocker.patch("app.user_twilio_settings_repo.get_twilio_settings", return_value=_settings())
         mocker.patch("app.hr_repo.mark_interview_calling")
+        mock_record_failed = mocker.patch("app.conversation_repo.record_failed_call")
 
         from app.hr_scheduler import _check_and_call
         await _check_and_call()
 
         mock_fail.assert_called_once_with(TEST_INT_ID)
+        mock_record_failed.assert_called_once()
+        assert "rejected" in mock_record_failed.call_args.args[-1]
 
     async def test_no_due_interviews_returns_early(self, mocker):
         """When no interviews are due, _initiate_outbound_call is never called."""
@@ -808,7 +814,208 @@ class TestSchedulerDeduplication:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  SECTION 9 — TTS for Twilio
+#  SECTION 8b - _initiate_outbound_call (direct, unmocked branch tests) and
+#  _check_and_call end-to-end Call Analytics recording
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestInitiateOutboundCall:
+    """Direct tests of the real branch logic in _initiate_outbound_call - every
+    short, human-readable failure reason shown in Call Analytics is pinned
+    here so a future edit can't silently change or break one."""
+
+    def _mock_db_with_number(self, mocker, phone="+14155550199"):
+        db = mocker.MagicMock()
+        chain = mocker.MagicMock()
+        chain.eq.return_value = chain
+        chain.limit.return_value = chain
+        chain.execute.return_value.data = [{"phone_number": phone}]
+        db.table.return_value.select.return_value = chain
+        mocker.patch("app.database.get_supabase", return_value=db)
+        return db
+
+    def _mock_db_no_number(self, mocker):
+        db = mocker.MagicMock()
+        chain = mocker.MagicMock()
+        chain.eq.return_value = chain
+        chain.limit.return_value = chain
+        chain.execute.return_value.data = []
+        db.table.return_value.select.return_value = chain
+        mocker.patch("app.database.get_supabase", return_value=db)
+        return db
+
+    async def test_no_credentials_returns_short_reason(self, mocker):
+        from app.hr_scheduler import _initiate_outbound_call
+        iv = _interview()
+        call_sid, reason = await _initiate_outbound_call(iv, _settings(account_sid="", auth_token=""), TEST_WEBHOOK)
+        assert call_sid is None
+        assert reason == "No Twilio account connected for this user"
+
+    async def test_no_candidate_phone_returns_short_reason(self, mocker):
+        from app.hr_scheduler import _initiate_outbound_call
+        iv = _interview(hr_candidates={"name": "Priya Sharma", "phone": ""})
+        call_sid, reason = await _initiate_outbound_call(iv, _settings(), TEST_WEBHOOK)
+        assert call_sid is None
+        assert reason == "Candidate has no phone number on file"
+
+    async def test_no_phone_number_configured_returns_short_reason(self, mocker):
+        self._mock_db_no_number(mocker)
+        from app.hr_scheduler import _initiate_outbound_call
+        iv = _interview()
+        call_sid, reason = await _initiate_outbound_call(iv, _settings(), TEST_WEBHOOK)
+        assert call_sid is None
+        assert reason == "No active Twilio phone number configured"
+
+    async def test_twilio_rejects_call_returns_short_reason(self, mocker):
+        self._mock_db_with_number(mocker)
+
+        class R:
+            status_code = 400
+            def json(self): return {"code": 21211, "message": "Invalid 'To' Phone Number"}
+
+        mock_client = mocker.MagicMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client.post = AsyncMock(return_value=R())
+        mocker.patch("httpx.AsyncClient", return_value=mock_client)
+
+        from app.hr_scheduler import _initiate_outbound_call
+        iv = _interview()
+        call_sid, reason = await _initiate_outbound_call(iv, _settings(), TEST_WEBHOOK)
+        assert call_sid is None
+        assert reason == "Twilio rejected the call - check the phone number and account status"
+
+    async def test_network_error_returns_short_reason(self, mocker):
+        self._mock_db_with_number(mocker)
+        mock_client = mocker.MagicMock()
+        mock_client.__aenter__ = AsyncMock(side_effect=ConnectionError("boom"))
+        mocker.patch("httpx.AsyncClient", return_value=mock_client)
+
+        from app.hr_scheduler import _initiate_outbound_call
+        iv = _interview()
+        call_sid, reason = await _initiate_outbound_call(iv, _settings(), TEST_WEBHOOK)
+        assert call_sid is None
+        assert reason == "Could not reach Twilio to place the call"
+
+    async def test_success_returns_call_sid_and_no_reason(self, mocker):
+        self._mock_db_with_number(mocker)
+
+        class R:
+            status_code = 201
+            def json(self): return {"sid": "CAsuccess000000000000000000000000000"}
+
+        mock_client = mocker.MagicMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client.post = AsyncMock(return_value=R())
+        mocker.patch("httpx.AsyncClient", return_value=mock_client)
+
+        from app.hr_scheduler import _initiate_outbound_call
+        iv = _interview()
+        call_sid, reason = await _initiate_outbound_call(iv, _settings(), TEST_WEBHOOK)
+        assert call_sid == "CAsuccess000000000000000000000000000"
+        assert reason is None
+
+    async def test_success_passes_status_callback_url(self, mocker):
+        """Without this, Twilio has nowhere to report busy/no-answer/failed, and
+        those outcomes would silently never reach Call Analytics at all."""
+        self._mock_db_with_number(mocker)
+
+        captured = {}
+        class R:
+            status_code = 201
+            def json(self): return {"sid": "CAsuccess000000000000000000000000000"}
+        async def fake_post(url, auth, data):
+            captured.update(data)
+            return R()
+
+        mock_client = mocker.MagicMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client.post = fake_post
+        mocker.patch("httpx.AsyncClient", return_value=mock_client)
+
+        from app.hr_scheduler import _initiate_outbound_call
+        iv = _interview()
+        await _initiate_outbound_call(iv, _settings(), TEST_WEBHOOK)
+        assert captured.get("StatusCallback") == f"{TEST_WEBHOOK}/twilio/interview/status-callback"
+
+
+class TestCheckAndCallWritesCallAnalytics:
+    """End-to-end (inside _check_and_call, with the REAL _initiate_outbound_call
+    - not mocked) proof that every failure path actually calls
+    record_failed_call with the exact short reason Call Analytics displays.
+    This is the mechanism the user reported as "not showing up" - these tests
+    exist to pin down that the glue code genuinely calls it, every time."""
+
+    def _claim_db(self, mocker, claim_data):
+        db = mocker.MagicMock()
+        chain = mocker.MagicMock()
+        chain.eq.return_value = chain
+        chain.execute.return_value.data = claim_data
+        db.table.return_value.update.return_value = chain
+        db.table.return_value.select.return_value = chain
+        mocker.patch("app.database.get_supabase", return_value=db)
+        return db
+
+    async def test_no_credentials_end_to_end(self, mocker):
+        iv = _interview()
+        self._claim_db(mocker, claim_data=[iv])
+        mocker.patch("app.hr_repo.get_due_interviews", return_value=[iv])
+        mocker.patch("app.hr_repo.mark_interview_calling")
+        mock_fail = mocker.patch("app.hr_repo.mark_interview_failed")
+        mocker.patch("app.user_twilio_settings_repo.get_twilio_settings",
+                     return_value=_settings(account_sid="", auth_token=""))
+        mock_record = mocker.patch("app.conversation_repo.record_failed_call")
+
+        from app.hr_scheduler import _check_and_call
+        await _check_and_call()
+
+        mock_fail.assert_called_once_with(TEST_INT_ID)
+        mock_record.assert_called_once_with(
+            TEST_USER_ID, "Interview call - Priya Sharma", TEST_AGENT_ID,
+            "No Twilio account connected for this user",
+        )
+
+    async def test_no_candidate_phone_end_to_end(self, mocker):
+        iv = _interview(hr_candidates={"name": "Priya Sharma", "phone": ""})
+        self._claim_db(mocker, claim_data=[iv])
+        mocker.patch("app.hr_repo.get_due_interviews", return_value=[iv])
+        mocker.patch("app.hr_repo.mark_interview_calling")
+        mock_fail = mocker.patch("app.hr_repo.mark_interview_failed")
+        mocker.patch("app.user_twilio_settings_repo.get_twilio_settings", return_value=_settings())
+        mock_record = mocker.patch("app.conversation_repo.record_failed_call")
+
+        from app.hr_scheduler import _check_and_call
+        await _check_and_call()
+
+        mock_fail.assert_called_once_with(TEST_INT_ID)
+        mock_record.assert_called_once_with(
+            TEST_USER_ID, "Interview call - Priya Sharma", TEST_AGENT_ID,
+            "Candidate has no phone number on file",
+        )
+
+    async def test_record_failed_call_exception_does_not_abort_remaining_interviews(self, mocker):
+        """If writing to Call Analytics ever throws (e.g. the DB migration
+        hasn't been applied yet and the columns don't exist), the scheduler
+        must still process every other due interview in this tick - a Call
+        Analytics hiccup must never be able to stall real interview calls."""
+        iv1 = _interview(candidate_id="cand-1", hr_candidates={"name": "Candidate One", "phone": ""})
+        iv2 = {**_interview(candidate_id="cand-2", hr_candidates={"name": "Candidate Two", "phone": ""}), "id": "eeeeeeee-2222-2222-2222-eeeeeeeeeeee"}
+        self._claim_db(mocker, claim_data=[iv1])  # same mock answers every claim update
+        mocker.patch("app.hr_repo.get_due_interviews", return_value=[iv1, iv2])
+        mocker.patch("app.hr_repo.mark_interview_calling")
+        mock_fail = mocker.patch("app.hr_repo.mark_interview_failed")
+        mocker.patch("app.user_twilio_settings_repo.get_twilio_settings", return_value=_settings())
+        mocker.patch("app.conversation_repo.record_failed_call", side_effect=RuntimeError("column call_status does not exist"))
+
+        from app.hr_scheduler import _check_and_call
+        await _check_and_call()
+
+        assert mock_fail.call_count == 2
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  SECTION 9 - TTS for Twilio
 # ══════════════════════════════════════════════════════════════════════════════
 
 class TestTwilioTTS:
@@ -886,7 +1093,7 @@ class TestTwilioTTS:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  SECTION 10 — StreamingTranscriber unit tests
+#  SECTION 10 - StreamingTranscriber unit tests
 # ══════════════════════════════════════════════════════════════════════════════
 
 class TestStreamingTranscriber:
@@ -949,7 +1156,7 @@ class TestStreamingTranscriber:
         from app.deepgram_service import StreamingTranscriber
         st = StreamingTranscriber()
         pcm = np.zeros(320, dtype=np.int16).tobytes()
-        await st.send(pcm)  # _connection is None at this point — should be a no-op
+        await st.send(pcm)  # _connection is None at this point - should be a no-op
 
     async def test_transcript_concatenates_multiple_segments(self):
         """Multiple final segments are joined with spaces."""
@@ -968,7 +1175,7 @@ class TestStreamingTranscriber:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  SECTION 11 — Agent context injection (pure Python)
+#  SECTION 11 - Agent context injection (pure Python)
 # ══════════════════════════════════════════════════════════════════════════════
 
 class TestCallContextInjection:
@@ -1027,7 +1234,7 @@ class TestCallContextInjection:
         assert "a Developer" in ctx
 
     def test_day_of_week_is_correct(self):
-        """July 15, 2026 is a Wednesday — verify the formatted label."""
+        """July 15, 2026 is a Wednesday - verify the formatted label."""
         sched = datetime(2026, 7, 15, 9, 0, tzinfo=timezone.utc)
         formatted = sched.strftime("%A, %B %d, %Y at %I:%M %p UTC")
         assert "Wednesday" in formatted

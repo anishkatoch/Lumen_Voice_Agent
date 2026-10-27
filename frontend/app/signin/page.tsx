@@ -5,9 +5,10 @@ import Link from "next/link";
 import { API } from "@/lib/api";
 import { setTokens, setUser } from "@/lib/auth";
 import { Mic, Eye, EyeOff, Loader2, Zap, Brain, Lock, ShieldCheck, Sun, Moon } from "lucide-react";
+import SocialAuthButtons from "@/components/SocialAuthButtons";
 
 const FEATURES = [
-  { icon: Mic,         title: "Natural Voice",     desc: "Talk freely — no commands needed" },
+  { icon: Mic,         title: "Natural Voice",     desc: "Talk freely - no commands needed" },
   { icon: Brain,       title: "Remembers You",      desc: "Learns your preferences over time" },
   { icon: Zap,         title: "Instant Responses",  desc: "Sub-second AI replies out loud" },
   { icon: ShieldCheck, title: "Private by Design",  desc: "Your data stays yours" },
@@ -132,7 +133,7 @@ export default function SignIn() {
       const data = await API.signIn(email, password);
       setTokens(data.access_token, data.refresh_token);
       setUser(data.user);
-      router.replace("/agent");
+      router.replace("/agents");
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Sign in failed");
     } finally {
@@ -178,7 +179,7 @@ export default function SignIn() {
                 </div>
                 <div>
                   <span className="text-sm font-semibold" style={{ color: t.featureTitle }}>{title}</span>
-                  <span className="text-sm" style={{ color: t.featureDesc }}> — {desc}</span>
+                  <span className="text-sm" style={{ color: t.featureDesc }}> - {desc}</span>
                 </div>
               </div>
             ))}
@@ -219,6 +220,13 @@ export default function SignIn() {
 
           <h2 className="text-3xl font-bold mb-1" style={{ color: t.title }}>Welcome back</h2>
           <p className="mb-8 text-sm" style={{ color: t.subtitle }}>Sign in to continue to your voice agent</p>
+
+          <SocialAuthButtons
+            inputBg={t.inputBg}
+            inputBorder={t.inputBorder}
+            textColor={t.inputText}
+            mutedColor={t.subtitle}
+          />
 
           <form onSubmit={handleSubmit} className="space-y-4">
             <div>
@@ -278,7 +286,7 @@ export default function SignIn() {
             style={{ background: t.trustBg, border: `1px solid ${t.trustBorder}` }}>
             <Lock className="w-3.5 h-3.5 mt-0.5 shrink-0" style={{ color: t.trustIcon }} />
             <p className="text-xs leading-relaxed" style={{ color: t.trustText }}>
-              Your password is <strong style={{ color: t.trustStrong }}>encrypted by Supabase</strong> — we never see or store it in plain text.
+              Your password is <strong style={{ color: t.trustStrong }}>encrypted by Supabase</strong> - we never see or store it in plain text.
             </p>
           </div>
 

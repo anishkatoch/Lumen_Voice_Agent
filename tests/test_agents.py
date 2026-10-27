@@ -62,6 +62,7 @@ def _admin_auth():
 
 async def test_list_agents_empty(client, mocker):
     mocker.patch("app.agent_repo.get_agents", return_value=[])
+    mocker.patch("app.agent_repo.seed_default_agents", return_value=None)
     res = await client.get("/api/agents", headers=_auth())
     assert res.status_code == 200
     assert res.json() == []
@@ -69,6 +70,7 @@ async def test_list_agents_empty(client, mocker):
 
 async def test_list_agents_returns_agents(client, mocker):
     mocker.patch("app.agent_repo.get_agents", return_value=[_agent()])
+    mocker.patch("app.agent_repo.seed_default_agents", return_value=None)
     res = await client.get("/api/agents", headers=_auth())
     assert res.status_code == 200
     data = res.json()
@@ -138,7 +140,7 @@ async def test_update_agent_success(client, mocker):
 
 async def test_update_agent_not_found(client, mocker):
     # update route calls update_agent directly (no get_agent preflight); ownership
-    # is enforced via eq("user_id") in SQL — RuntimeError → 404
+    # is enforced via eq("user_id") in SQL - RuntimeError → 404
     mocker.patch("app.agent_repo.update_agent", side_effect=RuntimeError("Agent not found or not owned by user"))
     res = await client.put(f"/api/agents/{TEST_AGENT_ID}", headers=_auth(), json={"name": "X"})
     assert res.status_code == 404
@@ -479,7 +481,7 @@ def test_extract_text_txt_basic():
 
 def test_extract_text_txt_unicode():
     from app.agent_doc_processor import extract_text_txt
-    result = extract_text_txt("Héllo Wörld — diet plan.".encode("utf-8"))
+    result = extract_text_txt("Héllo Wörld - diet plan.".encode("utf-8"))
     assert "diet plan" in result
 
 
@@ -834,7 +836,7 @@ async def test_generate_response_stream_uses_custom_prompt(mocker):
 
     mock_client = AsyncMock()
     mock_client.chat.completions.create = mock_create
-    mocker.patch("app.llm_service._get_openai", return_value=mock_client)
+    mocker.patch("app.llm_service._get_llm_client", return_value=(mock_client, "openai", "gpt-4o-mini"))
 
     async for _ in generate_response_stream(
         "What should I eat?", [], "", None,
@@ -866,7 +868,7 @@ async def test_generate_response_stream_uses_default_when_no_override(mocker):
 
     mock_client = AsyncMock()
     mock_client.chat.completions.create = mock_create
-    mocker.patch("app.llm_service._get_openai", return_value=mock_client)
+    mocker.patch("app.llm_service._get_llm_client", return_value=(mock_client, "openai", "gpt-4o-mini"))
 
     async for _ in generate_response_stream("Hello", [], "", None):
         pass

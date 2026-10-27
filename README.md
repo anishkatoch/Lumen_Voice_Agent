@@ -13,11 +13,11 @@ Check out the configuration reference at https://huggingface.co/docs/hub/spaces-
 
 # Lumen Voice Agent
 
-A platform for building and deploying custom voice AI agents in real-time. Users speak into the browser, audio streams over WebSocket, the server transcribes it (Deepgram), retrieves relevant context from a knowledge base (RAG via Supabase + pgvector), generates a reply (OpenAI GPT-4o), and streams audio back (ElevenLabs TTS). Deploy multiple specialized agents — HR recruiting, customer support, sales, or any voice-based workflow.
+A platform for building and deploying custom voice AI agents in real-time. Users speak into the browser, audio streams over WebSocket, the server transcribes it (Deepgram), retrieves relevant context from a knowledge base (RAG via Supabase + pgvector), generates a reply (OpenAI GPT-4o), and streams audio back (ElevenLabs TTS). Deploy multiple specialized agents - HR recruiting, customer support, sales, or any voice-based workflow.
 
 ---
 
-## Architecture — end to end
+## Architecture - end to end
 
 ```
 Browser
@@ -74,7 +74,7 @@ Every 10 messages, GPT-4o-mini summarises the conversation and upserts a `user_m
 lumen/
 ├── app/
 │   ├── main.py              # FastAPI app, all routes, WebSocket pipeline, multi-agent support
-│   ├── config.py            # Single source of config — reads .env + config.yaml
+│   ├── config.py            # Single source of config - reads .env + config.yaml
 │   ├── models.py            # SQLAlchemy models (schema source of truth)
 │   ├── database.py          # Supabase client singleton
 │   ├── websocket_manager.py # Connection manager, session state
@@ -90,12 +90,12 @@ lumen/
 │   ├── memory_repo.py       # DB ops for user_memory table
 │   └── document_repo.py     # DB ops for documents table (vector search)
 ├── migrations/
-│   ├── env.py               # Alembic env — reads DATABASE_URL, imports models
+│   ├── env.py               # Alembic env - reads DATABASE_URL, imports models
 │   └── versions/
 │       └── 0001_initial_schema.py  # Creates all tables + pgvector + match_documents fn
 ├── config.yaml              # Non-secret tunables (models, timeouts, VAD, CORS...)
-├── .env                     # Secrets — NOT committed to git
-├── .env.example             # Template — commit this, fill values locally / on AWS
+├── .env                     # Secrets - NOT committed to git
+├── .env.example             # Template - commit this, fill values locally / on AWS
 ├── pyproject.toml           # Dependencies
 ├── uv.lock                  # Pinned dependency lock file
 ├── alembic.ini              # Alembic config
@@ -118,7 +118,7 @@ lumen/
 | `OPENAI_API_KEY` | platform.openai.com → API keys |
 | `DEEPGRAM_API_KEY` | console.deepgram.com → API keys |
 | `ELEVENLABS_API_KEY` | elevenlabs.io → Profile → API key |
-| `WEBHOOK_SECRET` | Any string you choose — set same value in Supabase webhook header |
+| `WEBHOOK_SECRET` | Any string you choose - set same value in Supabase webhook header |
 
 ### What goes in `config.yaml` (tunables, safe to commit)
 
@@ -147,7 +147,7 @@ uv run alembic upgrade head
 uv run uvicorn app.main:app --host 0.0.0.0 --port 8004 --reload
 # Call POST /api/ingest-all-dev (no auth) once to index the documents
 
-# 5. That's it — the server is running
+# 5. That's it - the server is running
 ```
 
 `uv run` automatically creates a virtual environment and installs all dependencies from `uv.lock` on first run. No `pip install`, no manual venv.
@@ -156,13 +156,13 @@ uv run uvicorn app.main:app --host 0.0.0.0 --port 8004 --reload
 
 ## Running on AWS (EC2 / ECS)
 
-### Option A — Docker (recommended)
+### Option A - Docker (recommended)
 
 ```bash
 # Build
 docker build -t lumen-agent-backend .
 
-# Run — pass secrets as environment variables
+# Run - pass secrets as environment variables
 docker run -d \
   -p 8004:8004 \
   -e DATABASE_URL="postgresql://..." \
@@ -178,7 +178,7 @@ docker run -d \
 
 On AWS ECS/Fargate, pass the same env vars via **Task Definition environment variables** or pull them from **AWS Secrets Manager / Parameter Store**.
 
-### Option B — EC2 directly (no Docker)
+### Option B - EC2 directly (no Docker)
 
 ```bash
 # Install uv on the EC2 instance
@@ -255,7 +255,7 @@ uv run alembic current
 
 | Method | Path | Description |
 |---|---|---|
-| POST | `/webhook/new-document` | Called by Supabase on Storage INSERT — auto-ingests new `.md` files |
+| POST | `/webhook/new-document` | Called by Supabase on Storage INSERT - auto-ingests new `.md` files |
 
 ### WebSocket
 
@@ -316,7 +316,7 @@ LISTENING ──(speech detected)──► PROCESSING ──(reply ready)──�
 ## Environment variables quick reference
 
 ```bash
-# Required — all must be set or the server will not start
+# Required - all must be set or the server will not start
 DATABASE_URL
 SUPABASE_URL
 SUPABASE_ANON_KEY

@@ -106,10 +106,10 @@ async def text_to_speech_twilio(text: str):
     """
     Yields raw μ-law 8 kHz bytes ready to send to Twilio Media Streams.
 
-    ElevenLabs path: requests ulaw_8000 format directly — no conversion needed.
+    ElevenLabs path: requests ulaw_8000 format directly - no conversion needed.
     OpenAI TTS path: gets PCM 16 kHz then downsamples + encodes to μ-law 8 kHz.
 
-    Do NOT use text_to_speech_stream() here — it returns MP3 or PCM for the browser,
+    Do NOT use text_to_speech_stream() here - it returns MP3 or PCM for the browser,
     not the μ-law format Twilio requires.
     """
     import asyncio
@@ -126,7 +126,7 @@ async def text_to_speech_twilio(text: str):
                 pcm8k = resample_16k_to_8k(pcm16k_chunk)
                 yield mulaw_encode(pcm8k)
     else:
-        # ElevenLabs — ulaw_8000 is native μ-law 8 kHz, exactly what Twilio wants
+        # ElevenLabs - ulaw_8000 is native μ-law 8 kHz, exactly what Twilio wants
         from elevenlabs.client import ElevenLabs
         from elevenlabs import VoiceSettings
         from app.config import (

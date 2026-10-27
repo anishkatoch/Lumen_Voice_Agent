@@ -1,6 +1,7 @@
 import asyncio
 import json
 import re
+from datetime import datetime
 from openai import AsyncOpenAI
 from typing import AsyncGenerator
 from app.config import (
@@ -97,12 +98,12 @@ async def generate_response(
 
     system_parts = [
         "You are a helpful voice AI assistant. "
-        "Respond concisely — your answers will be spoken aloud. "
+        "Respond concisely - your answers will be spoken aloud. "
         "Avoid markdown, bullet points, or formatting. "
         "Speak naturally as if in a conversation.\n"
         "Follow these rules:\n"
-        "1. For questions about the current conversation, the user, or general chat — answer naturally using the conversation history.\n"
-        "2. For questions about specific topics, facts, or information — ONLY use the knowledge base context provided below. "
+        "1. For questions about the current conversation, the user, or general chat - answer naturally using the conversation history.\n"
+        "2. For questions about specific topics, facts, or information - ONLY use the knowledge base context provided below. "
         "If the topic is not in the knowledge base, say: 'I don't have information about that in my knowledge base.' "
         "Do not use your general training knowledge to answer factual questions."
     ]
@@ -139,12 +140,12 @@ async def generate_response(
 
 _DEFAULT_SYSTEM = (
     "You are a helpful voice AI assistant. "
-    "Respond concisely — your answers will be spoken aloud. "
+    "Respond concisely - your answers will be spoken aloud. "
     "Avoid markdown, bullet points, or formatting. "
     "Speak naturally as if in a conversation.\n"
     "Follow these rules:\n"
-    "1. For questions about the current conversation, the user, or general chat — answer naturally using the conversation history.\n"
-    "2. For questions about specific topics, facts, or information — ONLY use the knowledge base context provided below. "
+    "1. For questions about the current conversation, the user, or general chat - answer naturally using the conversation history.\n"
+    "2. For questions about specific topics, facts, or information - ONLY use the knowledge base context provided below. "
     "If the topic is not in the knowledge base, say: 'I don't have information about that in my knowledge base.' "
     "Do not use your general training knowledge to answer factual questions."
 )
@@ -219,7 +220,7 @@ FILLER_PHRASES = [
     "One moment, I'll look that up.",
     "Sure, give me just a second.",
     "Hold on, let me find that for you.",
-    "Great question — let me pull that up.",
+    "Great question - let me pull that up.",
     "Just a moment while I check.",
     "I'll look into that right now.",
     "Hang tight, checking that for you.",
@@ -233,6 +234,8 @@ def build_system_prompt(
     kb_instructions: str | None,
 ) -> str:
     base = system_prompt_override if system_prompt_override else _DEFAULT_SYSTEM
+    if "{{current_time}}" in base:
+        base = base.replace("{{current_time}}", datetime.now().strftime("%A, %B %d, %Y %I:%M %p"))
     parts = [base]
     if long_term_memory:
         parts.append(f"\nWhat you know about this user:\n{long_term_memory}")
@@ -275,12 +278,12 @@ async def detect_tool_call(
     """
     Single non-streaming LLM call with tool definitions.
     Returns:
-      (text, None, {}, None)          — LLM replied with text, no tool needed
-      (None, tool_name, args, call_id) — LLM wants to call a tool
+      (text, None, {}, None)          - LLM replied with text, no tool needed
+      (None, tool_name, args, call_id) - LLM wants to call a tool
     """
     client, provider, model = _get_llm_client()
     if provider == "anthropic" or client is None:
-        # Anthropic tool calling has a different API — fall back to plain text
+        # Anthropic tool calling has a different API - fall back to plain text
         return "", None, {}, None
 
     try:
@@ -397,7 +400,7 @@ async def generate_memory_summary(
     prompt_parts.append(f"New conversation:\n{history_text}")
     prompt_parts.append(
         "\nWrite a concise paragraph (max 200 words) capturing key facts, "
-        "preferences, and past issues. Merge old and new info — no repetition."
+        "preferences, and past issues. Merge old and new info - no repetition."
     )
 
     try:

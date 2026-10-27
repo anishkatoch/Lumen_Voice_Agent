@@ -8,7 +8,7 @@ from app.models import Base
 
 config = context.config
 
-# Pass DB params directly to psycopg2 — no URL building, no encoding issues.
+# Pass DB params directly to psycopg2 - no URL building, no encoding issues.
 # Special characters like $ in passwords work without any escaping.
 
 if config.config_file_name is not None:
@@ -30,7 +30,7 @@ def _make_engine():
 
 
 def run_migrations_offline() -> None:
-    # Offline mode generates SQL without connecting — use DATABASE_URL here
+    # Offline mode generates SQL without connecting - use DATABASE_URL here
     from app.config import DATABASE_URL
     context.configure(
         url=DATABASE_URL,

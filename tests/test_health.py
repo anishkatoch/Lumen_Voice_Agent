@@ -4,7 +4,7 @@ pytestmark = pytest.mark.asyncio
 
 
 async def test_root(client):
-    # / serves frontend HTML if out/ exists, or 404 if not built yet — both are valid
+    # / serves frontend HTML if out/ exists, or 404 if not built yet - both are valid
     r = await client.get("/")
     assert r.status_code in (200, 404)
 

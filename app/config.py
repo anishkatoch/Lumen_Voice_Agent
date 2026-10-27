@@ -31,14 +31,14 @@ def cfg(*keys: str, default=None):
 
 # ─── Secrets from .env ───────────────────────────────────────────────
 # DB params stored separately so special characters ($, @, #) in passwords
-# are passed raw to psycopg2 — no URL encoding needed, no parsing issues.
+# are passed raw to psycopg2 - no URL encoding needed, no parsing issues.
 DB_HOST     = os.environ["DB_HOST"]
 DB_PORT     = int(os.environ.get("DB_PORT", "5432"))
 DB_USER     = os.environ["DB_USER"]
 DB_PASSWORD = os.environ["DB_PASSWORD"]
 DB_NAME     = os.environ.get("DB_NAME", "postgres")
 
-# Convenience URL for tools that need it — password is URL-encoded safely here
+# Convenience URL for tools that need it - password is URL-encoded safely here
 from urllib.parse import quote_plus as _qp
 DATABASE_URL = f"postgresql://{DB_USER}:{_qp(DB_PASSWORD)}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 SUPABASE_URL            = os.environ["SUPABASE_URL"]

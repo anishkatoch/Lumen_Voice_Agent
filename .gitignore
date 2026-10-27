@@ -1,4 +1,4 @@
-# Secrets — never commit
+# Secrets - never commit
 .env
 *.env.local
 
@@ -29,7 +29,7 @@ frontend/.next/
 frontend/out/
 frontend/node_modules/
 
-# Torch hub cache (downloaded model weights — large)
+# Torch hub cache (downloaded model weights - large)
 hub/
 
 # IDE
@@ -44,7 +44,7 @@ hub/
 # Logs
 *.log
 
-# Private planning — never push to GitHub or Hugging Face
+# Private planning - never push to GitHub or Hugging Face
 nextinnovation/
 problems/
 planning/

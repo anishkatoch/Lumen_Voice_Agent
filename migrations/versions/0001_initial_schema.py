@@ -45,7 +45,7 @@ def upgrade() -> None:
         sa.Column("section_title", sa.String(500), nullable=False),
         sa.Column("chunk_text", sa.Text, nullable=False),
         # vector(1536) matches text-embedding-3-small output dimension
-        sa.Column("vector", sa.Text, nullable=False),  # placeholder — replaced below
+        sa.Column("vector", sa.Text, nullable=False),  # placeholder - replaced below
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
     )
     # Replace placeholder TEXT column with a proper pgvector column

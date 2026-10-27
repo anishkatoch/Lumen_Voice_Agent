@@ -45,3 +45,25 @@ export async function tryRefresh(): Promise<boolean> {
 export function isLoggedIn(): boolean {
   return !!getToken();
 }
+
+// ── Social sign-in (Google / Microsoft / GitHub via Supabase OAuth) ────────
+export type OAuthProvider = "google" | "azure" | "github";
+
+/**
+ * Redirects the browser to Supabase's hosted OAuth authorize endpoint.
+ * Supabase handles the provider handshake and redirects back to `/auth`
+ * with the session tokens in the URL hash (see app/auth/page.tsx).
+ *
+ * Requires NEXT_PUBLIC_SUPABASE_URL to be set, the provider enabled in the
+ * Supabase dashboard (Authentication → Providers), and this app's /auth
+ * URL added under Authentication → URL Configuration → Redirect URLs.
+ */
+export function signInWithProvider(provider: OAuthProvider) {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  if (!supabaseUrl) {
+    throw new Error("Social sign-in is not configured (missing NEXT_PUBLIC_SUPABASE_URL).");
+  }
+  const redirectTo = `${window.location.origin}/auth`;
+  const url = `${supabaseUrl}/auth/v1/authorize?provider=${provider}&redirect_to=${encodeURIComponent(redirectTo)}`;
+  window.location.href = url;
+}

@@ -213,3 +213,20 @@ def mark_interview_completed(interview_id: str) -> None:
 def mark_interview_failed(interview_id: str) -> None:
     db = get_supabase()
     db.table("hr_interviews").update({"status": "failed"}).eq("id", interview_id).execute()
+
+
+def mark_interview_status_by_call_sid(call_sid: str, new_status: str) -> dict | None:
+    """Conditionally update an interview's status by call_sid - only if it's
+    still 'calling', so a status-callback race never clobbers a status the
+    WS stream lifecycle already resolved for the same call (mirrors
+    hr_campaign_repo.mark_candidate_status_from_call_sid).
+    Returns the updated row, or None if no row matched."""
+    db = get_supabase()
+    result = (
+        db.table("hr_interviews")
+        .update({"status": new_status})
+        .eq("call_sid", call_sid)
+        .eq("status", "calling")
+        .execute()
+    )
+    return result.data[0] if result.data else None

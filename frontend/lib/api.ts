@@ -224,6 +224,27 @@ export const API = {
   deleteInterview: (id: string) =>
     API.request<void>(`/api/hr/interviews/${id}`, { method: "DELETE" }),
 
+  // HR Call Campaigns
+  campaigns: () => API.request<Campaign[]>("/api/hr/campaigns"),
+  createCampaign: (data: {
+    agent_id: string; name: string; questions: CampaignQuestion[];
+    max_retry_attempts?: number; retry_delay_minutes?: number; call_gap_minutes?: number;
+  }) => API.request<Campaign>("/api/hr/campaigns", { method: "POST", body: JSON.stringify(data) }),
+  updateCampaign: (id: string, data: Partial<Omit<Campaign, "id" | "user_id" | "created_at">>) =>
+    API.request<Campaign>(`/api/hr/campaigns/${id}`, { method: "PUT", body: JSON.stringify(data) }),
+  deleteCampaign: (id: string) =>
+    API.request<void>(`/api/hr/campaigns/${id}`, { method: "DELETE" }),
+  campaignCandidates: (campaignId: string) =>
+    API.request<CampaignCandidate[]>(`/api/hr/campaigns/${campaignId}/candidates`),
+  addCampaignCandidates: (campaignId: string, candidateIds: string[]) =>
+    API.request<CampaignCandidate[]>(`/api/hr/campaigns/${campaignId}/candidates`, {
+      method: "POST", body: JSON.stringify({ candidate_ids: candidateIds }),
+    }),
+  removeCampaignCandidate: (campaignId: string, campaignCandidateId: string) =>
+    API.request<void>(`/api/hr/campaigns/${campaignId}/candidates/${campaignCandidateId}`, { method: "DELETE" }),
+  campaignAnswers: (campaignCandidateId: string) =>
+    API.request<CampaignAnswer[]>(`/api/hr/campaigns/candidates/${campaignCandidateId}/answers`),
+
   // Twilio Phone Numbers
   phoneNumbers: () => API.request<PhoneNumber[]>("/api/twilio/numbers"),
   addPhoneNumber: (data: { phone_number: string; friendly_name?: string }) =>
@@ -252,6 +273,7 @@ export interface User {
   id: string;
   email: string;
   full_name?: string;
+  avatar_url?: string;
   role: string;
 }
 
@@ -264,6 +286,8 @@ export interface Conversation {
   sentiment?: "POSITIVE" | "NEGATIVE" | "NEUTRAL" | null;
   dominant_emotion?: string | null;
   sentiment_score?: number | null;
+  call_status?: "ringing" | "in_progress" | "completed" | "failed" | "busy" | "no_answer" | null;
+  failure_reason?: string | null;
 }
 
 export interface Message {
@@ -376,6 +400,47 @@ export interface HRInterview {
   call_sid?: string | null;
   created_at: string;
   hr_candidates?: { name: string; phone: string; role?: string | null } | null;
+}
+
+export interface CampaignQuestion {
+  id: string;
+  text: string;
+}
+
+export interface Campaign {
+  id: string;
+  user_id: string;
+  agent_id: string;
+  name: string;
+  questions: CampaignQuestion[];
+  status: "draft" | "running" | "paused" | "completed";
+  active_candidate_id?: string | null;
+  last_call_ended_at?: string | null;
+  max_retry_attempts: number;
+  retry_delay_minutes: number;
+  call_gap_minutes: number;
+  created_at: string;
+}
+
+export interface CampaignCandidate {
+  id: string;
+  campaign_id: string;
+  candidate_id: string;
+  status: "queued" | "calling" | "completed" | "busy" | "no_answer" | "failed" | "exhausted";
+  attempt_count: number;
+  last_attempt_at?: string | null;
+  call_sid?: string | null;
+  created_at: string;
+  hr_candidates?: { name: string; phone: string; role?: string | null; email?: string | null } | null;
+}
+
+export interface CampaignAnswer {
+  id: string;
+  campaign_candidate_id: string;
+  question_id: string;
+  question_text: string;
+  answer_text: string;
+  recorded_at: string;
 }
 
 export interface PhoneNumber {

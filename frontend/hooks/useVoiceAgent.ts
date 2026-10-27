@@ -82,7 +82,7 @@ export function useVoiceAgent() {
       const ctx = playCtxRef.current;
       if (ctx.state === "suspended") await ctx.resume();
 
-      // PCM is raw 16-bit signed integers at 16kHz — decode manually, no codec needed
+      // PCM is raw 16-bit signed integers at 16kHz - decode manually, no codec needed
       const pcm = new Int16Array(merged.buffer);
       const audioBuffer = ctx.createBuffer(1, pcm.length, 16000);
       const channelData = audioBuffer.getChannelData(0);
@@ -174,7 +174,7 @@ export function useVoiceAgent() {
       if (playCtxRef.current.state === "suspended") {
         await playCtxRef.current.resume();
       }
-    } catch { /* ignore — will retry at play time */ }
+    } catch { /* ignore - will retry at play time */ }
 
     const wsUrl = opts?.agentId
       ? (() => {
@@ -239,7 +239,7 @@ export function useVoiceAgent() {
     };
 
     ws.onclose = (ev) => {
-      console.log("[WS] Closed — code:", ev.code, "reason:", ev.reason);
+      console.log("[WS] Closed - code:", ev.code, "reason:", ev.reason);
       setConnected(false);
       setState("IDLE");
       wsRef.current = null;
@@ -323,7 +323,7 @@ export function useVoiceAgent() {
       try {
         await ctx.audioWorklet.addModule(blobUrl);
       } finally {
-        // Always revoke — even if addModule throws
+        // Always revoke - even if addModule throws
         URL.revokeObjectURL(blobUrl);
         blobUrl = null;
       }
@@ -336,7 +336,7 @@ export function useVoiceAgent() {
         if (wsRef.current?.readyState === WebSocket.OPEN) {
           wsRef.current.send(e.data);
         } else if (wsRef.current && wsRef.current.readyState !== WebSocket.CONNECTING) {
-          // WebSocket died — stop mic automatically
+          // WebSocket died - stop mic automatically
           stopMicInternal();
           setError("Connection lost. Please reconnect.");
         }
@@ -365,7 +365,7 @@ export function useVoiceAgent() {
   }, []);
 
   // Auto-start mic the first time state becomes LISTENING after connecting.
-  // This makes connect() a single one-button action — no separate mic tap needed.
+  // This makes connect() a single one-button action - no separate mic tap needed.
   const micAutoStartedRef = useRef(false);
   useEffect(() => {
     if (connected && state === "LISTENING" && !isMicActive && !micAutoStartedRef.current) {

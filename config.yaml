@@ -9,6 +9,7 @@ cors:
   allowed_origins:
     - "https://lumen-agent-phi.vercel.app"
     - "http://localhost:3000"    # Next.js dev server
+    - "http://localhost:3001"    # Next.js dev server (fallback port when 3000 is taken)
     - "http://localhost:8004"    # frontend served by FastAPI
     - "http://0.0.0.0:8004"     # accessed via 0.0.0.0
 
@@ -22,18 +23,18 @@ storage:
 #    threshold = silero_threshold_min + (1.0 - sensitivity) * (silero_threshold_max - silero_threshold_min)
 #
 #  Quick reference for speech_sensitivity:
-#    1.0  →  threshold = 0.20  (very easy  — triggers on whispers, noisy rooms)
+#    1.0  →  threshold = 0.20  (very easy  - triggers on whispers, noisy rooms)
 #    0.80 →  threshold = 0.32  (easy)
-#    0.70 →  threshold = 0.38  (balanced  — good default for most mics)
+#    0.70 →  threshold = 0.38  (balanced  - good default for most mics)
 #    0.60 →  threshold = 0.44  (moderate)
 #    0.50 →  threshold = 0.50  (normal)
 #    0.30 →  threshold = 0.62  (strict)
-#    0.00 →  threshold = 0.80  (very strict — only loud clear speech)
+#    0.00 →  threshold = 0.80  (very strict - only loud clear speech)
 #
 #  Quick reference for barge_in_sensitivity:
 #    0.70 →  threshold = 0.38  (interrupts on soft speech while AI speaks)
-#    0.50 →  threshold = 0.50  (balanced — only clear speech interrupts)
-#    0.30 →  threshold = 0.62  (strict  — only loud intentional interrupts)
+#    0.50 →  threshold = 0.50  (balanced - only clear speech interrupts)
+#    0.30 →  threshold = 0.62  (strict  - only loud intentional interrupts)
 #
 vad:
   speech_sensitivity:    0.85   # how easily user speech triggers the pipeline
@@ -41,7 +42,7 @@ vad:
   silence_limit_chunks:  3      # silence chunks before utterance ends (3 × 250ms = 750 ms)
   min_speech_chunks:     1      # minimum speech chunks needed     (1 × 250ms = 250 ms)
 
-  # Silero threshold range — formula: min + (1 - sensitivity) × (max - min)
+  # Silero threshold range - formula: min + (1 - sensitivity) × (max - min)
   silero_threshold_min:  0.20   # threshold when sensitivity = 1.0 (easiest trigger)
   silero_threshold_max:  0.80   # threshold when sensitivity = 0.0 (hardest trigger)
 
@@ -78,7 +79,7 @@ websocket:
 
 # ─── Sentiment Analysis ──────────────────────────────────────────────
 #
-#  Uses HuggingFace Inference API — free tier, no local model.
+#  Uses HuggingFace Inference API - free tier, no local model.
 #  Model is trained on dialogue/conversation datasets (MELD, IEMOCAP).
 #
 #  Concurrency: max_concurrent_calls limits simultaneous HF API requests
@@ -88,7 +89,7 @@ sentiment:
   model: "j-hartmann/emotion-english-distilroberta-base"
   timeout_seconds: 35        # HF cold start can take 20-30s on free tier
   max_retries: 3             # retries on 503 (model loading) or 429 (rate limit)
-  max_concurrent_calls: 3    # semaphore — max simultaneous HF API calls
+  max_concurrent_calls: 3    # semaphore - max simultaneous HF API calls
   max_text_chars: 2000       # truncate long transcripts (model max ~512 tokens)
 
 # ─── Session Limits (authorized users only, not guests) ──────────────

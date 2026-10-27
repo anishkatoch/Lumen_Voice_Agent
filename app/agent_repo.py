@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from app.database import get_supabase
 
 ADMIN_EMAIL = "katochaneesh@gmail.com"
-MAX_STORAGE_BYTES = 5 * 1024 * 1024  # default — overridden by admin config
+MAX_STORAGE_BYTES = 5 * 1024 * 1024  # default - overridden by admin config
 
 
 def get_agent_kb_limit() -> int:
@@ -26,7 +26,7 @@ _DEFAULT_AGENTS = [
             "and set up appointments. Be concise and friendly. "
             "When someone wants to schedule a meeting, ask for: their name, preferred date and time, "
             "meeting purpose, and duration. Confirm all details before booking. "
-            "Respond naturally as if in a phone conversation — no bullet points or markdown."
+            "Respond naturally as if in a phone conversation - no bullet points or markdown."
         ),
         "first_message_enabled": True,
         "first_message": "Hello! I'm your meeting assistant. How can I help you schedule something today?",
@@ -41,7 +41,7 @@ _DEFAULT_AGENTS = [
             "Be empathetic, professional, and concise. "
             "For interview scheduling, collect: candidate name, contact details, role applied for, "
             "and preferred interview slot. Confirm everything before finalizing. "
-            "Respond naturally for a voice conversation — no bullet points or markdown."
+            "Respond naturally for a voice conversation - no bullet points or markdown."
         ),
         "first_message_enabled": True,
         "first_message": "Hi there! This is the HR support line. How can I assist you today?",

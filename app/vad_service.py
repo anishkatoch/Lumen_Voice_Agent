@@ -1,5 +1,5 @@
 """
-VAD service — uses Silero neural VAD model directly (no torchaudio needed).
+VAD service - uses Silero neural VAD model directly (no torchaudio needed).
 Silero distinguishes actual speech from background noise by phoneme patterns,
 not energy level, so it works correctly even on quiet microphones.
 """
@@ -15,7 +15,7 @@ _model = None
 def _load_model():
     global _model
     if _model is None:
-        # Load only the model — skip utils which import torchaudio
+        # Load only the model - skip utils which import torchaudio
         _model, _ = torch.hub.load(
             repo_or_dir="snakers4/silero-vad",
             model="silero_vad",
@@ -29,7 +29,7 @@ def _load_model():
 def _detect_speech_sync(audio_bytes: bytes, sensitivity: float = 0.5) -> bool:
     """
     Silero VAD on raw PCM bytes (int16, mono, 16kHz).
-    Calls the model directly — no torchaudio dependency.
+    Calls the model directly - no torchaudio dependency.
     sensitivity 0.0-1.0: higher = easier to trigger.
     Falls back to RMS if model call fails.
     """
@@ -51,8 +51,8 @@ def _detect_speech_sync(audio_bytes: bytes, sensitivity: float = 0.5) -> bool:
         silero_threshold = VAD_SILERO_MIN + (1.0 - sensitivity) * (VAD_SILERO_MAX - VAD_SILERO_MIN)
 
         # Silero requires exactly 512 samples per call at 16kHz (32ms windows).
-        # Twilio media events are only 20ms (320 samples after upsampling) —
-        # shorter than one window — so pad up to WINDOW instead of silently
+        # Twilio media events are only 20ms (320 samples after upsampling) -
+        # shorter than one window - so pad up to WINDOW instead of silently
         # skipping the model call (which would always yield prob=0.0).
         WINDOW = 512
         if len(audio_array) < WINDOW:
@@ -80,7 +80,7 @@ def _detect_speech_sync(audio_bytes: bytes, sensitivity: float = 0.5) -> bool:
 
 
 async def detect_speech(audio_bytes: bytes, sensitivity: float = 0.5) -> bool:
-    """Async wrapper — runs in threadpool so it never blocks the event loop."""
+    """Async wrapper - runs in threadpool so it never blocks the event loop."""
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(None, _detect_speech_sync, audio_bytes, sensitivity)
 

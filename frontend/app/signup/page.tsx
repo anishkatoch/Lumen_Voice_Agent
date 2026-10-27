@@ -5,6 +5,7 @@ import Link from "next/link";
 import { API } from "@/lib/api";
 import { setTokens, setUser } from "@/lib/auth";
 import { Mic, Eye, EyeOff, Loader2, CheckCircle, Lock, ShieldCheck, Zap, Brain, Sun, Moon } from "lucide-react";
+import SocialAuthButtons from "@/components/SocialAuthButtons";
 
 function getTheme(dark: boolean) {
   if (dark) return {
@@ -171,7 +172,7 @@ export default function SignUp() {
       } else if (data.access_token && data.refresh_token && data.user) {
         setTokens(data.access_token, data.refresh_token);
         setUser(data.user);
-        router.replace("/agent");
+        router.replace("/agents");
       }
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Sign up failed");
@@ -191,7 +192,7 @@ export default function SignUp() {
       setTokens(data.access_token, data.refresh_token);
       setUser(data.user);
       setStep("done");
-      setTimeout(() => router.replace("/agent"), 1500);
+      setTimeout(() => router.replace("/agents"), 1500);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Invalid OTP");
     } finally {
@@ -228,7 +229,7 @@ export default function SignUp() {
       const data = await API.guestLogin(guestName, guestEmail);
       setTokens(data.access_token, data.refresh_token);
       setUser(data.user);
-      router.replace("/agent");
+      router.replace("/agents");
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Guest login failed");
     } finally {
@@ -375,7 +376,7 @@ export default function SignUp() {
                 </div>
                 <div>
                   <span className="text-sm font-semibold" style={{ color: t.featureTitle }}>{title}</span>
-                  <span className="text-sm" style={{ color: t.featureDesc }}> — {desc}</span>
+                  <span className="text-sm" style={{ color: t.featureDesc }}> - {desc}</span>
                 </div>
               </div>
             ))}
@@ -416,6 +417,13 @@ export default function SignUp() {
 
           <h2 className="text-3xl font-bold mb-2" style={{ color: t.title }}>Create account</h2>
           <p className="mb-6 text-sm" style={{ color: t.subtitle }}>Get started with your voice AI agent</p>
+
+          <SocialAuthButtons
+            inputBg={t.inputBg}
+            inputBorder={t.inputBorder}
+            textColor={t.inputText}
+            mutedColor={t.subtitle}
+          />
 
           {/* Tabs */}
           <div className="flex rounded-xl p-1 mb-6" style={{ background: t.tabsBg }}>
@@ -559,7 +567,7 @@ export default function SignUp() {
             style={{ background: t.trustBg, border: `1px solid ${t.trustBorder}` }}>
             <Lock className="w-3.5 h-3.5 mt-0.5 shrink-0" style={{ color: t.trustIcon }} />
             <p className="text-xs leading-relaxed" style={{ color: t.trustText }}>
-              Your password is <strong style={{ color: t.trustStrong }}>encrypted by Supabase</strong> — we never see or store it in plain text.
+              Your password is <strong style={{ color: t.trustStrong }}>encrypted by Supabase</strong> - we never see or store it in plain text.
             </p>
           </div>
 

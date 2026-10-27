@@ -1,5 +1,5 @@
 """
-OpenAI TTS — drop-in for elevenlabs_service when tts_provider = "openai_tts".
+OpenAI TTS - drop-in for elevenlabs_service when tts_provider = "openai_tts".
 OpenAI TTS outputs PCM at 24 kHz; we resample to 16 kHz to match the frontend.
 """
 from typing import AsyncGenerator
@@ -37,7 +37,7 @@ async def text_to_speech_openai(
         for i in range(0, len(pcm_16k), CHUNK):
             yield pcm_16k[i:i + CHUNK]
             count += 1
-        print(f"[OpenAI TTS] Done — {count} chunks")
+        print(f"[OpenAI TTS] Done - {count} chunks")
     except Exception as e:
         import traceback
         print(f"[OpenAI TTS] Error: {type(e).__name__}: {e}")

@@ -9,10 +9,10 @@ RUN npm install --legacy-peer-deps || npm install
 COPY frontend/ .
 
 # Frontend and backend are served from the same origin in this container,
-# so the API base must be relative — NOT localhost (that resolves to the
+# so the API base must be relative - NOT localhost (that resolves to the
 # visitor's own machine, not this server).
 # NEXT_PUBLIC_* values are baked into the static bundle at build time (they're
-# not secrets — Supabase anon key/URL are public, protected by RLS, not by hiding them).
+# not secrets - Supabase anon key/URL are public, protected by RLS, not by hiding them).
 ARG NEXT_PUBLIC_API_URL=""
 ARG NEXT_PUBLIC_SUPABASE_URL="https://uqrojyxahyytvjrbyska.supabase.co"
 ARG NEXT_PUBLIC_SUPABASE_ANON_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVxcm9qeXhhaHl5dHZqcmJ5c2thIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY0OTQwNTEsImV4cCI6MjA5MjA3MDA1MX0.1c8ufc0YH63XM94F8bvXghr5-B0hUD06y3d3np3AEj0"

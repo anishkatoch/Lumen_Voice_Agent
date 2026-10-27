@@ -1,5 +1,5 @@
 """
-Auth route tests — Supabase HTTP calls are mocked at the module level.
+Auth route tests - Supabase HTTP calls are mocked at the module level.
 """
 import pytest
 import httpx

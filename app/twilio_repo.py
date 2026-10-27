@@ -111,3 +111,33 @@ def delete_phone_number(number_id: str, user_id: str) -> None:
     db.table("twilio_phone_numbers").delete().eq("id", number_id).eq(
         "user_id", user_id
     ).execute()
+
+
+def get_from_number(user_id: str, agent_id: str) -> str | None:
+    """
+    Pick a 'from' number for an outbound call: the agent's own attached
+    number, falling back to any other active number for the user. New,
+    additive helper for the campaign dialer (app/hr_campaign_service.py) -
+    mirrors the inline lookup in app/hr_scheduler.py's _initiate_outbound_call
+    without modifying that existing, working function.
+    """
+    db = get_supabase()
+    result = (
+        db.table("twilio_phone_numbers")
+        .select("phone_number")
+        .eq("user_id", user_id)
+        .eq("agent_id", agent_id)
+        .eq("is_active", True)
+        .limit(1)
+        .execute()
+    )
+    if not result.data:
+        result = (
+            db.table("twilio_phone_numbers")
+            .select("phone_number")
+            .eq("user_id", user_id)
+            .eq("is_active", True)
+            .limit(1)
+            .execute()
+        )
+    return result.data[0]["phone_number"] if result.data else None

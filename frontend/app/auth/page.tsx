@@ -7,7 +7,7 @@ import { setTokens, setUser } from "@/lib/auth";
 
 export default function AuthCallback() {
   const router = useRouter();
-  const [mode, setMode] = useState<"loading" | "reset" | "confirm" | "error">("loading");
+  const [mode, setMode] = useState<"loading" | "reset" | "confirm" | "oauth" | "error">("loading");
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [showPwd, setShowPwd] = useState(false);
@@ -18,10 +18,18 @@ export default function AuthCallback() {
 
   useEffect(() => {
     // Supabase puts tokens in the URL hash: #access_token=...&type=recovery
+    // OAuth sign-ins (Google/Microsoft/GitHub) land here too, with no "type" param.
     const hash = window.location.hash.substring(1);
     const params = new URLSearchParams(hash);
     const token = params.get("access_token");
     const type = params.get("type");
+    const oauthError = params.get("error_description") || params.get("error");
+
+    if (oauthError) {
+      setMode("error");
+      setError(oauthError.replace(/\+/g, " "));
+      return;
+    }
 
     if (!token) {
       setMode("error");
@@ -32,8 +40,8 @@ export default function AuthCallback() {
     if (type === "recovery") {
       setAccessToken(token);
       setMode("reset");
-    } else if (type === "signup") {
-      // Email confirmation — sign them in with the token
+    } else if (type === "signup" || !type) {
+      // Email confirmation (type=signup), or OAuth sign-in (no type) - sign them in with the token
       const refreshToken = params.get("refresh_token");
       if (!refreshToken) {
         setMode("error");
@@ -43,11 +51,11 @@ export default function AuthCallback() {
       setTokens(token, refreshToken);
       API.me().then(user => {
         setUser(user);
-        setMode("confirm");
-        setTimeout(() => router.replace("/agent"), 2000);
+        setMode(type === "signup" ? "confirm" : "oauth");
+        setTimeout(() => router.replace("/agents"), type === "signup" ? 2000 : 1000);
       }).catch(() => {
         setMode("error");
-        setError("Confirmation failed. Please try signing in.");
+        setError(type === "signup" ? "Confirmation failed. Please try signing in." : "Sign-in failed. Please try again.");
       });
     } else {
       setMode("error");
@@ -101,6 +109,19 @@ export default function AuthCallback() {
         <div className="text-center animate-fade-in">
           <CheckCircle className="w-16 h-16 mx-auto mb-4" style={{ color: "#22c55e" }} />
           <h2 className="text-2xl font-bold mb-2" style={{ color: "var(--text)" }}>Email confirmed!</h2>
+          <p style={{ color: "var(--muted)" }}>Taking you to the app…</p>
+        </div>
+      </div>
+    );
+  }
+
+  // ── OAuth sign-in complete ───────────────────────────────────────────
+  if (mode === "oauth") {
+    return (
+      <div className="min-h-screen flex items-center justify-center p-8" style={{ background: "var(--bg)" }}>
+        <div className="text-center animate-fade-in">
+          <CheckCircle className="w-16 h-16 mx-auto mb-4" style={{ color: "#22c55e" }} />
+          <h2 className="text-2xl font-bold mb-2" style={{ color: "var(--text)" }}>Signed in!</h2>
           <p style={{ color: "var(--muted)" }}>Taking you to the app…</p>
         </div>
       </div>

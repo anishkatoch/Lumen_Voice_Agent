@@ -2,16 +2,71 @@ from datetime import datetime, timedelta, timezone
 from app.database import get_supabase
 
 
-def create_conversation(user_id: str, title: str = "Voice session") -> dict:
+def create_conversation(user_id: str, title: str = "Voice session",
+                         agent_id: str | None = None, call_sid: str | None = None,
+                         call_status: str = "in_progress", failure_reason: str | None = None) -> dict:
     db = get_supabase()
-    result = (
-        db.table("conversations")
-        .insert({"user_id": user_id, "title": title})
-        .execute()
-    )
+    row: dict = {"user_id": user_id, "title": title, "call_status": call_status}
+    if agent_id:
+        row["agent_id"] = agent_id
+    if call_sid:
+        row["call_sid"] = call_sid
+    if failure_reason:
+        row["failure_reason"] = failure_reason
+    try:
+        result = db.table("conversations").insert(row).execute()
+    except Exception as e:
+        # The call_status/failure_reason/call_sid columns (migration 0017) may
+        # not exist yet on this database - conversation creation is on the hot
+        # path for every live call (browser + Twilio), so that must never be
+        # allowed to break just because Call Analytics hasn't been migrated in
+        # yet. Retry with only the pre-Call-Analytics columns.
+        print(f"[Call Analytics] create_conversation with analytics columns failed, retrying without them "
+              f"(did you run `alembic upgrade head`?): {e}")
+        legacy_row: dict = {"user_id": user_id, "title": title}
+        if agent_id:
+            legacy_row["agent_id"] = agent_id
+        result = db.table("conversations").insert(legacy_row).execute()
     if not result.data:
         raise RuntimeError("Failed to create conversation")
     return result.data[0]
+
+
+def record_failed_call(user_id: str, title: str, agent_id: str | None, reason: str) -> None:
+    """Best-effort: creates a Call Analytics row for a call that never even
+    connected (e.g. dial failed before Twilio ever answered). Never raises."""
+    try:
+        create_conversation(user_id, title, agent_id=agent_id, call_status="failed", failure_reason=reason)
+    except Exception as e:
+        print(f"[Call Analytics] Failed to record failed call for user {user_id}: {e}")
+
+
+def set_call_status(conversation_id: str, status: str, failure_reason: str | None = None) -> None:
+    """Best-effort: records the final outcome of a call/session for Call Analytics.
+    Never raises — a DB hiccup here must never be allowed to surface as a call failure."""
+    try:
+        db = get_supabase()
+        db.table("conversations").update({
+            "call_status": status,
+            "failure_reason": failure_reason,
+        }).eq("id", conversation_id).execute()
+    except Exception as e:
+        print(f"[Call Analytics] Failed to record call status for {conversation_id}: {e}")
+
+
+def set_call_status_by_sid_if_unconnected(call_sid: str, status: str, failure_reason: str | None = None) -> None:
+    """Conditionally updates a Call Analytics row by call_sid - only if it's
+    still 'ringing' (never connected to our media stream), so this never
+    clobbers a more specific outcome the live pipeline already recorded.
+    Best-effort: never raises."""
+    try:
+        db = get_supabase()
+        db.table("conversations").update({
+            "call_status": status,
+            "failure_reason": failure_reason,
+        }).eq("call_sid", call_sid).eq("call_status", "ringing").execute()
+    except Exception as e:
+        print(f"[Call Analytics] Failed to record call outcome for call_sid {call_sid}: {e}")
 
 
 def get_conversation_by_id(conversation_id: str) -> dict | None:
@@ -106,7 +161,7 @@ def cleanup_expired_sessions(user_id: str, expiry_days: int = 5) -> int:
         cid = c["id"]
         last_activity = last_msg_at.get(cid)
         if last_activity is None:
-            # No messages — use session created_at
+            # No messages - use session created_at
             ca = c["created_at"]
             if isinstance(ca, str):
                 ca = datetime.fromisoformat(ca.replace("Z", "+00:00"))

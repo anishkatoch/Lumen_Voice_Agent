@@ -51,12 +51,32 @@ async def _prewarm():
         except Exception as e:
             print(f"[Prewarm] ElevenLabs failed: {e}")
 
+    async def _warm_deepgram():
+        # Without this, the FIRST live StreamingTranscriber connection in a fresh
+        # process silently loses the caller's audio (WS/TLS handshake to Deepgram
+        # isn't fully ready when .send() starts firing) - confirmed by testing:
+        # first call on a cold process returns no transcript, second call succeeds.
+        try:
+            from app.deepgram_service import StreamingTranscriber
+            st = StreamingTranscriber()
+            await st.start()
+            await st.send(b"\x00\x00" * 320)  # one silent 20ms frame
+            await st.finish()
+            print("[Prewarm] Deepgram ✓")
+        except Exception as e:
+            print(f"[Prewarm] Deepgram failed: {e}")
+
     asyncio.create_task(_warm_openai())
     asyncio.create_task(_warm_elevenlabs())
+    asyncio.create_task(_warm_deepgram())
 
-    # HR outbound call scheduler — checks every 60s for due interviews
+    # HR outbound call scheduler - checks every 60s for due interviews
     from app.hr_scheduler import run_scheduler
     asyncio.create_task(run_scheduler())
+
+    # HR call campaigns - separate sequential dial queue, checks every 30s
+    from app.hr_campaign_service import run_campaign_dialer
+    asyncio.create_task(run_campaign_dialer())
 
 app.add_middleware(
     CORSMiddleware,
@@ -152,7 +172,7 @@ async def sign_up(body: SignUpRequest):
         raise HTTPException(status_code=400, detail=msg)
     # Supabase returns 200 with no access_token for duplicate emails (user enumeration protection)
     if "access_token" not in data:
-        # Check if user already exists by attempting sign-in — if it succeeds, email is taken
+        # Check if user already exists by attempting sign-in - if it succeeds, email is taken
         async with httpx.AsyncClient() as client:
             check = await client.post(
                 f"{SUPABASE_URL}/auth/v1/token?grant_type=password",
@@ -182,7 +202,7 @@ async def guest_login(body: GuestRequest):
     import secrets
     from app.config import SUPABASE_SERVICE_ROLE_KEY
 
-    # Generate a random password — guest never needs to know it
+    # Generate a random password - guest never needs to know it
     random_password = secrets.token_urlsafe(24)
 
     # Use admin API to create user with email auto-confirmed (no OTP needed)
@@ -220,7 +240,7 @@ async def guest_login(body: GuestRequest):
 
     signin_data = signin.json()
     if signin.status_code != 200 or not signin_data.get("access_token"):
-        # Email exists with a different password — account already registered
+        # Email exists with a different password - account already registered
         raise HTTPException(status_code=400, detail="This email is already registered. Please sign in instead.")
 
     return AuthResponse(
@@ -248,7 +268,7 @@ class VerifySignupOtpRequest(BaseModel):
 
 @app.post("/auth/verify-signup-otp", response_model=AuthResponse)
 async def verify_signup_otp(body: VerifySignupOtpRequest):
-    """Verify OTP for new account signup — no password update, just return tokens."""
+    """Verify OTP for new account signup - no password update, just return tokens."""
     async with httpx.AsyncClient() as client:
         resp = await client.post(
             f"{SUPABASE_URL}/auth/v1/verify",
@@ -362,10 +382,15 @@ async def sign_out(current_user: dict = Depends(get_current_user)):
 
 @app.get("/api/me")
 async def get_me(current_user: dict = Depends(get_current_user)):
+    metadata = current_user.get("user_metadata", {})
+    # OAuth providers (Google/Microsoft/GitHub) don't always set "full_name" -
+    # fall back to the provider-supplied "name" or GitHub's "user_name".
+    full_name = metadata.get("full_name") or metadata.get("name") or metadata.get("user_name")
     return {
         "id": current_user.get("sub"),
         "email": current_user.get("email"),
-        "full_name": current_user.get("user_metadata", {}).get("full_name"),
+        "full_name": full_name,
+        "avatar_url": metadata.get("avatar_url") or metadata.get("picture"),
         "role": current_user.get("role", "authenticated"),
     }
 
@@ -489,6 +514,29 @@ class InterviewUpdate(BaseModel):
     specific_questions: Optional[str] = None
     agent_id: Optional[str] = None
     status: Optional[str] = None
+
+class CampaignQuestion(BaseModel):
+    id: str
+    text: str
+
+class CampaignCreate(BaseModel):
+    agent_id: str
+    name: str
+    questions: List[CampaignQuestion] = []
+    max_retry_attempts: int = 2
+    retry_delay_minutes: int = 10
+    call_gap_minutes: int = 4
+
+class CampaignUpdate(BaseModel):
+    name: Optional[str] = None
+    questions: Optional[List[CampaignQuestion]] = None
+    status: Optional[str] = None
+    max_retry_attempts: Optional[int] = None
+    retry_delay_minutes: Optional[int] = None
+    call_gap_minutes: Optional[int] = None
+
+class CampaignCandidatesAdd(BaseModel):
+    candidate_ids: List[str]
 
 
 # ─── Agent Routes ─────────────────────────────────────────────────────
@@ -787,7 +835,7 @@ async def delete_phone_number_route(
 async def get_twilio_settings_route(current_user: dict = Depends(get_current_user)):
     from app.user_twilio_settings_repo import get_twilio_settings
     settings = await asyncio.to_thread(get_twilio_settings, current_user["sub"])
-    # Never return raw auth token — mask it
+    # Never return raw auth token - mask it
     masked = {**settings}
     if masked.get("auth_token"):
         masked["auth_token"] = "•" * 8
@@ -934,6 +982,86 @@ async def delete_interview_route(interview_id: str, current_user: dict = Depends
     await asyncio.to_thread(delete_interview, interview_id, current_user["sub"])
 
 
+# ─── HR Call Campaigns ─────────────────────────────────────────────────
+# New, additive feature - sequential outbound call queue with retry, distinct
+# from the single-scheduled-time hr_interviews flow above. Does not modify
+# any hr_interviews/hr_scheduler.py code or behavior.
+
+@app.get("/api/hr/campaigns")
+async def list_campaigns_route(current_user: dict = Depends(get_current_user)):
+    from app.hr_campaign_repo import list_campaigns
+    return await asyncio.to_thread(list_campaigns, current_user["sub"])
+
+
+@app.post("/api/hr/campaigns", status_code=201)
+async def create_campaign_route(body: CampaignCreate, current_user: dict = Depends(get_current_user)):
+    from app.hr_campaign_repo import create_campaign
+    return await asyncio.to_thread(
+        create_campaign, current_user["sub"], body.agent_id, body.name,
+        [q.model_dump() for q in body.questions],
+        body.max_retry_attempts, body.retry_delay_minutes, body.call_gap_minutes,
+    )
+
+
+@app.put("/api/hr/campaigns/{campaign_id}")
+async def update_campaign_route(
+    campaign_id: str, body: CampaignUpdate, current_user: dict = Depends(get_current_user)
+):
+    from app.hr_campaign_repo import update_campaign
+    fields = body.model_dump(exclude_none=True)
+    if "questions" in fields:
+        fields["questions"] = [q if isinstance(q, dict) else q.model_dump() for q in fields["questions"]]
+    try:
+        return await asyncio.to_thread(update_campaign, campaign_id, current_user["sub"], **fields)
+    except RuntimeError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.delete("/api/hr/campaigns/{campaign_id}", status_code=204)
+async def delete_campaign_route(campaign_id: str, current_user: dict = Depends(get_current_user)):
+    from app.hr_campaign_repo import delete_campaign
+    await asyncio.to_thread(delete_campaign, campaign_id, current_user["sub"])
+
+
+@app.get("/api/hr/campaigns/{campaign_id}/candidates")
+async def list_campaign_candidates_route(campaign_id: str, current_user: dict = Depends(get_current_user)):
+    from app.hr_campaign_repo import get_campaign, list_campaign_candidates
+    if not await asyncio.to_thread(get_campaign, campaign_id, current_user["sub"]):
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    return await asyncio.to_thread(list_campaign_candidates, campaign_id)
+
+
+@app.post("/api/hr/campaigns/{campaign_id}/candidates", status_code=201)
+async def add_campaign_candidates_route(
+    campaign_id: str, body: CampaignCandidatesAdd, current_user: dict = Depends(get_current_user)
+):
+    from app.hr_campaign_repo import get_campaign, add_candidates_to_campaign
+    if not await asyncio.to_thread(get_campaign, campaign_id, current_user["sub"]):
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    return await asyncio.to_thread(add_candidates_to_campaign, campaign_id, body.candidate_ids)
+
+
+@app.delete("/api/hr/campaigns/{campaign_id}/candidates/{campaign_candidate_id}", status_code=204)
+async def remove_campaign_candidate_route(
+    campaign_id: str, campaign_candidate_id: str, current_user: dict = Depends(get_current_user)
+):
+    from app.hr_campaign_repo import get_campaign, remove_campaign_candidate
+    if not await asyncio.to_thread(get_campaign, campaign_id, current_user["sub"]):
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    await asyncio.to_thread(remove_campaign_candidate, campaign_candidate_id, campaign_id)
+
+
+@app.get("/api/hr/campaigns/candidates/{campaign_candidate_id}/answers")
+async def list_campaign_answers_route(
+    campaign_candidate_id: str, current_user: dict = Depends(get_current_user)
+):
+    # Ownership check via the parent campaign is intentionally skipped here for v1 -
+    # campaign_candidate_id is an unguessable UUID, matching the existing
+    # get_interview() convention (app/hr_repo.py) which is also not user-scoped.
+    from app.hr_campaign_repo import list_campaign_answers
+    return await asyncio.to_thread(list_campaign_answers, campaign_candidate_id)
+
+
 # ─── Twilio Outbound (HR Interviews) ──────────────────────────────────
 
 @app.get("/twilio/outbound/voice")
@@ -956,12 +1084,122 @@ async def twilio_outbound_twiml(interview_id: str = "", request: Request = None)
     host = base_url.replace("https://", "").replace("http://", "")
     ws_url = f"wss://{host}/twilio/stream"
     # Custom data must travel via <Parameter>, not a query string on the Stream
-    # url — Twilio does not reliably forward URL query params to the WebSocket.
+    # url - Twilio does not reliably forward URL query params to the WebSocket.
     twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Connect>
     <Stream url="{ws_url}">
       <Parameter name="interview_id" value="{interview_id}" />
+    </Stream>
+  </Connect>
+</Response>"""
+    return Response(content=twiml, media_type="application/xml")
+
+
+# ─── Twilio Campaign Status Callback ───────────────────────────────────
+# Handles the outcomes Twilio never fetches a TwiML URL for at all - busy,
+# no-answer, failed, canceled - none of which the twilio_stream_endpoint
+# WebSocket handler ever sees, since the stream never connects for those.
+
+_TWILIO_CALL_STATUS_MAP = {
+    "busy": "busy",
+    "no-answer": "no_answer",
+    "failed": "failed",
+    "canceled": "failed",
+    "completed": "completed",  # safety net if the WS "stop" event never fired
+}
+
+# Short, human-readable reasons for Call Analytics - never show Twilio's raw
+# status strings or error payloads to the user.
+_CALL_STATUS_REASONS = {
+    "busy": "The line was busy.",
+    "no-answer": "The call was not answered.",
+    "failed": "The call could not be connected.",
+    "canceled": "The call was canceled before it connected.",
+}
+
+@app.post("/twilio/campaign/status-callback")
+async def twilio_campaign_status_callback(request: Request):
+    form = await request.form()
+    call_sid = str(form.get("CallSid", ""))
+    call_status = str(form.get("CallStatus", ""))
+    new_status = _TWILIO_CALL_STATUS_MAP.get(call_status)
+
+    if call_sid and new_status:
+        from app.hr_campaign_repo import mark_candidate_status_from_call_sid
+        await asyncio.to_thread(mark_candidate_status_from_call_sid, call_sid, new_status)
+
+        from app.conversation_repo import set_call_status_by_sid_if_unconnected
+        await asyncio.to_thread(
+            set_call_status_by_sid_if_unconnected, call_sid, new_status,
+            _CALL_STATUS_REASONS.get(call_status),
+        )
+
+    return Response(status_code=204)
+
+
+@app.post("/twilio/interview/status-callback")
+async def twilio_interview_status_callback(request: Request):
+    """Mirrors twilio_campaign_status_callback, for single-scheduled HR
+    interview calls (app/hr_scheduler.py) - same reasoning, same map."""
+    form = await request.form()
+    call_sid = str(form.get("CallSid", ""))
+    call_status = str(form.get("CallStatus", ""))
+    new_status = _TWILIO_CALL_STATUS_MAP.get(call_status)
+
+    if call_sid and new_status:
+        from app.hr_repo import mark_interview_status_by_call_sid
+        hr_status = "completed" if new_status == "completed" else "failed"
+        await asyncio.to_thread(mark_interview_status_by_call_sid, call_sid, hr_status)
+
+        from app.conversation_repo import set_call_status_by_sid_if_unconnected
+        await asyncio.to_thread(
+            set_call_status_by_sid_if_unconnected, call_sid, new_status,
+            _CALL_STATUS_REASONS.get(call_status),
+        )
+
+    return Response(status_code=204)
+
+
+@app.get("/twilio/campaign/outbound/voice")
+async def twilio_campaign_outbound_twiml(campaign_candidate_id: str = "", AnsweredBy: str = "", request: Request = None):
+    """
+    Twilio fetches this TwiML when an outbound campaign call connects. Uses
+    SYNCHRONOUS answering-machine detection (Twilio's default - no AsyncAmd):
+    Twilio decides human vs machine before ever fetching this URL, and
+    delivers the verdict as the AnsweredBy query param on this same GET
+    request (the dialer places calls with Method="GET", same convention as
+    the existing hr_interviews outbound flow). This means there is no race
+    between AMD and <Connect><Stream> - for a machine, we hang up immediately
+    and never open the stream at all.
+    """
+    from app.hr_campaign_repo import get_campaign_candidate, mark_candidate_machine_detected
+
+    row = await asyncio.to_thread(get_campaign_candidate, campaign_candidate_id) if campaign_candidate_id else None
+    campaign = row.get("hr_campaigns") if row else None
+    if not row or not campaign:
+        xml = '<?xml version="1.0"?><Response><Say>Campaign call not found.</Say></Response>'
+        return Response(content=xml, media_type="application/xml")
+
+    if AnsweredBy.startswith("machine") or AnsweredBy == "fax":
+        await asyncio.to_thread(mark_candidate_machine_detected, campaign_candidate_id)
+        xml = '<?xml version="1.0"?><Response><Hangup/></Response>'
+        return Response(content=xml, media_type="application/xml")
+
+    from app.user_twilio_settings_repo import get_twilio_settings
+    settings = await asyncio.to_thread(get_twilio_settings, campaign["user_id"])
+    base_url = (settings.get("webhook_base_url") or "").strip().rstrip("/")
+    if not base_url:
+        xml = '<?xml version="1.0"?><Response><Say>Server not configured.</Say></Response>'
+        return Response(content=xml, media_type="application/xml")
+
+    host = base_url.replace("https://", "").replace("http://", "")
+    ws_url = f"wss://{host}/twilio/stream"
+    twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Connect>
+    <Stream url="{ws_url}">
+      <Parameter name="campaign_candidate_id" value="{campaign_candidate_id}" />
     </Stream>
   </Connect>
 </Response>"""
@@ -1162,12 +1400,12 @@ async def twilio_voice_webhook(request: Request):
         xml = '<?xml version="1.0"?><Response><Say>This number is not configured yet.</Say></Response>'
         return Response(content=xml, media_type="application/xml")
 
-    # Strip protocol — WebSocket URL needs just host+path
+    # Strip protocol - WebSocket URL needs just host+path
     host = base_url.replace("https://", "").replace("http://", "")
     ws_url = f"wss://{host}/twilio/stream"
 
     # Custom data must travel via <Parameter>, not a query string on the Stream
-    # url — Twilio does not reliably forward URL query params to the WebSocket.
+    # url - Twilio does not reliably forward URL query params to the WebSocket.
     twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Connect>
@@ -1181,7 +1419,7 @@ async def twilio_voice_webhook(request: Request):
 
 @app.websocket("/twilio/stream")
 async def twilio_stream_endpoint(websocket: WebSocket):
-    """Handles Twilio Media Streams — bidirectional audio for inbound and outbound phone calls."""
+    """Handles Twilio Media Streams - bidirectional audio for inbound and outbound phone calls."""
     from app.twilio_call_service import twilio_payload_to_pcm16k, text_to_speech_twilio
     from app.vad_service import detect_speech
     from app.deepgram_service import get_streaming_transcriber
@@ -1194,8 +1432,11 @@ async def twilio_stream_endpoint(websocket: WebSocket):
     from app.message_repo import save_message, get_session_messages
     from app.agent_repo import get_agent, get_agent_functions
     from app.memory_repo import get_user_memory
+    from app.conversation_repo import set_call_status
     from app.agent_rag_service import retrieve_agent_context, format_agent_context
     from app.user_kb_rag import retrieve_user_kb_context, format_user_kb_context
+    from app.deepgram_service import transcribe_audio_smart
+    from app.vad_service import build_wav_bytes
     import json, random, base64
 
     await websocket.accept()
@@ -1203,6 +1444,9 @@ async def twilio_stream_endpoint(websocket: WebSocket):
     agent_id: str = ""
     user_id: str = ""
     interview_id: str = ""
+    campaign_candidate_id: str = ""  # set only for HR call-campaign calls (Stage 6)
+    campaign_id: str = ""            # parent campaign, needed to release the dialer's claim
+    campaign_data: dict | None = None  # holds questions, for context + record_answer validation
     extra_system_context: str = ""  # injected for outbound HR calls
     greeting_override: str | None = None
     agent: dict | None = None
@@ -1214,26 +1458,33 @@ async def twilio_stream_endpoint(websocket: WebSocket):
     is_speaking = False     # True while TTS audio is being sent to Twilio
     is_processing = False   # True while LLM pipeline is running
     _call_ended = False     # tracks whether we've already marked the interview done
+    _call_failure_reason: str | None = None  # set on genuine errors, surfaced in Call Analytics
     _dg_stream = None       # active StreamingTranscriber (opened on first speech chunk)
     _active_task: asyncio.Task | None = None  # current greeting/run_pipeline task, cancellable on barge-in
+    _barge_in_streak = 0    # consecutive chunks over threshold while agent is speaking/processing
+    _prev_pcm16k = b""      # previous chunk, borrowed to give VAD a real (non-padded) window
+    _utterance_buffer = bytearray()  # mirrors what's sent to Deepgram, for prerecorded fallback
     speech_chunks = 0
     silence_chunks = 0
     SPEECH_THRESHOLD = 3    # chunks needed to confirm speech started
     SILENCE_THRESHOLD = 25  # ~1.5 s at 8 kHz / 20 ms chunks
+    BARGE_IN_STREAK_NEEDED = 4  # ~80ms of sustained signal required before cancelling the agent
 
-    async def _setup_call(custom_params: dict) -> bool:
+    async def _setup_call(custom_params: dict, twilio_call_sid: str | None) -> bool:
         """Resolve agent/user/conversation from the Twilio 'start' event's
         customParameters. Twilio does not reliably forward query strings on the
         <Stream> url, so call context (to / interview_id) travels via <Parameter>
         tags instead, which arrive here once the stream actually starts."""
         nonlocal agent_id, user_id, interview_id, extra_system_context, greeting_override
         nonlocal agent, conversation_id, _tool_functions, initial_memory
+        nonlocal campaign_candidate_id, campaign_id, campaign_data
 
         interview_id = custom_params.get("interview_id", "")
+        campaign_candidate_id = custom_params.get("campaign_candidate_id", "")
         to = custom_params.get("to", "")
 
         if interview_id:
-            # Outbound HR call — load candidate + interview context
+            # Outbound HR call - load candidate + interview context
             from app.hr_repo import get_interview
             interview = await asyncio.to_thread(get_interview, interview_id)
             if not interview:
@@ -1269,8 +1520,52 @@ async def twilio_stream_endpoint(websocket: WebSocket):
                 + "\nMention the interview time when greeting them. Ask the specific questions listed. Be professional and friendly."
             )
             greeting_override = f"Hello, may I speak with {c_name}? This is an automated call from HR regarding your upcoming interview."
+        elif campaign_candidate_id:
+            # Outbound HR call-campaign call - load candidate + campaign + questions.
+            # New, additive branch (Stage 6) - does not alter the interview_id or
+            # inbound branches above/below at all.
+            from app.hr_campaign_repo import get_campaign_candidate
+            row = await asyncio.to_thread(get_campaign_candidate, campaign_candidate_id)
+            campaign_data = row.get("hr_campaigns") if row else None
+            if not row or not campaign_data:
+                print(f"[Twilio Stream] Closing: no campaign_candidate found for campaign_candidate_id={campaign_candidate_id!r}")
+                return False
+            campaign_id = campaign_data["id"]
+            agent_id = campaign_data["agent_id"]
+            user_id = campaign_data["user_id"]
+            candidate = row.get("hr_candidates") or {}
+            c_name = candidate.get("name", "the candidate")
+            questions_list = campaign_data.get("questions") or []
+            # Spoken text and internal ids are kept in separate lists - a combined
+            # "1. [id=q1] question text" format got read aloud verbatim by the LLM
+            # in live testing ("bracket id q2 close bracket..."), and the model
+            # also invented an extra question beyond the configured list.
+            questions_to_ask = "\n".join(
+                f"- {q.get('text', '')}" for q in questions_list if q.get("text")
+            )
+            id_mapping = "\n".join(
+                f'  "{q.get("text", "")}" -> question_id="{q.get("id")}"'
+                for q in questions_list if q.get("text")
+            )
+            extra_system_context = (
+                f"\n\n--- CURRENT CALL CONTEXT ---"
+                f"\nYou are calling {c_name} for a brief screening call."
+                + (
+                    f"\n\nThese are the ONLY questions to ask, in this exact order. Do not ask "
+                    f"any other questions and do not invent additional ones:\n{questions_to_ask}"
+                    f"\n\nAfter the candidate answers a question, call the record_answer tool. "
+                    f"Use this mapping to choose the correct question_id argument - this mapping "
+                    f"is for your internal use only, never say a question_id or the word "
+                    f"'mapping' out loud to the caller:\n{id_mapping}"
+                    if questions_to_ask else ""
+                )
+                + "\n\nStart by greeting them by name and confirming you're calling regarding their application."
+                + "\nBe professional and friendly. Ask one question at a time and wait for their answer."
+                + "\nOnce every question above has been asked and answered, thank them and end the call politely."
+            )
+            greeting_override = f"Hello, may I speak with {c_name}? This is a quick screening call regarding your application."
         else:
-            # Inbound call — resolve via phone number
+            # Inbound call - resolve via phone number
             from app.twilio_repo import get_number_by_phone
             print(f"[Twilio Stream] Inbound call, to={to!r}")
             number_record = await asyncio.to_thread(get_number_by_phone, to) if to else None
@@ -1287,22 +1582,80 @@ async def twilio_stream_endpoint(websocket: WebSocket):
             return False
         print(f"[Twilio Stream] Agent loaded: {agent.get('name')}")
 
-        # Create conversation record
+        # Create conversation record - or reuse one already created at dial-time
+        # (HR interview/campaign calls eagerly record a "ringing" row before
+        # Twilio ever answers, so busy/no-answer calls - which never reach this
+        # point at all - still show up in Call Analytics; see hr_scheduler.py /
+        # hr_campaign_service.py). Falling through to a fresh insert keeps
+        # inbound calls, which have no such row, working exactly as before.
         from app.database import get_supabase
         _db = get_supabase()
         def _create_conv():
-            res = _db.table("conversations").insert({
-                "user_id": user_id,
-                "title": f"Phone call — {agent['name']}",
-                "agent_id": agent_id,
-            }).execute()
-            return res.data[0]
+            if twilio_call_sid:
+                try:
+                    existing = (
+                        _db.table("conversations").select("*")
+                        .eq("call_sid", twilio_call_sid).eq("call_status", "ringing")
+                        .limit(1).execute()
+                    )
+                    if existing.data:
+                        res = _db.table("conversations").update({"call_status": "in_progress"}) \
+                            .eq("id", existing.data[0]["id"]).execute()
+                        return res.data[0] if res.data else existing.data[0]
+                except Exception as e:
+                    # Non-fatal - at worst this creates a second row instead of
+                    # reusing the eagerly-created one; see the except below for
+                    # the case where Call Analytics columns don't exist at all.
+                    print(f"[Twilio Stream] Call Analytics reuse lookup failed (non-fatal): {e}")
+            try:
+                res = _db.table("conversations").insert({
+                    "user_id": user_id,
+                    "title": f"Phone call - {agent['name']}",
+                    "agent_id": agent_id,
+                    "call_status": "in_progress",
+                    "call_sid": twilio_call_sid,
+                }).execute()
+                return res.data[0]
+            except Exception as e:
+                # call_status/call_sid (migration 0017) may not exist yet on this
+                # database - a live phone call must never fail to connect just
+                # because Call Analytics hasn't been migrated in. Retry with only
+                # the pre-Call-Analytics columns.
+                print(f"[Twilio Stream] Insert with Call Analytics columns failed, retrying without them "
+                      f"(did you run `alembic upgrade head`?): {e}")
+                res = _db.table("conversations").insert({
+                    "user_id": user_id,
+                    "title": f"Phone call - {agent['name']}",
+                    "agent_id": agent_id,
+                }).execute()
+                return res.data[0]
         conversation = await asyncio.to_thread(_create_conv)
         conversation_id = conversation["id"]
 
         # Load tool functions and memory
         _all_fns = await asyncio.to_thread(get_agent_functions, agent_id)
         _tool_functions = [f for f in _all_fns if f.get("url") and f.get("trigger_type") == "llm_tool_call"]
+
+        if campaign_candidate_id and campaign_data:
+            # Synthesized in-memory tool, not stored in agent_functions - only
+            # ever present for campaign calls. Dispatched by a "kind" marker
+            # (checked at the call site below), not by name, since a real
+            # webhook-backed agent_functions row could theoretically share the
+            # name "record_answer" and _execute_webhook_twilio indexes fn["url"]
+            # without .get(), which would KeyError/500 mid-call on a collision.
+            question_ids = ", ".join(q.get("id", "") for q in (campaign_data.get("questions") or []) if q.get("id"))
+            _tool_functions = _tool_functions + [{
+                "name": "record_answer",
+                "kind": "internal_record_answer",
+                "description": "Record the candidate's answer to one of the screening questions.",
+                "parameters": [
+                    {"name": "question_id", "type": "string",
+                     "description": f"The question ID being answered. Must be exactly one of: {question_ids}"},
+                    {"name": "answer", "type": "string",
+                     "description": "The candidate's answer, summarized concisely."},
+                ],
+            }]
+
         try:
             initial_memory = await asyncio.to_thread(get_user_memory, user_id)
         except Exception:
@@ -1339,6 +1692,29 @@ async def twilio_stream_endpoint(websocket: WebSocket):
                 return json.dumps(resp.json())
             except Exception:
                 return json.dumps({"response": resp.text, "status": resp.status_code})
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
+    async def _record_answer_tool(args: dict) -> str:
+        """Handler for the synthesized "internal_record_answer" tool (campaign
+        calls only). question_id is validated against the campaign's own
+        configured question list before insert - the LLM has no enum
+        constraint available (build_openai_tool doesn't support one), so a
+        hallucinated/paraphrased id must not silently corrupt hr_campaign_answers."""
+        from app.hr_campaign_repo import record_answer as _record_answer
+        question_id = args.get("question_id", "")
+        answer_text = args.get("answer", "")
+        question_map = {
+            q.get("id"): q.get("text", "")
+            for q in (campaign_data.get("questions") or [])
+        } if campaign_data else {}
+        if question_id not in question_map:
+            return json.dumps({"error": f"Unknown question_id {question_id!r}"})
+        try:
+            await asyncio.to_thread(
+                _record_answer, campaign_candidate_id, question_id, question_map[question_id], answer_text
+            )
+            return json.dumps({"recorded": True})
         except Exception as e:
             return json.dumps({"error": str(e)})
 
@@ -1394,7 +1770,12 @@ async def twilio_stream_endpoint(websocket: WebSocket):
                     await _speak(filler)
                     full_reply_parts.append(filler)
                     fn = next((f for f in _tool_functions if f["name"] == tool_name), None)
-                    tool_result = await _execute_webhook_twilio(fn, tool_args) if fn else "{}"
+                    if fn and fn.get("kind") == "internal_record_answer":
+                        tool_result = await _record_answer_tool(tool_args)
+                    elif fn:
+                        tool_result = await _execute_webhook_twilio(fn, tool_args)
+                    else:
+                        tool_result = "{}"
                     async for sentence in stream_tool_result_response(
                         conv_msgs, system_str, tool_name, call_id, tool_args, tool_result
                     ):
@@ -1430,11 +1811,12 @@ async def twilio_stream_endpoint(websocket: WebSocket):
 
             if event == "start":
                 stream_sid = data["start"]["streamSid"]
+                twilio_call_sid = data["start"].get("callSid") or None
                 custom_params = data["start"].get("customParameters") or {}
-                print(f"[Twilio Stream] start event — customParameters={custom_params}")
-                if not await _setup_call(custom_params):
+                print(f"[Twilio Stream] start event - customParameters={custom_params}")
+                if not await _setup_call(custom_params, twilio_call_sid):
                     break
-                print(f"[Twilio] Call started — stream {stream_sid}, agent {agent['name']}")
+                print(f"[Twilio] Call started - stream {stream_sid}, agent {agent['name']}")
                 greeting = greeting_override or (
                     agent.get("first_message") if agent.get("first_message_enabled") else None
                 )
@@ -1446,12 +1828,23 @@ async def twilio_stream_endpoint(websocket: WebSocket):
                     continue  # "start" hasn't completed setup yet
 
                 pcm16k = twilio_payload_to_pcm16k(data["media"]["payload"])
+                # Twilio chunks (20ms/320 samples) are shorter than Silero's minimum
+                # window (32ms/512 samples). Borrow the tail of the previous chunk to
+                # give VAD a real, contiguous window instead of zero-padding a lone
+                # short chunk, which the model was never designed to see.
+                vad_window = (_prev_pcm16k + pcm16k)[-1024:]
+                _prev_pcm16k = pcm16k
 
                 if is_speaking or is_processing:
-                    # Barge-in: check if the caller is talking over the agent.
+                    # Barge-in: check if the caller is talking over the agent. Require a
+                    # short sustained streak (not a single chunk) before committing to
+                    # cancel - a lone high-confidence chunk is as likely to be a brief
+                    # noise/line artifact as it is real, sustained speech, and cancelling
+                    # the agent's only in-flight response is not reversible.
                     barge_sensitivity = agent.get("barge_in_sensitivity", VAD_BARGE_IN_SENSITIVITY)
-                    has_speech = await detect_speech(pcm16k, barge_sensitivity)
+                    has_speech = await detect_speech(vad_window, barge_sensitivity)
                     if not has_speech:
+                        _barge_in_streak = 0
                         if _dg_stream:
                             try:
                                 await _dg_stream.finish()
@@ -1460,8 +1853,13 @@ async def twilio_stream_endpoint(websocket: WebSocket):
                             _dg_stream = None
                             speech_chunks = 0
                             silence_chunks = 0
+                            _utterance_buffer = bytearray()
                         continue
-                    print("[Twilio] Barge-in detected — interrupting agent")
+                    _barge_in_streak += 1
+                    if _barge_in_streak < BARGE_IN_STREAK_NEEDED:
+                        continue
+                    print("[Twilio] Barge-in detected - interrupting agent")
+                    _barge_in_streak = 0
                     if _active_task and not _active_task.done():
                         _active_task.cancel()
                     is_speaking = False
@@ -1471,9 +1869,10 @@ async def twilio_stream_endpoint(websocket: WebSocket):
                     _dg_stream = None
                     speech_chunks = 0
                     silence_chunks = 0
-                    # fall through — treat this chunk as the start of new speech
+                    _utterance_buffer = bytearray()
+                    # fall through - treat this chunk as the start of new speech
 
-                has_speech = await detect_speech(pcm16k)
+                has_speech = await detect_speech(vad_window)
 
                 if has_speech:
                     speech_chunks += 1
@@ -1486,36 +1885,51 @@ async def twilio_stream_endpoint(websocket: WebSocket):
                         except Exception as e:
                             print(f"[Twilio Deepgram] Failed to start stream: {e}")
                             _dg_stream = None
+                    _utterance_buffer.extend(pcm16k)
                     if _dg_stream:
                         await _dg_stream.send(pcm16k)
                 else:
                     silence_chunks += 1
-                    if speech_chunks > 0 and _dg_stream:
-                        await _dg_stream.send(pcm16k)  # send trailing silence so Deepgram finalizes
+                    if speech_chunks > 0:
+                        _utterance_buffer.extend(pcm16k)
+                        if _dg_stream:
+                            await _dg_stream.send(pcm16k)  # send trailing silence so Deepgram finalizes
 
                     if speech_chunks >= SPEECH_THRESHOLD and silence_chunks >= SILENCE_THRESHOLD:
                         dg = _dg_stream
                         _dg_stream = None
                         speech_chunks = 0
                         silence_chunks = 0
+                        raw_utterance = bytes(_utterance_buffer)
+                        _utterance_buffer = bytearray()
 
-                        if dg:
-                            transcript = await dg.finish()
-                            if transcript and transcript.strip():
-                                print(f"[Twilio] User said: {transcript.strip()}")
-                                _active_task = asyncio.create_task(run_pipeline(transcript.strip()))
+                        transcript = await dg.finish() if dg else None
+                        if not (transcript and transcript.strip()) and raw_utterance:
+                            # Streaming connection occasionally loses audio (e.g. cold
+                            # connection handshake timing) - fall back to the
+                            # prerecorded API on the buffered audio rather than
+                            # silently dropping the caller's utterance.
+                            print("[Twilio] Streaming transcript empty, falling back to prerecorded API")
+                            transcript = await transcribe_audio_smart(build_wav_bytes(raw_utterance))
+                        if transcript and transcript.strip():
+                            print(f"[Twilio] User said: {transcript.strip()}")
+                            _active_task = asyncio.create_task(run_pipeline(transcript.strip()))
 
             elif event == "stop":
-                print(f"[Twilio] Call ended — stream {stream_sid}")
+                print(f"[Twilio] Call ended - stream {stream_sid}")
                 _call_ended = True
                 if interview_id:
                     from app.hr_repo import mark_interview_completed
                     await asyncio.to_thread(mark_interview_completed, interview_id)
+                elif campaign_candidate_id:
+                    from app.hr_campaign_repo import mark_candidate_completed
+                    await asyncio.to_thread(mark_candidate_completed, campaign_id, campaign_candidate_id)
                 break
 
     except Exception as e:
         if "disconnect" not in str(e).lower():
             print(f"[Twilio WS] Error: {e}")
+            _call_failure_reason = str(e)[:500]
     finally:
         # Clean up any open Deepgram stream
         if _dg_stream:
@@ -1530,6 +1944,21 @@ async def twilio_stream_endpoint(websocket: WebSocket):
                 await asyncio.to_thread(mark_interview_completed, interview_id)
             except Exception:
                 pass
+        # Same fallback for campaign calls - mirrors the interview_id path above
+        if campaign_candidate_id and not _call_ended:
+            try:
+                from app.hr_campaign_repo import mark_candidate_completed
+                await asyncio.to_thread(mark_candidate_completed, campaign_id, campaign_candidate_id)
+            except Exception:
+                pass
+        # Call Analytics — record the final outcome. Best-effort: set_call_status
+        # swallows its own errors, and conversation_id may be None if setup
+        # failed before a row was ever created (nothing to record in that case).
+        if conversation_id:
+            await asyncio.to_thread(
+                set_call_status, conversation_id,
+                "failed" if _call_failure_reason else "completed", _call_failure_reason,
+            )
         try:
             await websocket.close()
         except Exception:
@@ -1541,7 +1970,7 @@ async def twilio_stream_endpoint(websocket: WebSocket):
 @app.websocket("/ws/{token}")
 async def websocket_endpoint(websocket: WebSocket, token: str):
     from app.websocket_manager import manager, UserSession, AgentState
-    from app.conversation_repo import create_conversation, enforce_session_cap, cleanup_expired_sessions
+    from app.conversation_repo import create_conversation, enforce_session_cap, cleanup_expired_sessions, set_call_status
     from app.message_repo import save_message, get_session_messages
     from app.deepgram_service import StreamingTranscriber, get_streaming_transcriber, transcribe_audio_smart
     from app.memory_repo import get_user_memory, upsert_user_memory
@@ -1565,7 +1994,7 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
 
     await websocket.accept()
 
-    # Session housekeeping — skip for guest users
+    # Session housekeeping - skip for guest users
     is_guest = payload.get("user_metadata", {}).get("is_guest", False)
     if not is_guest:
         from app.config import SESSION_MAX_PER_USER, SESSION_EXPIRY_DAYS
@@ -1583,7 +2012,7 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
     )
     manager.add_session(session)
 
-    # Pre-load memory into local cache — avoids DB hit on every turn
+    # Pre-load memory into local cache - avoids DB hit on every turn
     try:
         _initial_memory = await asyncio.to_thread(get_user_memory, user_id)
     except Exception as e:
@@ -1627,15 +2056,15 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
                 transcript = transcript_override
                 print(f"[Pipeline] Text input: {repr(transcript)}")
             elif dg_stream:
-                # Streaming path: transcript was built in real-time — just finalize
+                # Streaming path: transcript was built in real-time - just finalize
                 transcript = await dg_stream.finish()
-                print(f"[Timing] STT (streaming): {time.time()-t0:.2f}s — {repr(transcript)}")
+                print(f"[Timing] STT (streaming): {time.time()-t0:.2f}s - {repr(transcript)}")
             else:
                 # Fallback: send full audio to prerecorded API
-                print(f"[Pipeline] Starting — audio={len(pcm_bytes)}B @ {sr}Hz")
+                print(f"[Pipeline] Starting - audio={len(pcm_bytes)}B @ {sr}Hz")
                 wav_bytes = build_wav_bytes(pcm_bytes, sample_rate=sr)
                 transcript = await transcribe_audio_smart(wav_bytes)
-                print(f"[Timing] STT (prerecorded): {time.time()-t0:.2f}s — {repr(transcript)}")
+                print(f"[Timing] STT (prerecorded): {time.time()-t0:.2f}s - {repr(transcript)}")
 
             if not transcript:
                 await manager.send_json(websocket, {"type": "state", "state": "LISTENING"})
@@ -1657,7 +2086,7 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
                     print(f"[WS] Failed to save user message: {e}")
             asyncio.create_task(_save_user_msg())
             rag_context = format_rag_context(rag_chunks)
-            long_term_memory = _memory_cache["summary"]  # use cached memory — no DB hit
+            long_term_memory = _memory_cache["summary"]  # use cached memory - no DB hit
             print(f"[Timing] RAG+History fetch: {time.time()-t1:.2f}s")
 
             # Stream LLM sentence by sentence → pipe each sentence to TTS immediately
@@ -1681,7 +2110,7 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
                         break  # barge-in happened
 
                     if first_sentence:
-                        print(f"[Timing] LLM first sentence: {time.time()-t2:.2f}s — '{sentence}'")
+                        print(f"[Timing] LLM first sentence: {time.time()-t2:.2f}s - '{sentence}'")
                         first_sentence = False
 
                     full_reply_parts.append(sentence)
@@ -1697,7 +2126,7 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
                         chunk_count += 1
                         await manager.send_bytes(websocket, chunk)
 
-                    # Tell frontend this sentence is complete — play it now
+                    # Tell frontend this sentence is complete - play it now
                     if session.state == AgentState.SPEAKING:
                         await manager.send_json(websocket, {"type": "sentence_end"})
 
@@ -1731,7 +2160,7 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
             await manager.send_json(websocket, {"type": "state", "state": "LISTENING"})
 
     async def _analyze_session_sentiment(conv_id: str):
-        """Background task — runs after session ends, never blocks the pipeline."""
+        """Background task - runs after session ends, never blocks the pipeline."""
         try:
             from app.sentiment_service import analyze_sentiment
             from app.message_repo import get_session_messages
@@ -1768,6 +2197,7 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
     speech_chunks = 0
     sample_rate = 16000
     _dg_stream: StreamingTranscriber | None = None
+    _ws_failure_reason: str | None = None  # set on genuine errors, surfaced in Call Analytics
 
     try:
         while True:
@@ -1807,7 +2237,7 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
                         speech_chunks += 1
                         silence_chunks = 0
                         if speech_chunks == 1:
-                            print("[VAD] Speech started — opening STT stream")
+                            print("[VAD] Speech started - opening STT stream")
                             await manager.send_json(websocket, {"type": "state", "state": "PROCESSING"})
                             _dg_stream = get_streaming_transcriber()
                             try:
@@ -1827,7 +2257,7 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
                                 await _dg_stream.send(audio_bytes)
 
                             if silence_chunks >= VAD_SILENCE_LIMIT:
-                                print(f"[VAD] Utterance end — speech={speech_chunks} chunks")
+                                print(f"[VAD] Utterance end - speech={speech_chunks} chunks")
                                 if speech_chunks >= VAD_MIN_SPEECH:
                                     trimmed = speech_buffer[:speech_chunks + 1]
                                     full_audio = b"".join(trimmed)
@@ -1855,7 +2285,7 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
                         sample_rate = int(msg.get("value", 16000))
                         print(f"[WS] Client sample rate: {sample_rate}Hz")
                     elif msg.get("type") == "playback_started":
-                        print("[WS] Frontend playback started — arming barge-in")
+                        print("[WS] Frontend playback started - arming barge-in")
                         session.barge_in_armed = True
                     elif msg.get("type") == "playback_ended":
                         print("[WS] Frontend playback ended")
@@ -1880,15 +2310,21 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
         if "disconnect message" not in str(e):
             print(f"[WS] Unexpected error: {e}")
             import traceback; traceback.print_exc()
+            _ws_failure_reason = str(e)[:500]
     except Exception as e:
         print(f"[WS] Unexpected error: {e}")
         import traceback; traceback.print_exc()
+        _ws_failure_reason = str(e)[:500]
     finally:
         manager.remove_session(user_id)
         loop = asyncio.get_event_loop()
         if loop.is_running():
             loop.create_task(update_memory(user_id, conversation_id))
             loop.create_task(_analyze_session_sentiment(conversation_id))
+            loop.create_task(asyncio.to_thread(
+                set_call_status, conversation_id,
+                "failed" if _ws_failure_reason else "completed", _ws_failure_reason,
+            ))
 
 
 # ─── User Knowledge Base ─────────────────────────────────────────────────────
@@ -1957,9 +2393,9 @@ async def delete_user_kb_document(doc_id: str, current_user: dict = Depends(get_
 
 @app.websocket("/ws/agent/{agent_id}/{token}")
 async def agent_websocket_endpoint(websocket: WebSocket, agent_id: str, token: str, docs: str = ""):
-    """Voice session tied to a specific agent — uses agent system prompt + RAG over agent docs."""
+    """Voice session tied to a specific agent - uses agent system prompt + RAG over agent docs."""
     from app.websocket_manager import manager, UserSession, AgentState
-    from app.conversation_repo import create_conversation, enforce_session_cap, cleanup_expired_sessions
+    from app.conversation_repo import create_conversation, enforce_session_cap, cleanup_expired_sessions, set_call_status
     from app.message_repo import save_message, get_session_messages
     from app.deepgram_service import StreamingTranscriber, get_streaming_transcriber, transcribe_audio_smart
     from app.memory_repo import get_user_memory, upsert_user_memory
@@ -2061,7 +2497,7 @@ async def agent_websocket_endpoint(websocket: WebSocket, agent_id: str, token: s
         _initial_memory = None
     _memory_cache: dict = {"summary": _initial_memory}
 
-    # RAG scope — frontend can update mid-session via set_rag_scope message
+    # RAG scope - frontend can update mid-session via set_rag_scope message
     _rag_scopes: list[str] = ["personal", "global"]  # default = both
 
     await manager.send_json(websocket, {
@@ -2105,7 +2541,7 @@ async def agent_websocket_endpoint(websocket: WebSocket, agent_id: str, token: s
                 transcript = transcript_override
             elif dg_stream:
                 transcript = await dg_stream.finish()
-                print(f"[Agent Pipeline] STT: {time.time()-t0:.2f}s — {repr(transcript)}")
+                print(f"[Agent Pipeline] STT: {time.time()-t0:.2f}s - {repr(transcript)}")
             else:
                 wav_bytes = build_wav_bytes(pcm_bytes, sample_rate=sr)
                 transcript = await transcribe_audio_smart(wav_bytes)
@@ -2281,6 +2717,7 @@ async def agent_websocket_endpoint(websocket: WebSocket, agent_id: str, token: s
     speech_chunks = 0
     sample_rate = 16000
     _dg_stream: StreamingTranscriber | None = None
+    _ws_failure_reason: str | None = None  # set on genuine errors, surfaced in Call Analytics
 
     try:
         while True:
@@ -2387,15 +2824,21 @@ async def agent_websocket_endpoint(websocket: WebSocket, agent_id: str, token: s
         if "disconnect message" not in str(e):
             print(f"[Agent WS] Error: {e}")
             import traceback; traceback.print_exc()
+            _ws_failure_reason = str(e)[:500]
     except Exception as e:
         print(f"[Agent WS] Error: {e}")
         import traceback; traceback.print_exc()
+        _ws_failure_reason = str(e)[:500]
     finally:
         manager.remove_session(user_id)
         loop = asyncio.get_event_loop()
         if loop.is_running():
             loop.create_task(_update_agent_memory(user_id, conversation_id))
             loop.create_task(_analyze_agent_session_sentiment(conversation_id))
+            loop.create_task(asyncio.to_thread(
+                set_call_status, conversation_id,
+                "failed" if _ws_failure_reason else "completed", _ws_failure_reason,
+            ))
 
 
 # ─── Serve Next.js static export ────────────────────────────────────────────
@@ -2453,7 +2896,7 @@ if os.path.isdir(_FRONTEND):
     async def _root_page():
         return FileResponse(os.path.join(_FRONTEND, "index.html"))
 else:
-    print(f"[Startup] WARNING: frontend build not found at {_FRONTEND} — serving API-only root")
+    print(f"[Startup] WARNING: frontend build not found at {_FRONTEND} - serving API-only root")
 
     @app.get("/", include_in_schema=False)
     async def _root_page_fallback():

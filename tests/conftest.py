@@ -14,8 +14,8 @@ import os
 # ── set env vars BEFORE any app module is imported ───────────────────
 os.environ["DATABASE_URL"]               = "postgresql://fake:fake@localhost/fake"
 os.environ["SUPABASE_URL"]               = "https://fake.supabase.co"
-os.environ["SUPABASE_ANON_KEY"]          = "fake-anon-key"
-os.environ["SUPABASE_SERVICE_ROLE_KEY"]  = "fake-service-role-key"
+os.environ["SUPABASE_ANON_KEY"]          = "fake.anon-key.token"
+os.environ["SUPABASE_SERVICE_ROLE_KEY"]  = "fake.service-role.token"
 os.environ["SUPABASE_JWT_SECRET"]        = "test-jwt-secret-that-is-long-enough-32chars"
 os.environ["OPENAI_API_KEY"]             = "sk-fake-openai"
 os.environ["DEEPGRAM_API_KEY"]           = "fake-deepgram"

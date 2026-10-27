@@ -2,7 +2,7 @@
 Sentiment analysis via HuggingFace Inference API.
 Model: j-hartmann/emotion-english-distilroberta-base
   - Trained on MELD (TV dialogues) + IEMOCAP (recorded conversations) +
-    EmotionLines + ISEAR — specifically dialogue/call-like data.
+    EmotionLines + ISEAR - specifically dialogue/call-like data.
   - Returns 7 emotions mapped to POSITIVE / NEUTRAL / NEGATIVE.
 
 Concurrency: asyncio.Semaphore limits simultaneous HF API calls so
@@ -18,7 +18,7 @@ from app.config import (
 
 _HF_URL = f"https://api-inference.huggingface.co/models/{SENTIMENT_MODEL}"
 
-# Shared semaphore — created lazily so it's bound to the running event loop
+# Shared semaphore - created lazily so it's bound to the running event loop
 _semaphore: asyncio.Semaphore | None = None
 
 def _get_semaphore() -> asyncio.Semaphore:
@@ -31,7 +31,7 @@ def _get_semaphore() -> asyncio.Semaphore:
 _EMOTION_SENTIMENT: dict[str, str] = {
     "joy":      "POSITIVE",
     "neutral":  "NEUTRAL",
-    "surprise": "NEUTRAL",   # ambiguous — could be positive or negative
+    "surprise": "NEUTRAL",   # ambiguous - could be positive or negative
     "sadness":  "NEGATIVE",
     "anger":    "NEGATIVE",
     "fear":     "NEGATIVE",
@@ -53,7 +53,7 @@ async def analyze_sentiment(text: str) -> dict:
         return _neutral()
 
     if not HUGGINGFACE_API_KEY:
-        print("[Sentiment] HUGGINGFACE_API_KEY not set — skipping")
+        print("[Sentiment] HUGGINGFACE_API_KEY not set - skipping")
         return _neutral()
 
     text = text.strip()[:SENTIMENT_MAX_CHARS]
@@ -70,14 +70,14 @@ async def analyze_sentiment(text: str) -> dict:
                     )
 
                 if resp.status_code == 503:
-                    # Model is cold-starting — HF returns estimated wait time
+                    # Model is cold-starting - HF returns estimated wait time
                     wait = min(resp.json().get("estimated_time", 20), 30)
                     print(f"[Sentiment] Model loading, waiting {wait:.0f}s (attempt {attempt+1})")
                     await asyncio.sleep(wait)
                     continue
 
                 if resp.status_code == 429:
-                    # Rate limited — exponential backoff
+                    # Rate limited - exponential backoff
                     wait = 5 * (2 ** attempt)
                     print(f"[Sentiment] Rate limited, waiting {wait}s (attempt {attempt+1})")
                     await asyncio.sleep(wait)
@@ -106,7 +106,7 @@ async def analyze_sentiment(text: str) -> dict:
             if attempt < SENTIMENT_MAX_RETRIES - 1:
                 await asyncio.sleep(2 ** attempt)
 
-    print("[Sentiment] All retries exhausted — returning NEUTRAL")
+    print("[Sentiment] All retries exhausted - returning NEUTRAL")
     return _neutral()
 
 

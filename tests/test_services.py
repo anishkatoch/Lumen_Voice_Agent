@@ -109,7 +109,7 @@ async def test_generate_response_stream_yields_sentences(mocker):
 
     mock_client = AsyncMock()
     mock_client.chat.completions.create = AsyncMock(return_value=fake_stream())
-    mocker.patch("app.llm_service._get_openai", return_value=mock_client)
+    mocker.patch("app.llm_service._get_llm_client", return_value=(mock_client, "openai", "gpt-4o-mini"))
 
     from app.llm_service import generate_response_stream
     sentences = []
@@ -127,7 +127,7 @@ async def test_generate_response_stream_timeout(mocker):
     import asyncio
     mock_client = AsyncMock()
     mock_client.chat.completions.create = AsyncMock(side_effect=asyncio.TimeoutError)
-    mocker.patch("app.llm_service._get_openai", return_value=mock_client)
+    mocker.patch("app.llm_service._get_llm_client", return_value=(mock_client, "openai", "gpt-4o-mini"))
 
     from app.llm_service import generate_response_stream
     sentences = []
@@ -148,7 +148,7 @@ async def test_generate_response_stream_with_memory(mocker):
 
     mock_client = AsyncMock()
     mock_client.chat.completions.create = AsyncMock(return_value=fake_stream())
-    mocker.patch("app.llm_service._get_openai", return_value=mock_client)
+    mocker.patch("app.llm_service._get_llm_client", return_value=(mock_client, "openai", "gpt-4o-mini"))
 
     from app.llm_service import generate_response_stream
     async for _ in generate_response_stream("Hi", [], "", "User likes Python."):
@@ -168,7 +168,7 @@ async def test_generate_response_stream_no_rag(mocker):
 
     mock_client = AsyncMock()
     mock_client.chat.completions.create = AsyncMock(return_value=fake_stream())
-    mocker.patch("app.llm_service._get_openai", return_value=mock_client)
+    mocker.patch("app.llm_service._get_llm_client", return_value=(mock_client, "openai", "gpt-4o-mini"))
 
     from app.llm_service import generate_response_stream
     async for _ in generate_response_stream("What is X?", [], "", None):
