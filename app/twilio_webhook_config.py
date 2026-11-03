@@ -80,3 +80,30 @@ async def configure_all_user_numbers(user_id: str, account_sid: str, auth_token:
         if not record.get("twilio_number_sid"):
             db.table("twilio_phone_numbers").update({"twilio_number_sid": number_sid}).eq("id", record["id"]).execute()
         await _set_voice_url(account_sid, auth_token, number_sid, voice_url)
+
+
+async def configure_numbers_for_account(
+    user_id: str, account_id: str, is_default: bool, account_sid: str, auth_token: str, webhook_base_url: str
+) -> None:
+    """Auto-configure webhooks on the phone numbers that belong to this
+    specific Twilio account. When the account is the user's default, this
+    also covers legacy numbers that were never assigned to a specific
+    account (twilio_account_id IS NULL) - matching configure_all_user_numbers'
+    behavior from before multiple accounts existed."""
+    db = get_supabase()
+    numbers = db.table("twilio_phone_numbers").select("*").eq("user_id", user_id).execute().data
+    voice_url = webhook_base_url.rstrip("/") + "/twilio/voice"
+
+    for record in numbers:
+        owns_number = record.get("twilio_account_id") == account_id or (
+            is_default and not record.get("twilio_account_id")
+        )
+        if not owns_number:
+            continue
+        number_sid = record.get("twilio_number_sid") or await _get_number_sid(account_sid, auth_token, record["phone_number"])
+        if not number_sid:
+            print(f"[Twilio Webhook] No SID for {record['phone_number']}, skipping")
+            continue
+        if not record.get("twilio_number_sid"):
+            db.table("twilio_phone_numbers").update({"twilio_number_sid": number_sid}).eq("id", record["id"]).execute()
+        await _set_voice_url(account_sid, auth_token, number_sid, voice_url)

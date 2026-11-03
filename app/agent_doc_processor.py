@@ -18,14 +18,41 @@ CHUNK_OVERLAP = 40      # overlap words between consecutive chunks
 
 # ── Text extraction ───────────────────────────────────────────────────────────
 
+_docling_converter = None  # lazy singleton - avoids reloading Docling's models on every fallback
+
+
+def _get_docling_converter():
+    global _docling_converter
+    if _docling_converter is None:
+        from docling.document_converter import DocumentConverter
+        _docling_converter = DocumentConverter()
+    return _docling_converter
+
+
+def _extract_text_pdf_docling(file_bytes: bytes) -> str:
+    """Fallback for PDFs PyMuPDF can't read - scanned/image-only pages, a
+    corrupt or unusual text layer, etc. Docling does layout-aware extraction
+    with OCR, at the cost of being much slower than PyMuPDF."""
+    from docling.datamodel.base_models import DocumentStream
+
+    converter = _get_docling_converter()
+    result = converter.convert(DocumentStream(name="document.pdf", stream=io.BytesIO(file_bytes)))
+    return result.document.export_to_text().strip()
+
+
 def extract_text_pdf(file_bytes: bytes) -> str:
     import fitz  # PyMuPDF
-    doc = fitz.open(stream=file_bytes, filetype="pdf")
-    pages = []
-    for page in doc:
-        pages.append(page.get_text())
-    doc.close()
-    return "\n".join(pages)
+    try:
+        doc = fitz.open(stream=file_bytes, filetype="pdf")
+        pages = [page.get_text() for page in doc]
+        doc.close()
+        text = "\n".join(pages).strip()
+        if text:
+            return text
+        print("[DocProcessor] PyMuPDF found no extractable text, falling back to Docling")
+    except Exception as e:
+        print(f"[DocProcessor] PyMuPDF failed ({e}), falling back to Docling")
+    return _extract_text_pdf_docling(file_bytes)
 
 
 def extract_text_docx(file_bytes: bytes) -> str:

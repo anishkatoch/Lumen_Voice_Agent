@@ -2,15 +2,17 @@ import asyncio
 import json
 import re
 from datetime import datetime
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, AsyncAzureOpenAI
 from typing import AsyncGenerator
 from app.config import (
     OPENAI_API_KEY,
-    LLM_MODEL, LLM_TIMEOUT, LLM_MAX_TOKENS, LLM_TEMPERATURE,
+    AZURE_OPENAI_API_KEY, AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_VERSION, AZURE_OPENAI_DEPLOYMENT,
+    LLM_MODEL, LLM_TIMEOUT, LLM_MAX_TOKENS, LLM_TEMPERATURE, LLM_FALLBACK_MODEL,
     MEMORY_MODEL, MEMORY_MAX_TOKENS,
 )
 
 _openai: AsyncOpenAI | None = None
+_azure_openai: AsyncAzureOpenAI | None = None
 
 
 def _get_openai() -> AsyncOpenAI:
@@ -18,6 +20,71 @@ def _get_openai() -> AsyncOpenAI:
     if _openai is None:
         _openai = AsyncOpenAI(api_key=OPENAI_API_KEY)
     return _openai
+
+
+def _get_azure_openai() -> AsyncAzureOpenAI | None:
+    """Azure OpenAI client - primary LLM source. None if not configured via env."""
+    global _azure_openai
+    if not AZURE_OPENAI_API_KEY or not AZURE_OPENAI_ENDPOINT:
+        return None
+    if _azure_openai is None:
+        _azure_openai = AsyncAzureOpenAI(
+            api_key=AZURE_OPENAI_API_KEY,
+            azure_endpoint=AZURE_OPENAI_ENDPOINT,
+            api_version=AZURE_OPENAI_API_VERSION,
+        )
+    return _azure_openai
+
+
+def _augment_with_azure(
+    client: AsyncOpenAI | None, provider: str, model: str
+) -> list[tuple[AsyncOpenAI, str, str]]:
+    """
+    Given the single (client, provider, model) the configured admin provider
+    resolves to, prepend Azure OpenAI as primary when that provider is the
+    plain-"openai" default and Azure is configured via env vars. The original
+    client/model becomes the fallback (using LLM_FALLBACK_MODEL), tried only
+    if Azure is unconfigured or a call to it raises. groq/anthropic/ollama or
+    a custom key/base_url (already baked into `client` by _get_llm_client)
+    are untouched - no Azure involved.
+    """
+    if client is None:
+        return []
+    if provider != "openai":
+        return [(client, provider, model)]
+
+    azure = _get_azure_openai()
+    if azure is None:
+        return [(client, provider, model)]
+    return [
+        (azure, "azure_openai", AZURE_OPENAI_DEPLOYMENT),
+        (client, provider, LLM_FALLBACK_MODEL),
+    ]
+
+
+def _get_llm_chain() -> list[tuple[AsyncOpenAI, str, str]]:
+    """Ordered (client, provider_label, model) attempts for a chat-completions call."""
+    client, provider, model = _get_llm_client()
+    return _augment_with_azure(client, provider, model)
+
+
+def _is_reasoning_model(model: str) -> bool:
+    m = model.lower()
+    return m.startswith("gpt-5") or m.startswith("o1") or m.startswith("o3")
+
+
+def _max_tokens_kwarg(model: str) -> dict:
+    """gpt-5* / o1* / o3* reject `max_tokens` - they require `max_completion_tokens` instead."""
+    if _is_reasoning_model(model):
+        return {"max_completion_tokens": LLM_MAX_TOKENS}
+    return {"max_tokens": LLM_MAX_TOKENS}
+
+
+def _temperature_kwarg(model: str) -> dict:
+    """gpt-5* / o1* / o3* only support the default temperature (1) - omit the param for them."""
+    if _is_reasoning_model(model):
+        return {}
+    return {"temperature": LLM_TEMPERATURE}
 
 
 def _get_llm_client() -> tuple[AsyncOpenAI | None, str, str]:
@@ -139,15 +206,42 @@ async def generate_response(
 
 
 _DEFAULT_SYSTEM = (
-    "You are a helpful voice AI assistant. "
-    "Respond concisely - your answers will be spoken aloud. "
-    "Avoid markdown, bullet points, or formatting. "
-    "Speak naturally as if in a conversation.\n"
+    "# Identity & Role\n"
+    "You are a helpful AI voice agent. You assist callers with their questions, tasks, and requests. "
+    "Be empathetic, professional, and concise. Confirm important details before finalizing anything. "
+    "Respond naturally for a voice conversation - no bullet points or markdown.\n"
+    "\n"
+    "# Current Date & Time\n"
+    "Today is {{current_time}}. Use this as the only source of truth for \"today\" - never your training data.\n"
+    "\n"
+    "## Voice & Persona\n"
+    "\n"
+    "### Personality\n"
+    "**Friendly & Patient:** Sound warm, patient, and knowledgeable.\n"
+    "**Concise & Direct:** **This is a strict rule.** Always get straight to the point. Avoid filler words and long explanations. "
+    "Your goal is to resolve the query in as few turns as possible.\n"
+    "**Natural & Conversational:** Use a human-like, conversational tone (e.g., \"I'm,\" \"don't,\" \"it's\").\n"
+    "**Confident:** Speak with confidence, but if you don't know something, say \"Hmm, let me check on that for you.\"\n"
+    "\n"
+    "### Speech Characteristics\n"
+    "Use contractions (I'm, we'll, don't).\n"
+    "**Keep responses short,** ideally under 30 words.\n"
+    "Ask only one question at a time.\n"
+    "\n"
+    "### Tone\n"
+    "Friendly\n"
+    "Professional\n"
+    "Clear and concise\n"
+    "Confident, not pushy\n"
+    "\n"
+    "# Purpose\n"
     "Follow these rules:\n"
     "1. For questions about the current conversation, the user, or general chat - answer naturally using the conversation history.\n"
     "2. For questions about specific topics, facts, or information - ONLY use the knowledge base context provided below. "
     "If the topic is not in the knowledge base, say: 'I don't have information about that in my knowledge base.' "
-    "Do not use your general training knowledge to answer factual questions."
+    "Do not use your general training knowledge to answer factual questions.\n"
+    "\n"
+    "# Knowledge Base"
 )
 
 
@@ -181,37 +275,61 @@ async def generate_response_stream(
         if buffer.strip():
             yield buffer.strip()
 
-    try:
-        if provider == "anthropic":
+    if provider == "anthropic":
+        try:
             from app.admin_config_service import get as get_config
             api_key = get_config("llm_api_key")
             token_gen = _anthropic_token_stream(system_str, conv_messages, model, api_key)
             async for sentence in _flush_buffer(token_gen):
                 yield sentence
-        else:
-            assert client is not None
-            stream = await client.chat.completions.create(
-                model=model,
+        except asyncio.TimeoutError:
+            yield "I'm sorry, I took too long to think. Could you ask again?"
+        except Exception as e:
+            print(f"[LLM] Stream error (anthropic): {e}")
+            yield "I encountered an error. Please try again."
+        return
+
+    chain = _augment_with_azure(client, provider, model)
+    if not chain:
+        yield "I encountered an error. Please try again."
+        return
+
+    last_err: Exception | None = None
+    for idx, (try_client, try_provider, try_model) in enumerate(chain):
+        is_last = idx == len(chain) - 1
+        buffer = ""
+        try:
+            stream = await try_client.chat.completions.create(
+                model=try_model,
                 messages=[{"role": "system", "content": system_str}] + conv_messages,
-                max_tokens=LLM_MAX_TOKENS,
-                temperature=LLM_TEMPERATURE,
+                **_max_tokens_kwarg(try_model),
+                **_temperature_kwarg(try_model),
                 stream=True,
                 timeout=LLM_TIMEOUT,
             )
 
-            async def _openai_tokens():
-                async for chunk in stream:
+            async def _openai_tokens(s=stream):
+                async for chunk in s:
+                    if not chunk.choices:
+                        continue
                     token = chunk.choices[0].delta.content or ""
                     if token:
                         yield token
 
             async for sentence in _flush_buffer(_openai_tokens()):
                 yield sentence
+            return
+        except asyncio.TimeoutError as e:
+            last_err = e
+            print(f"[LLM] {try_provider} ({try_model}) timed out" + ("" if is_last else " - falling back"))
+        except Exception as e:
+            last_err = e
+            print(f"[LLM] {try_provider} ({try_model}) stream error: {e}" + ("" if is_last else " - falling back"))
 
-    except asyncio.TimeoutError:
+    print(f"[LLM] All providers failed: {last_err}")
+    if isinstance(last_err, asyncio.TimeoutError):
         yield "I'm sorry, I took too long to think. Could you ask again?"
-    except Exception as e:
-        print(f"[LLM] Stream error ({provider}): {e}")
+    else:
         yield "I encountered an error. Please try again."
 
 
@@ -286,28 +404,37 @@ async def detect_tool_call(
         # Anthropic tool calling has a different API - fall back to plain text
         return "", None, {}, None
 
-    try:
-        response = await asyncio.wait_for(
-            client.chat.completions.create(
-                model=model,
-                messages=[{"role": "system", "content": system}] + conv_messages,
-                tools=tools,
-                tool_choice="auto",
-                max_tokens=LLM_MAX_TOKENS,
-                temperature=LLM_TEMPERATURE,
-                stream=False,
-            ),
-            timeout=LLM_TIMEOUT,
-        )
-        choice = response.choices[0]
-        if choice.finish_reason == "tool_calls" and choice.message.tool_calls:
-            tc = choice.message.tool_calls[0]
-            args = json.loads(tc.function.arguments) if tc.function.arguments else {}
-            return None, tc.function.name, args, tc.id
-        return choice.message.content or "", None, {}, None
-    except Exception as e:
-        print(f"[LLM Tool] detect error: {e}")
+    chain = _augment_with_azure(client, provider, model)
+    if not chain:
         return "", None, {}, None
+
+    last_err: Exception | None = None
+    for try_client, try_provider, try_model in chain:
+        try:
+            response = await asyncio.wait_for(
+                try_client.chat.completions.create(
+                    model=try_model,
+                    messages=[{"role": "system", "content": system}] + conv_messages,
+                    tools=tools,
+                    tool_choice="auto",
+                    **_max_tokens_kwarg(try_model),
+                    **_temperature_kwarg(try_model),
+                    stream=False,
+                ),
+                timeout=LLM_TIMEOUT,
+            )
+            choice = response.choices[0]
+            if choice.finish_reason == "tool_calls" and choice.message.tool_calls:
+                tc = choice.message.tool_calls[0]
+                args = json.loads(tc.function.arguments) if tc.function.arguments else {}
+                return None, tc.function.name, args, tc.id
+            return choice.message.content or "", None, {}, None
+        except Exception as e:
+            last_err = e
+            print(f"[LLM Tool] {try_provider} ({try_model}) detect error: {e} - falling back")
+
+    print(f"[LLM Tool] All providers failed: {last_err}")
+    return "", None, {}, None
 
 
 async def stream_tool_result_response(
@@ -340,38 +467,51 @@ async def stream_tool_result_response(
         ]
     )
 
-    buffer = ""
     sentence_end = re.compile(r'(?<=[.!?;])\s+|(?<=,)\s+(?=\w{4})')
 
-    try:
-        if provider == "anthropic" or client is None:
-            yield f"Based on the information I retrieved: {tool_result}"
-            return
+    if provider == "anthropic" or client is None:
+        yield f"Based on the information I retrieved: {tool_result}"
+        return
 
-        stream = await client.chat.completions.create(
-            model=model,
-            messages=messages_with_result,
-            max_tokens=LLM_MAX_TOKENS,
-            temperature=LLM_TEMPERATURE,
-            stream=True,
-            timeout=LLM_TIMEOUT,
-        )
-        async for chunk in stream:
-            token = chunk.choices[0].delta.content or ""
-            if not token:
-                continue
-            buffer += token
-            parts = sentence_end.split(buffer)
-            for sentence in parts[:-1]:
-                s = sentence.strip()
-                if s:
-                    yield s
-            buffer = parts[-1]
-        if buffer.strip():
-            yield buffer.strip()
-    except Exception as e:
-        print(f"[LLM Tool] stream_result error: {e}")
+    chain = _augment_with_azure(client, provider, model)
+    if not chain:
         yield "I found some information but had trouble reading it. Please try again."
+        return
+
+    last_err: Exception | None = None
+    for try_client, try_provider, try_model in chain:
+        buffer = ""
+        try:
+            stream = await try_client.chat.completions.create(
+                model=try_model,
+                messages=messages_with_result,
+                **_max_tokens_kwarg(try_model),
+                **_temperature_kwarg(try_model),
+                stream=True,
+                timeout=LLM_TIMEOUT,
+            )
+            async for chunk in stream:
+                if not chunk.choices:
+                    continue
+                token = chunk.choices[0].delta.content or ""
+                if not token:
+                    continue
+                buffer += token
+                parts = sentence_end.split(buffer)
+                for sentence in parts[:-1]:
+                    s = sentence.strip()
+                    if s:
+                        yield s
+                buffer = parts[-1]
+            if buffer.strip():
+                yield buffer.strip()
+            return
+        except Exception as e:
+            last_err = e
+            print(f"[LLM Tool] {try_provider} ({try_model}) stream_result error: {e} - falling back")
+
+    print(f"[LLM Tool] All providers failed: {last_err}")
+    yield "I found some information but had trouble reading it. Please try again."
 
 
 async def stream_text_as_sentences(text: str) -> AsyncGenerator[str, None]:

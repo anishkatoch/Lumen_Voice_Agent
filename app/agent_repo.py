@@ -16,17 +16,48 @@ def get_agent_kb_limit() -> int:
 
 # ── Default agents seeded for every new user ─────────────────────────────────
 
+_VOICE_PERSONA_BLOCK = (
+    "## Voice & Persona\n"
+    "\n"
+    "### Personality\n"
+    "**Friendly & Patient:** Sound warm, patient, and knowledgeable.\n"
+    "**Concise & Direct:** **This is a strict rule.** Always get straight to the point. Avoid filler words and long explanations. "
+    "Your goal is to resolve the query in as few turns as possible.\n"
+    "**Natural & Conversational:** Use a human-like, conversational tone (e.g., \"I'm,\" \"don't,\" \"it's\").\n"
+    "**Confident:** Speak with confidence, but if you don't know something, say \"Hmm, let me check on that for you.\"\n"
+    "\n"
+    "### Speech Characteristics\n"
+    "Use contractions (I'm, we'll, don't).\n"
+    "**Keep responses short,** ideally under 30 words.\n"
+    "Ask only one question at a time.\n"
+    "\n"
+    "### Tone\n"
+    "Friendly\n"
+    "Professional\n"
+    "Clear and concise\n"
+    "Confident, not pushy"
+)
+
 _DEFAULT_AGENTS = [
     {
         "name": "Meeting Assistant",
         "description": "Schedules meetings, checks calendar availability, and sets up appointments automatically.",
         "system_prompt": (
-            "You are a professional meeting scheduling assistant. "
-            "Your job is to help users book meetings, check calendar availability, "
-            "and set up appointments. Be concise and friendly. "
-            "When someone wants to schedule a meeting, ask for: their name, preferred date and time, "
-            "meeting purpose, and duration. Confirm all details before booking. "
-            "Respond naturally as if in a phone conversation - no bullet points or markdown."
+            "# Identity & Role\n"
+            "You are a professional meeting scheduling assistant. Your job is to help users book meetings, check calendar "
+            "availability, and set up appointments. When someone wants to schedule a meeting, ask for: their name, "
+            "preferred date and time, meeting purpose, and duration. Confirm all details before booking. "
+            "Respond naturally for a voice conversation - no bullet points or markdown.\n"
+            "\n"
+            "# Current Date & Time\n"
+            "Today is {{current_time}}. Use this as the only source of truth for \"today\" - never your training data.\n"
+            "\n"
+            f"{_VOICE_PERSONA_BLOCK}\n"
+            "\n"
+            "# Purpose\n"
+            "Book meetings, check calendar availability, and set up appointments.\n"
+            "\n"
+            "# Knowledge Base"
         ),
         "first_message_enabled": True,
         "first_message": "Hello! I'm your meeting assistant. How can I help you schedule something today?",
@@ -35,13 +66,21 @@ _DEFAULT_AGENTS = [
         "name": "HR Support Agent",
         "description": "Answers HR queries, handles interview scheduling, and supports employee onboarding.",
         "system_prompt": (
-            "You are a helpful HR support agent. "
-            "You assist employees and candidates with HR-related questions including: "
-            "interview scheduling, onboarding steps, leave policies, benefits, and general HR inquiries. "
-            "Be empathetic, professional, and concise. "
-            "For interview scheduling, collect: candidate name, contact details, role applied for, "
-            "and preferred interview slot. Confirm everything before finalizing. "
-            "Respond naturally for a voice conversation - no bullet points or markdown."
+            "# Identity & Role\n"
+            "You are a helpful HR support agent. You assist employees and candidates with HR-related questions including: "
+            "interview scheduling, onboarding steps, leave policies, benefits, and general HR inquiries. Be empathetic, "
+            "professional, and concise. For interview scheduling, collect: candidate name, contact details, role applied "
+            "for, and preferred interview slot. Confirm everything before finalizing. "
+            "Respond naturally for a voice conversation - no bullet points or markdown.\n"
+            "\n"
+            "# Current Date & Time\n"
+            "Today is {{current_time}}. Use this as the only source of truth for \"today\" - never your training data.\n"
+            "\n"
+            f"{_VOICE_PERSONA_BLOCK}\n"
+            "\n"
+            "# Purpose\n"
+            "\n"
+            "# Knowledge Base"
         ),
         "first_message_enabled": True,
         "first_message": "Hi there! This is the HR support line. How can I assist you today?",
@@ -63,6 +102,29 @@ def seed_default_agents(user_id: str) -> None:
 
 # ── Agent CRUD ────────────────────────────────────────────────────────────────
 
+# Starting text for every box on a newly created agent - real, editable content
+# (not just a placeholder hint) so the person has something to work from and
+# can edit or delete it freely, rather than facing empty boxes.
+_DEFAULT_SYSTEM_PROMPT = (
+    "You are a friendly, professional voice assistant. Speak naturally and "
+    "concisely, as if talking on the phone - no bullet points or markdown. "
+    "Listen carefully to what the caller needs, ask clarifying questions when "
+    "something is unclear, and confirm important details before taking action."
+)
+_DEFAULT_KB_INSTRUCTIONS = (
+    "When the caller's question relates to the attached knowledge base "
+    "documents, use them as your source of truth. If the answer isn't in the "
+    "documents, say so honestly instead of guessing."
+)
+_DEFAULT_FIRST_MESSAGE = "Hi! How can I help you today?"
+_DEFAULT_HR_INSTRUCTIONS = (
+    "Always greet the candidate warmly by name. Confirm the role they're "
+    "interviewing for, then walk through the standard screening questions. "
+    "If they ask about next steps, let them know HR will follow up within a "
+    "few business days."
+)
+
+
 def create_agent(user_id: str, name: str, description: str | None = None,
                  system_prompt: str | None = None, barge_in_sensitivity: float = 0.20) -> dict:
     db = get_supabase()
@@ -70,8 +132,12 @@ def create_agent(user_id: str, name: str, description: str | None = None,
         "user_id": user_id,
         "name": name,
         "description": description,
-        "system_prompt": system_prompt,
+        "system_prompt": system_prompt or _DEFAULT_SYSTEM_PROMPT,
         "barge_in_sensitivity": barge_in_sensitivity,
+        "kb_instructions": _DEFAULT_KB_INSTRUCTIONS,
+        "hr_instructions": _DEFAULT_HR_INSTRUCTIONS,
+        "first_message_enabled": True,
+        "first_message": _DEFAULT_FIRST_MESSAGE,
     }).execute()
     if not result.data:
         raise RuntimeError("Failed to create agent")

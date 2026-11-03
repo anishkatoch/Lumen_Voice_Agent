@@ -837,6 +837,7 @@ async def test_generate_response_stream_uses_custom_prompt(mocker):
     mock_client = AsyncMock()
     mock_client.chat.completions.create = mock_create
     mocker.patch("app.llm_service._get_llm_client", return_value=(mock_client, "openai", "gpt-4o-mini"))
+    mocker.patch("app.llm_service._get_azure_openai", return_value=None)
 
     async for _ in generate_response_stream(
         "What should I eat?", [], "", None,
@@ -869,13 +870,14 @@ async def test_generate_response_stream_uses_default_when_no_override(mocker):
     mock_client = AsyncMock()
     mock_client.chat.completions.create = mock_create
     mocker.patch("app.llm_service._get_llm_client", return_value=(mock_client, "openai", "gpt-4o-mini"))
+    mocker.patch("app.llm_service._get_azure_openai", return_value=None)
 
     async for _ in generate_response_stream("Hello", [], "", None):
         pass
 
     system_msg = next((m for m in captured_messages if m["role"] == "system"), None)
     assert system_msg is not None
-    assert "voice AI assistant" in system_msg["content"]
+    assert "AI voice agent" in system_msg["content"]
 
 
 # ─────────────────────────────────────────────────────────────────────────────

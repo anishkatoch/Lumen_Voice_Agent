@@ -11,7 +11,8 @@ each campaign dials at most one candidate at a time, gated by:
     dial-start time - anchoring on dial time would mean the gap check reads
     as already-expired for any call that actually runs a few minutes)
   - a retry pass, only once the whole queue has been dialed at least once,
-    re-queueing busy/no_answer candidates after retry_delay_minutes
+    re-queueing busy/no_answer candidates after retry_delay_minutes and
+    failed candidates after failed_retry_delay_minutes
 """
 
 import asyncio
@@ -52,11 +53,10 @@ async def _check_and_dial():
 
         candidate_row = await asyncio.to_thread(get_next_queued_candidate, campaign_id)
         if not candidate_row:
-            # Nothing queued - see if any busy/no_answer candidates are now
-            # eligible for retry (only makes sense once the list is exhausted).
+            # Nothing queued - see if any busy/no_answer/failed candidates are
+            # now eligible for retry (only makes sense once the list is exhausted).
             await asyncio.to_thread(
-                requeue_eligible_retries, campaign_id,
-                campaign["retry_delay_minutes"], campaign["max_retry_attempts"],
+                requeue_eligible_retries, campaign, campaign["failed_retry_delay_minutes"],
             )
             candidate_row = await asyncio.to_thread(get_next_queued_candidate, campaign_id)
 
@@ -112,6 +112,22 @@ async def _dial_candidate(campaign: dict, candidate_row: dict):
         return  # another tick/worker already claimed this campaign's dial slot
 
     user_id = campaign["user_id"]
+
+    # Provider is decided by which number is attached to this agent: a
+    # Plivo number attached to it takes priority, otherwise fall through
+    # unchanged to the pre-existing Twilio path below. Any lookup error
+    # here must never break the proven Twilio path - it degrades to "no
+    # Plivo number found".
+    plivo_from = None
+    try:
+        from app.plivo_repo import get_number_for_agent as _plivo_number_for_agent
+        plivo_from = await asyncio.to_thread(_plivo_number_for_agent, user_id, agent_id)
+    except Exception as e:
+        print(f"[HR Campaign Dialer] Plivo number lookup failed (non-fatal, falling back to Twilio): {e}")
+    if plivo_from:
+        await _dial_candidate_plivo(campaign, candidate_row, plivo_from)
+        return
+
     settings = await asyncio.to_thread(get_twilio_settings, user_id)
     base_url = (settings.get("webhook_base_url") or "").strip().rstrip("/")
     account_sid = settings.get("account_sid", "")
@@ -131,12 +147,27 @@ async def _dial_candidate(campaign: dict, candidate_row: dict):
         await _record_call_analytics(record_failed_call, user_id, call_title, agent_id, "No Twilio account connected for this user")
         return
 
-    from_number = await asyncio.to_thread(get_from_number, user_id, campaign["agent_id"])
-    if not from_number:
+    from_number_record = await asyncio.to_thread(get_from_number, user_id, campaign["agent_id"])
+    if not from_number_record:
         print(f"[HR Campaign Dialer] No Twilio phone number configured for user {user_id}")
         await asyncio.to_thread(mark_candidate_failed_and_release, campaign_id, campaign_candidate_id)
         await _record_call_analytics(record_failed_call, user_id, call_title, agent_id, "No active Twilio phone number configured")
         return
+
+    from_number = from_number_record["phone_number"]
+
+    # If this number is assigned to a specific Twilio account, that account's
+    # credentials must be used to place the call - Twilio rejects a "From"
+    # number dialed with another account's credentials. Falls back to the
+    # default account's credentials already resolved above when the number
+    # isn't assigned to a specific account.
+    twilio_account_id = from_number_record.get("twilio_account_id")
+    if twilio_account_id:
+        from app.user_twilio_settings_repo import get_twilio_account
+        account = await asyncio.to_thread(get_twilio_account, twilio_account_id, user_id)
+        if account and account.get("account_sid") and account.get("auth_token"):
+            account_sid = account["account_sid"]
+            auth_token = account["auth_token"]
 
     twiml_url = f"{base_url}/twilio/campaign/outbound/voice?campaign_candidate_id={campaign_candidate_id}"
     status_callback_url = f"{base_url}/twilio/campaign/status-callback"
@@ -192,3 +223,82 @@ async def _place_twilio_call(
     except Exception as e:
         print(f"[HR Campaign Dialer] HTTP error: {e}")
         return None, "Could not reach Twilio to place the call"
+
+
+async def _dial_candidate_plivo(campaign: dict, candidate_row: dict, from_number_record: dict):
+    """Plivo counterpart of the Twilio branch above - only reached once the
+    caller has already confirmed a Plivo number is attached to this
+    campaign's agent, so Twilio-only campaigns take the original path
+    completely untouched."""
+    from app.hr_campaign_repo import mark_calling, mark_candidate_failed_and_release
+    from app.user_plivo_settings_repo import get_plivo_settings, resolve_account_for_number
+    from app.conversation_repo import create_conversation, record_failed_call
+
+    campaign_id = campaign["id"]
+    campaign_candidate_id = candidate_row["id"]
+    agent_id = campaign.get("agent_id")
+    user_id = campaign["user_id"]
+    candidate = candidate_row.get("hr_candidates") or {}
+    candidate_name = candidate.get("name") or "candidate"
+    call_title = f"Campaign call - {candidate_name}"
+    to_number = candidate.get("phone", "")
+
+    if not to_number:
+        print(f"[HR Campaign Dialer] Missing phone for campaign_candidate {campaign_candidate_id}")
+        await asyncio.to_thread(mark_candidate_failed_and_release, campaign_id, campaign_candidate_id)
+        await _record_call_analytics(record_failed_call, user_id, call_title, agent_id, "Candidate has no phone number on file")
+        return
+
+    settings = await asyncio.to_thread(resolve_account_for_number, from_number_record, user_id)
+    base_url = (settings.get("webhook_base_url") or "").strip().rstrip("/")
+    auth_id = settings.get("auth_id", "")
+    auth_token = settings.get("auth_token", "")
+    if not (base_url and auth_id and auth_token):
+        print(f"[HR Campaign Dialer] Missing Plivo config for campaign_candidate {campaign_candidate_id}")
+        await asyncio.to_thread(mark_candidate_failed_and_release, campaign_id, campaign_candidate_id)
+        await _record_call_analytics(record_failed_call, user_id, call_title, agent_id, "No Plivo account connected for this user")
+        return
+
+    from_number = from_number_record["phone_number"]
+    answer_url = f"{base_url}/plivo/campaign/outbound/voice?campaign_candidate_id={campaign_candidate_id}"
+    hangup_url = f"{base_url}/plivo/campaign/status-callback"
+
+    call_uuid, fail_reason = await _place_plivo_call(auth_id, auth_token, from_number, to_number, answer_url, hangup_url)
+    if call_uuid:
+        print(f"[HR Campaign Dialer] Plivo call initiated: {call_uuid} → {to_number} (campaign {campaign_id})")
+        await asyncio.to_thread(mark_calling, campaign_candidate_id, call_uuid)
+        await _record_call_analytics(
+            create_conversation, user_id, call_title,
+            agent_id=agent_id, call_sid=call_uuid, call_status="ringing",
+        )
+    else:
+        await asyncio.to_thread(mark_candidate_failed_and_release, campaign_id, campaign_candidate_id)
+        await _record_call_analytics(record_failed_call, user_id, call_title, agent_id, fail_reason or "Call could not be placed")
+
+
+async def _place_plivo_call(
+    auth_id: str, auth_token: str, from_number: str, to_number: str,
+    answer_url: str, hangup_url: str,
+) -> tuple[str | None, str | None]:
+    """Places the call via the Plivo REST API. Plivo's answering-machine
+    detection is asynchronous (reported via a callback, not this response),
+    so - unlike the Twilio path - it isn't requested here; see the comment
+    on plivo_campaign_outbound_xml in app/main.py."""
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.post(
+                f"https://api.plivo.com/v1/Account/{auth_id}/Call/",
+                auth=(auth_id, auth_token),
+                json={
+                    "from": from_number, "to": to_number, "answer_url": answer_url,
+                    "answer_method": "GET", "hangup_url": hangup_url,
+                },
+            )
+            data = resp.json()
+            if resp.status_code in (200, 201, 202):
+                return data.get("request_uuid"), None
+            print(f"[HR Campaign Dialer] Plivo error {resp.status_code}: {data}")
+            return None, "Plivo rejected the call - check the phone number and account status"
+    except Exception as e:
+        print(f"[HR Campaign Dialer] Plivo HTTP error: {e}")
+        return None, "Could not reach Plivo to place the call"

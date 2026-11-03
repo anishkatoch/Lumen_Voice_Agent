@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "ClaudeInChromeDomain(localhost:3000)",
+      "mcp__claude-in-chrome__tabs_create_mcp"
+    ]
+  }
+}

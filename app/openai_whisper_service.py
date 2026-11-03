@@ -8,6 +8,17 @@ from openai import AsyncOpenAI
 from app.config import OPENAI_API_KEY
 
 
+_MIN_AUDIO_SECONDS = 0.15  # Whisper's API requires >= 0.1s - stay safely above that
+
+
+def _wav_duration_seconds(wav_bytes: bytes) -> float:
+    try:
+        with wave.open(io.BytesIO(wav_bytes), "rb") as wf:
+            return wf.getnframes() / float(wf.getframerate())
+    except Exception:
+        return 0.0
+
+
 class StreamingWhisperTranscriber:
     """Same interface as deepgram_service.StreamingTranscriber but uses Whisper batch API."""
 
@@ -26,6 +37,11 @@ class StreamingWhisperTranscriber:
             return None
         pcm = b"".join(self._chunks)
         wav = _pcm_to_wav(pcm)
+        if _wav_duration_seconds(wav) < _MIN_AUDIO_SECONDS:
+            # A VAD blip with barely any real audio - Whisper's API rejects
+            # anything under 0.1s with a 400 (audio_too_short); there's
+            # nothing worth transcribing here anyway.
+            return None
         try:
             resp = await self._client.audio.transcriptions.create(
                 model="whisper-1",
@@ -38,9 +54,18 @@ class StreamingWhisperTranscriber:
             print(f"[Whisper] Transcription error: {e}")
             return None
 
+    def get_last_partial(self) -> str | None:
+        """Whisper is batch-only - no partial transcript exists before finish()."""
+        return None
+
 
 async def transcribe_wav_whisper(wav_bytes: bytes) -> str | None:
     """Batch-transcribe a WAV file via Whisper."""
+    if _wav_duration_seconds(wav_bytes) < _MIN_AUDIO_SECONDS:
+        # Same guard as StreamingWhisperTranscriber.finish() - avoids a
+        # guaranteed 400 audio_too_short for callers that pass raw/short
+        # buffers directly (e.g. a Deepgram-empty-transcript fallback).
+        return None
     client = AsyncOpenAI(api_key=OPENAI_API_KEY)
     try:
         resp = await client.audio.transcriptions.create(

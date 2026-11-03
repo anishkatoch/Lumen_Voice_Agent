@@ -67,6 +67,9 @@ class _FakeStreamingTranscriber:
         self.finished = True
         return self._transcript
 
+    def get_last_partial(self):
+        return self._transcript
+
 
 def _mulaw_media_event(payload_bytes: bytes = None) -> str:
     payload_bytes = payload_bytes or (bytes([0x00]) * 160)
@@ -572,3 +575,231 @@ class TestSaveMessageSignature:
         from app.message_repo import save_message
         sig = inspect.signature(save_message)
         assert list(sig.parameters) == ["conversation_id", "user_id", "role", "content"]
+
+
+class TestBargeInStopsGenerationAndSpeech:
+    """Regression test for a real concern: when the caller barges in, does
+    the interruption actually stop BOTH halves of the response pipeline -
+    the LLM generating more text, and the TTS audio actually being spoken -
+    or could one keep running after the other appears to stop? Verified via
+    a slow, multi-sentence fake LLM stream with a real delay between
+    sentences, so there's a window to interrupt mid-response and check both
+    sides of the gap."""
+
+    async def test_barge_in_cancels_both_llm_stream_and_tts(self, mocker, mock_pipeline):
+        import asyncio
+
+        transcriber = _FakeStreamingTranscriber(transcript="what is the leave policy")
+        mocker.patch("app.deepgram_service.get_streaming_transcriber", return_value=transcriber)
+
+        # First ~5 chunks are the caller's initial question (speech), then
+        # silence to finalize it. Every chunk after that (the barge-in burst,
+        # sent later once the agent is mid-response) reports sustained speech.
+        def fake_detect_speech_factory():
+            n = {"count": 0}
+
+            async def fake_detect_speech(audio_bytes, sensitivity=0.5):
+                n["count"] += 1
+                if n["count"] <= 5:
+                    return True
+                if n["count"] <= 30:
+                    return False
+                return True
+            return fake_detect_speech
+
+        mocker.patch("app.vad_service.detect_speech", side_effect=fake_detect_speech_factory())
+
+        generation_state = {"cancelled": False, "yielded": []}
+
+        async def slow_multi_sentence_stream(
+            user_message, session_history, rag_context, long_term_memory,
+            system_prompt_override=None, kb_instructions=None,
+        ):
+            sentences = ["Sentence one.", "Sentence two.", "Sentence three.", "Sentence four."]
+            try:
+                for s in sentences:
+                    generation_state["yielded"].append(s)
+                    yield s
+                    await asyncio.sleep(0.4)
+            except asyncio.CancelledError:
+                generation_state["cancelled"] = True
+                raise
+
+        mocker.patch("app.llm_service.generate_response_stream", side_effect=slow_multi_sentence_stream)
+
+        tts_calls = []
+
+        async def recording_text_to_speech_twilio(text):
+            tts_calls.append(text)
+            yield bytes([0xFF]) * 80
+
+        mocker.patch(
+            "app.twilio_call_service.text_to_speech_twilio", side_effect=recording_text_to_speech_twilio
+        )
+
+        from app.main import app
+        client = TestClient(app)
+        with client.websocket_connect("/twilio/stream") as ws:
+            ws.send_text(json.dumps({
+                "event": "start",
+                "start": {"streamSid": STREAM_SID, "customParameters": {"to": TEST_PHONE}},
+            }))
+            # Caller's initial question: 5 speech chunks + exactly 25 silence
+            # chunks to finalize (matches SPEECH_THRESHOLD/SILENCE_THRESHOLD) -
+            # no extra chunks, so none of them spill into the barge-in check
+            # against the response that's about to start.
+            for _ in range(30):
+                ws.send_text(_mulaw_media_event())
+
+            # Let "Sentence one." get spoken, then interrupt mid-response
+            # (well before "Sentence two." at the 0.4s mark).
+            time.sleep(0.15)
+            for _ in range(6):  # > BARGE_IN_STREAK_NEEDED (4)
+                ws.send_text(_mulaw_media_event())
+
+            # Give the cancellation time to propagate, and long enough that
+            # "Sentence two."/"three."/"four." would have been spoken by now
+            # if the interruption hadn't actually stopped the old response.
+            time.sleep(1.5)
+            ws.send_text(json.dumps({"event": "stop", "streamSid": STREAM_SID}))
+
+        assert "Sentence one." in tts_calls, f"expected the first sentence to have been spoken, got {tts_calls}"
+        assert generation_state["cancelled"], "barge-in should cancel the in-flight LLM stream, not just stop speaking"
+        for later in ("Sentence two.", "Sentence three.", "Sentence four."):
+            assert later not in tts_calls, (
+                f"{later!r} was spoken after barge-in - interruption didn't actually stop "
+                f"the old response's audio, got tts_calls={tts_calls}"
+            )
+
+
+class TestCallEndCancelsInFlightResponse:
+    """Regression test: if the caller hangs up (or the stream otherwise
+    ends) while run_pipeline is still generating/speaking a reply, the
+    background task used to keep running after the socket closed, then
+    crashed with an unhandled RuntimeError('Cannot call "send" once a close
+    message has been sent') - wasted LLM/TTS calls for a reply nobody could
+    hear, and noisy unretrieved-exception logs. The fix cancels the
+    in-flight task in twilio_stream_endpoint's finally block."""
+
+    async def test_hangup_mid_response_cancels_pipeline_task(self, mocker, mock_pipeline):
+        import asyncio
+
+        transcriber = _FakeStreamingTranscriber(transcript="what is the leave policy")
+        mocker.patch("app.deepgram_service.get_streaming_transcriber", return_value=transcriber)
+
+        call_count = {"n": 0}
+
+        async def fake_detect_speech(audio_bytes, sensitivity=0.5):
+            call_count["n"] += 1
+            return call_count["n"] <= 5  # 5 speech chunks, then silence to finalize
+        mocker.patch("app.vad_service.detect_speech", side_effect=fake_detect_speech)
+
+        generation_state = {"cancelled": False}
+
+        async def slow_multi_sentence_stream(
+            user_message, session_history, rag_context, long_term_memory,
+            system_prompt_override=None, kb_instructions=None,
+        ):
+            try:
+                for s in ["Sentence one.", "Sentence two.", "Sentence three."]:
+                    yield s
+                    await asyncio.sleep(0.4)
+            except asyncio.CancelledError:
+                generation_state["cancelled"] = True
+                raise
+
+        mocker.patch("app.llm_service.generate_response_stream", side_effect=slow_multi_sentence_stream)
+
+        tts_calls = []
+
+        async def recording_text_to_speech_twilio(text):
+            tts_calls.append(text)
+            yield bytes([0xFF]) * 80
+
+        mocker.patch(
+            "app.twilio_call_service.text_to_speech_twilio", side_effect=recording_text_to_speech_twilio
+        )
+
+        from app.main import app
+        client = TestClient(app)
+        with client.websocket_connect("/twilio/stream") as ws:
+            ws.send_text(json.dumps({
+                "event": "start",
+                "start": {"streamSid": STREAM_SID, "customParameters": {"to": TEST_PHONE}},
+            }))
+            for _ in range(30):  # 5 speech + exactly 25 silence chunks to finalize
+                ws.send_text(_mulaw_media_event())
+
+            # "Sentence one." gets spoken, then the caller hangs up - well
+            # before "Sentence two." at the 0.4s mark - instead of a barge-in.
+            time.sleep(0.15)
+            ws.send_text(json.dumps({"event": "stop", "streamSid": STREAM_SID}))
+
+            # Give the server time to process "stop" and run its cleanup
+            # while the connection is still open - exiting the `with` block
+            # right away masks the bug (the client-side teardown races with,
+            # and can hide, what the orphaned task does on the server side).
+            time.sleep(1.0)
+
+        assert "Sentence one." in tts_calls, f"expected the first sentence to have been spoken, got {tts_calls}"
+        assert generation_state["cancelled"], "ending the call should cancel the in-flight LLM stream"
+        for later in ("Sentence two.", "Sentence three."):
+            assert later not in tts_calls, (
+                f"{later!r} was spoken after the call ended - the pipeline task wasn't cancelled "
+                f"on hangup, got tts_calls={tts_calls}"
+            )
+
+
+class TestRetrievalFiller:
+    """When RAG/LLM latency exceeds RETRIEVAL_FILLER_DELAY_SECONDS (1.2s) with
+    nothing spoken yet, run_pipeline should say a filler phrase to cover the
+    gap instead of leaving the caller in silence."""
+
+    async def test_slow_llm_response_triggers_filler_phrase(self, mocker, mock_pipeline):
+        from app.llm_service import FILLER_PHRASES
+
+        transcriber = _FakeStreamingTranscriber(transcript="tell me about my order")
+        mocker.patch("app.deepgram_service.get_streaming_transcriber", return_value=transcriber)
+
+        async def fake_detect_speech(audio_bytes, sensitivity=0.5):
+            fake_detect_speech.n += 1
+            return fake_detect_speech.n <= 5  # speak for 5 chunks, then go silent
+        fake_detect_speech.n = 0
+        mocker.patch("app.vad_service.detect_speech", side_effect=fake_detect_speech)
+
+        import asyncio
+
+        async def slow_generate_response_stream(
+            user_message, session_history, rag_context, long_term_memory,
+            system_prompt_override=None, kb_instructions=None,
+        ):
+            await asyncio.sleep(1.5)  # longer than RETRIEVAL_FILLER_DELAY_SECONDS (1.2s)
+            yield "Here is your order status."
+
+        mocker.patch("app.llm_service.generate_response_stream", side_effect=slow_generate_response_stream)
+
+        from app.main import app
+        client = TestClient(app)
+        with client.websocket_connect("/twilio/stream") as ws:
+            ws.send_text(json.dumps({
+                "event": "start",
+                "start": {"streamSid": STREAM_SID, "customParameters": {"to": TEST_PHONE}},
+            }))
+            for _ in range(40):
+                ws.send_text(_mulaw_media_event())
+            # Give the watchdog (1.2s) + the slow fake LLM (1.5s) + TTS time
+            # to finish before the `with` block tears the socket down.
+            time.sleep(3.5)
+            ws.send_text(json.dumps({"event": "stop", "streamSid": STREAM_SID}))
+
+        calls = mock_pipeline["save_message_calls"]
+        assistant_calls = [c for c in calls if c[0][2] == "assistant"]
+        assert assistant_calls, f"expected an assistant save_message call, got {calls}"
+        full_reply = assistant_calls[0][0][3]
+
+        assert any(phrase in full_reply for phrase in FILLER_PHRASES), (
+            f"expected a filler phrase to cover the slow LLM response, got: {full_reply!r}"
+        )
+        assert "Here is your order status." in full_reply, (
+            f"expected the real reply to still be spoken after the filler, got: {full_reply!r}"
+        )

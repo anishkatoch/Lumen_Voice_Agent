@@ -8,8 +8,17 @@ from app.config import (
 
 
 async def text_to_speech_stream(text: str):
-    """Async generator that yields PCM audio chunks from the configured TTS provider."""
+    """Async generator that yields PCM audio chunks from the configured TTS provider.
+    Falls back to OpenAI TTS if ElevenLabs fails or returns no audio."""
+    from app.config import OPENAI_PIPELINE_ENABLED, OPENAI_PIPELINE_TTS_VOICE, OPENAI_PIPELINE_TTS_MODEL
     from app.admin_config_service import get as get_config
+
+    if OPENAI_PIPELINE_ENABLED:
+        from app.openai_tts_service import text_to_speech_openai
+        async for chunk in text_to_speech_openai(text, voice=OPENAI_PIPELINE_TTS_VOICE, model=OPENAI_PIPELINE_TTS_MODEL):
+            yield chunk
+        return
+
     if get_config("tts_provider") == "openai_tts":
         from app.openai_tts_service import text_to_speech_openai
         voice = get_config("tts_openai_voice") or "alloy"
@@ -18,17 +27,18 @@ async def text_to_speech_stream(text: str):
             yield chunk
         return
 
-    client = ElevenLabs(api_key=ELEVENLABS_API_KEY)
-
-    settings = VoiceSettings(
-        stability=TTS_STABILITY,
-        similarity_boost=TTS_SIMILARITY_BOOST,
-        style=TTS_STYLE,
-        use_speaker_boost=TTS_SPEAKER_BOOST,
-    )
-
     print(f"[ElevenLabs] Requesting TTS for: {text[:60]}")
+    chunk_count = 0
     try:
+        # Client construction is inside the try too - an auth/network error
+        # here must also trigger the OpenAI fallback below, not crash.
+        client = ElevenLabs(api_key=ELEVENLABS_API_KEY)
+        settings = VoiceSettings(
+            stability=TTS_STABILITY,
+            similarity_boost=TTS_SIMILARITY_BOOST,
+            style=TTS_STYLE,
+            use_speaker_boost=TTS_SPEAKER_BOOST,
+        )
         audio_stream = await asyncio.to_thread(
             client.text_to_speech.convert_as_stream,
             voice_id=TTS_VOICE_ID,
@@ -37,7 +47,6 @@ async def text_to_speech_stream(text: str):
             voice_settings=settings,
             output_format=TTS_OUTPUT_FORMAT,
         )
-        chunk_count = 0
         for chunk in audio_stream:
             if chunk:
                 chunk_count += 1
@@ -47,7 +56,12 @@ async def text_to_speech_stream(text: str):
         import traceback
         print(f"[ElevenLabs] TTS error: {type(e).__name__}: {e}")
         traceback.print_exc()
-        return
+
+    if chunk_count == 0:
+        print("[ElevenLabs] No audio produced - falling back to OpenAI TTS")
+        from app.openai_tts_service import text_to_speech_openai
+        async for chunk in text_to_speech_openai(text, voice="alloy", model="tts-1"):
+            yield chunk
 
 
 async def text_to_speech_bytes(text: str) -> bytes | None:

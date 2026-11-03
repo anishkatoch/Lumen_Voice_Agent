@@ -46,6 +46,15 @@ SUPABASE_ANON_KEY       = os.environ["SUPABASE_ANON_KEY"]
 SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or os.environ["SUPABASE_ANON_KEY"]
 SUPABASE_JWT_SECRET     = os.environ.get("SUPABASE_JWT_SECRET") or ""
 OPENAI_API_KEY          = os.environ["OPENAI_API_KEY"]
+
+# Azure OpenAI - primary LLM source when configured (falls back to plain OpenAI
+# below if unset or if a request to Azure fails). Optional: leaving these unset
+# keeps today's plain-OpenAI-only behavior unchanged.
+AZURE_OPENAI_API_KEY     = os.environ.get("AZURE_OPENAI_API_KEY", "")
+AZURE_OPENAI_ENDPOINT    = os.environ.get("AZURE_OPENAI_ENDPOINT", "")
+AZURE_OPENAI_API_VERSION = os.environ.get("AZURE_OPENAI_API_VERSION", "2024-10-21")
+AZURE_OPENAI_DEPLOYMENT  = os.environ.get("AZURE_OPENAI_DEPLOYMENT", "gpt-4.1-mini")
+
 DEEPGRAM_API_KEY        = os.environ["DEEPGRAM_API_KEY"]
 ELEVENLABS_API_KEY      = os.environ["ELEVENLABS_API_KEY"]
 WEBHOOK_SECRET          = os.environ.get("WEBHOOK_SECRET", "")
@@ -63,10 +72,13 @@ VAD_MIN_SPEECH           = int(cfg("vad",   "min_speech_chunks",     default=2))
 VAD_SILERO_MIN           = float(cfg("vad", "silero_threshold_min",  default=0.20))
 VAD_SILERO_MAX           = float(cfg("vad", "silero_threshold_max",  default=0.80))
 
+TURN_HEURISTIC_ENABLED        = bool(cfg("vad", "turn_heuristic_enabled", default=True))
+
 LLM_MODEL               = cfg("llm", "model", default="gpt-4o")
 LLM_TIMEOUT             = int(cfg("llm", "timeout_seconds", default=10))
 LLM_MAX_TOKENS          = int(cfg("llm", "max_tokens", default=500))
 LLM_TEMPERATURE         = float(cfg("llm", "temperature", default=0.7))
+LLM_FALLBACK_MODEL      = cfg("llm", "fallback_model", default="gpt-5-mini")
 MEMORY_MODEL            = cfg("llm", "memory_model", default="gpt-4o-mini")
 MEMORY_MAX_TOKENS       = int(cfg("llm", "memory_max_tokens", default=300))
 MEMORY_UPDATE_EVERY     = int(cfg("llm", "memory_update_every", default=10))
@@ -82,6 +94,10 @@ TTS_STABILITY           = float(cfg("tts", "stability", default=0.5))
 TTS_SIMILARITY_BOOST    = float(cfg("tts", "similarity_boost", default=0.75))
 TTS_STYLE               = float(cfg("tts", "style", default=0.0))
 TTS_SPEAKER_BOOST       = bool(cfg("tts", "use_speaker_boost", default=True))
+
+OPENAI_PIPELINE_ENABLED  = bool(cfg("openai_pipeline", "enabled", default=False))
+OPENAI_PIPELINE_TTS_VOICE = cfg("openai_pipeline", "tts_voice", default="alloy")
+OPENAI_PIPELINE_TTS_MODEL = cfg("openai_pipeline", "tts_model", default="tts-1")
 
 WS_MAX_USERS            = int(cfg("websocket", "max_concurrent_users", default=50))
 

@@ -46,9 +46,25 @@ vad:
   silero_threshold_min:  0.20   # threshold when sensitivity = 1.0 (easiest trigger)
   silero_threshold_max:  0.80   # threshold when sensitivity = 0.0 (hardest trigger)
 
+  # Text-only "did they actually finish?" check on top of silence timing -
+  # looks at the live partial transcript for trailing fillers/conjunctions
+  # ("and", "um", "I mean...") and gives the caller a bit more time instead
+  # of cutting them off mid-thought. No model, no added latency.
+  turn_heuristic_enabled: true
+
 # ─── LLM ─────────────────────────────────────────────────────────────
+#
+#  Default provider path (llm_provider="openai" in admin_config, no custom
+#  key/base_url): Azure OpenAI is tried first using AZURE_OPENAI_* env vars
+#  (deployment name set via AZURE_OPENAI_DEPLOYMENT, default "gpt-4.1-mini").
+#  If Azure is not configured, or a request to Azure fails, requests fall
+#  back to plain OpenAI using fallback_model below. Admin-selected providers
+#  other than the default (groq/anthropic/ollama) or a custom key/base_url
+#  bypass Azure entirely and are unaffected by this.
+#
 llm:
   model: "gpt-4o-mini"
+  fallback_model: "gpt-5-mini"  # used only if Azure OpenAI (primary) fails/unreachable
   timeout_seconds: 10
   max_tokens: 500
   temperature: 0.7
@@ -72,6 +88,19 @@ tts:
   similarity_boost: 0.75
   style: 0.0
   use_speaker_boost: true
+
+# ─── OpenAI-Only Pipeline ────────────────────────────────────────────
+#
+#  Separate from the stt_provider/tts_provider admin-panel toggles above.
+#  When enabled, every call (browser + Twilio) uses OpenAI exclusively for
+#  both STT (Whisper) and TTS, bypassing Deepgram and ElevenLabs entirely -
+#  including the Deepgram-to-OpenAI and ElevenLabs-to-OpenAI fallback paths,
+#  since there is nothing left to fall back from.
+#
+openai_pipeline:
+  enabled: false        # set true to activate this pipeline
+  tts_voice: "alloy"     # alloy | echo | fable | onyx | nova | shimmer
+  tts_model: "tts-1"     # tts-1 | tts-1-hd
 
 # ─── WebSocket ───────────────────────────────────────────────────────
 websocket:

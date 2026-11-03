@@ -14,7 +14,11 @@ class StreamingTranscriber:
         self._client = DeepgramClient(api_key=DEEPGRAM_API_KEY)
         self._connection = None
         self._transcript = ""
+        self._last_partial = ""
         self._done = asyncio.Event()
+        # Buffered alongside streaming to Deepgram so finish() can fall back
+        # to OpenAI Whisper on the same audio if the live transcript is empty.
+        self._raw_chunks: list[bytes] = []
 
     async def start(self):
         options = LiveOptions(
@@ -22,7 +26,7 @@ class StreamingTranscriber:
             language=STT_LANGUAGE,
             smart_format=True,
             punctuate=True,
-            interim_results=False,
+            interim_results=True,
             encoding="linear16",
             sample_rate=16000,
             channels=1,
@@ -31,7 +35,13 @@ class StreamingTranscriber:
 
         async def on_transcript(_, result, **__):
             alt = result.channel.alternatives[0]
-            if result.is_final and alt.transcript:
+            if not alt.transcript:
+                return
+            # Tracked on every event (interim or final) so a caller can peek
+            # at how the in-progress utterance currently reads, e.g. to
+            # decide whether a pause looks like a real end-of-turn.
+            self._last_partial = alt.transcript
+            if result.is_final:
                 self._transcript += (" " if self._transcript else "") + alt.transcript
 
         async def on_close(_, **__):
@@ -48,6 +58,7 @@ class StreamingTranscriber:
         await self._connection.start(options)
 
     async def send(self, pcm_bytes: bytes):
+        self._raw_chunks.append(pcm_bytes)
         if self._connection:
             await self._connection.send(pcm_bytes)
 
@@ -59,11 +70,29 @@ class StreamingTranscriber:
             except asyncio.TimeoutError:
                 pass
         result = self._transcript.strip()
-        return result if result else None
+        if result:
+            return result
+        if self._raw_chunks:
+            print("[Deepgram] Live stream produced no transcript - falling back to OpenAI Whisper")
+            from app.openai_whisper_service import transcribe_wav_whisper
+            from app.vad_service import build_wav_bytes
+            wav_bytes = build_wav_bytes(b"".join(self._raw_chunks))
+            return await transcribe_wav_whisper(wav_bytes)
+        return None
+
+    def get_last_partial(self) -> str | None:
+        """Most recent transcript text seen for the in-progress utterance
+        (interim or final), without waiting for `finish()`. Returns None if
+        nothing has been recognized yet."""
+        return self._last_partial or None
 
 
 def get_streaming_transcriber():
     """Return a streaming transcriber for the configured STT provider."""
+    from app.config import OPENAI_PIPELINE_ENABLED
+    if OPENAI_PIPELINE_ENABLED:
+        from app.openai_whisper_service import StreamingWhisperTranscriber
+        return StreamingWhisperTranscriber()
     from app.admin_config_service import get as get_config
     if get_config("stt_provider") == "openai_whisper":
         from app.openai_whisper_service import StreamingWhisperTranscriber
@@ -72,12 +101,22 @@ def get_streaming_transcriber():
 
 
 async def transcribe_audio_smart(audio_bytes: bytes) -> str | None:
-    """Transcribe audio using the configured STT provider."""
+    """Transcribe audio using the configured STT provider. Falls back to
+    OpenAI Whisper if Deepgram fails or returns nothing."""
+    from app.config import OPENAI_PIPELINE_ENABLED
+    if OPENAI_PIPELINE_ENABLED:
+        from app.openai_whisper_service import transcribe_wav_whisper
+        return await transcribe_wav_whisper(audio_bytes)
     from app.admin_config_service import get as get_config
     if get_config("stt_provider") == "openai_whisper":
         from app.openai_whisper_service import transcribe_wav_whisper
         return await transcribe_wav_whisper(audio_bytes)
-    return await transcribe_audio(audio_bytes)
+    transcript = await transcribe_audio(audio_bytes)
+    if not transcript:
+        print("[Deepgram] Prerecorded transcription failed/empty - falling back to OpenAI Whisper")
+        from app.openai_whisper_service import transcribe_wav_whisper
+        transcript = await transcribe_wav_whisper(audio_bytes)
+    return transcript
 
 
 async def transcribe_audio(audio_bytes: bytes) -> str | None:

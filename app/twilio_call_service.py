@@ -102,71 +102,94 @@ def pcm16k_to_twilio_payload(pcm16k: bytes) -> str:
     return base64.b64encode(mulaw).decode()
 
 
+async def _openai_tts_twilio(text: str, voice: str = "alloy", model: str = "tts-1"):
+    """OpenAI TTS path: PCM 16 kHz from OpenAI, downsampled + encoded to μ-law 8 kHz for Twilio."""
+    from app.openai_tts_service import text_to_speech_openai
+    async for pcm16k_chunk in text_to_speech_openai(text, voice=voice, model=model):
+        if pcm16k_chunk:
+            pcm8k = resample_16k_to_8k(pcm16k_chunk)
+            yield mulaw_encode(pcm8k)
+
+
 async def text_to_speech_twilio(text: str):
     """
     Yields raw μ-law 8 kHz bytes ready to send to Twilio Media Streams.
 
     ElevenLabs path: requests ulaw_8000 format directly - no conversion needed.
     OpenAI TTS path: gets PCM 16 kHz then downsamples + encodes to μ-law 8 kHz.
+    Falls back from ElevenLabs to OpenAI TTS if ElevenLabs fails or returns no audio.
 
     Do NOT use text_to_speech_stream() here - it returns MP3 or PCM for the browser,
     not the μ-law format Twilio requires.
     """
     import asyncio
     from app.admin_config_service import get as get_config
+    from app.config import OPENAI_PIPELINE_ENABLED, OPENAI_PIPELINE_TTS_VOICE, OPENAI_PIPELINE_TTS_MODEL
+
+    if OPENAI_PIPELINE_ENABLED:
+        async for chunk in _openai_tts_twilio(text, voice=OPENAI_PIPELINE_TTS_VOICE, model=OPENAI_PIPELINE_TTS_MODEL):
+            yield chunk
+        return
 
     provider = get_config("tts_provider")
 
     if provider == "openai_tts":
-        from app.openai_tts_service import text_to_speech_openai
         voice = get_config("tts_openai_voice") or "alloy"
         model = get_config("tts_openai_model") or "tts-1"
-        async for pcm16k_chunk in text_to_speech_openai(text, voice=voice, model=model):
-            if pcm16k_chunk:
-                pcm8k = resample_16k_to_8k(pcm16k_chunk)
-                yield mulaw_encode(pcm8k)
-    else:
-        # ElevenLabs - ulaw_8000 is native μ-law 8 kHz, exactly what Twilio wants
-        from elevenlabs.client import ElevenLabs
-        from elevenlabs import VoiceSettings
-        from app.config import (
-            ELEVENLABS_API_KEY, TTS_VOICE_ID, TTS_MODEL_ID,
-            TTS_STABILITY, TTS_SIMILARITY_BOOST, TTS_STYLE, TTS_SPEAKER_BOOST,
-        )
-        client = ElevenLabs(api_key=ELEVENLABS_API_KEY)
-        settings = VoiceSettings(
-            stability=TTS_STABILITY,
-            similarity_boost=TTS_SIMILARITY_BOOST,
-            style=TTS_STYLE,
-            use_speaker_boost=TTS_SPEAKER_BOOST,
-        )
-        print(f"[Twilio TTS] Requesting ulaw_8000 for: {text[:60]}")
-        queue: asyncio.Queue = asyncio.Queue()
+        async for chunk in _openai_tts_twilio(text, voice=voice, model=model):
+            yield chunk
+        return
 
-        def _stream_to_queue():
-            """Run ElevenLabs sync iterator in a thread, push chunks to the async queue."""
-            try:
-                audio_stream = client.text_to_speech.convert_as_stream(
-                    voice_id=TTS_VOICE_ID,
-                    text=text,
-                    model_id=TTS_MODEL_ID,
-                    voice_settings=settings,
-                    output_format="ulaw_8000",
-                )
-                for chunk in audio_stream:
-                    if chunk:
-                        queue.put_nowait(chunk)
-            except Exception as e:
-                import traceback
-                print(f"[Twilio TTS] Error: {type(e).__name__}: {e}")
-                traceback.print_exc()
-            finally:
-                queue.put_nowait(None)  # sentinel
+    # ElevenLabs - ulaw_8000 is native μ-law 8 kHz, exactly what Twilio wants
+    from elevenlabs.client import ElevenLabs
+    from elevenlabs import VoiceSettings
+    from app.config import (
+        ELEVENLABS_API_KEY, TTS_VOICE_ID, TTS_MODEL_ID,
+        TTS_STABILITY, TTS_SIMILARITY_BOOST, TTS_STYLE, TTS_SPEAKER_BOOST,
+    )
+    print(f"[Twilio TTS] Requesting ulaw_8000 for: {text[:60]}")
+    queue: asyncio.Queue = asyncio.Queue()
 
-        loop = asyncio.get_event_loop()
-        loop.run_in_executor(None, _stream_to_queue)
-        while True:
-            chunk = await queue.get()
-            if chunk is None:
-                break
+    def _stream_to_queue():
+        """Run ElevenLabs sync iterator in a thread, push chunks to the async queue.
+        Client construction happens in here too - an auth/network error there
+        must also funnel into the OpenAI fallback below, not crash."""
+        try:
+            client = ElevenLabs(api_key=ELEVENLABS_API_KEY)
+            settings = VoiceSettings(
+                stability=TTS_STABILITY,
+                similarity_boost=TTS_SIMILARITY_BOOST,
+                style=TTS_STYLE,
+                use_speaker_boost=TTS_SPEAKER_BOOST,
+            )
+            audio_stream = client.text_to_speech.convert_as_stream(
+                voice_id=TTS_VOICE_ID,
+                text=text,
+                model_id=TTS_MODEL_ID,
+                voice_settings=settings,
+                output_format="ulaw_8000",
+            )
+            for chunk in audio_stream:
+                if chunk:
+                    queue.put_nowait(chunk)
+        except Exception as e:
+            import traceback
+            print(f"[Twilio TTS] Error: {type(e).__name__}: {e}")
+            traceback.print_exc()
+        finally:
+            queue.put_nowait(None)  # sentinel
+
+    loop = asyncio.get_event_loop()
+    loop.run_in_executor(None, _stream_to_queue)
+    got_chunk = False
+    while True:
+        chunk = await queue.get()
+        if chunk is None:
+            break
+        got_chunk = True
+        yield chunk
+
+    if not got_chunk:
+        print("[Twilio TTS] ElevenLabs produced no audio - falling back to OpenAI TTS")
+        async for chunk in _openai_tts_twilio(text):
             yield chunk

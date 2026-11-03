@@ -74,8 +74,10 @@ export const API = {
       } catch { /* not JSON */ }
       throw new Error(detail);
     }
-    const data = await res.json();
-    return data as T;
+    if (res.status === 204) return undefined as T;
+    const text = await res.text();
+    if (!text) return undefined as T;
+    return JSON.parse(text) as T;
   },
 
   async upload<T>(path: string, formData: FormData): Promise<T> {
@@ -228,7 +230,8 @@ export const API = {
   campaigns: () => API.request<Campaign[]>("/api/hr/campaigns"),
   createCampaign: (data: {
     agent_id: string; name: string; questions: CampaignQuestion[];
-    max_retry_attempts?: number; retry_delay_minutes?: number; call_gap_minutes?: number;
+    max_retry_attempts?: number; retry_delay_minutes?: number; failed_retry_delay_minutes?: number;
+    call_gap_minutes?: number;
   }) => API.request<Campaign>("/api/hr/campaigns", { method: "POST", body: JSON.stringify(data) }),
   updateCampaign: (id: string, data: Partial<Omit<Campaign, "id" | "user_id" | "created_at">>) =>
     API.request<Campaign>(`/api/hr/campaigns/${id}`, { method: "PUT", body: JSON.stringify(data) }),
@@ -247,9 +250,9 @@ export const API = {
 
   // Twilio Phone Numbers
   phoneNumbers: () => API.request<PhoneNumber[]>("/api/twilio/numbers"),
-  addPhoneNumber: (data: { phone_number: string; friendly_name?: string }) =>
+  addPhoneNumber: (data: { phone_number: string; friendly_name?: string; twilio_account_id?: string }) =>
     API.request<PhoneNumber>("/api/twilio/numbers", { method: "POST", body: JSON.stringify(data) }),
-  updatePhoneNumber: (numberId: string, data: { friendly_name?: string; is_active?: boolean }) =>
+  updatePhoneNumber: (numberId: string, data: { friendly_name?: string; is_active?: boolean; twilio_account_id?: string }) =>
     API.request<PhoneNumber>(`/api/twilio/numbers/${numberId}`, { method: "PUT", body: JSON.stringify(data) }),
   attachPhoneNumber: (numberId: string, agentId: string) =>
     API.request<PhoneNumber>(`/api/twilio/numbers/${numberId}/attach`, { method: "POST", body: JSON.stringify({ agent_id: agentId }) }),
@@ -257,6 +260,41 @@ export const API = {
     API.request<PhoneNumber>(`/api/twilio/numbers/${numberId}/attach`, { method: "DELETE" }),
   deletePhoneNumber: (numberId: string) =>
     API.request<void>(`/api/twilio/numbers/${numberId}`, { method: "DELETE" }),
+
+  // Twilio Accounts (multiple connections per user)
+  twilioAccounts: () => API.request<TwilioAccount[]>("/api/twilio/accounts"),
+  addTwilioAccount: (data: { label?: string; account_sid?: string; auth_token?: string; webhook_base_url?: string; is_default?: boolean }) =>
+    API.request<TwilioAccount>("/api/twilio/accounts", { method: "POST", body: JSON.stringify(data) }),
+  updateTwilioAccount: (accountId: string, data: { label?: string; account_sid?: string; auth_token?: string; webhook_base_url?: string }) =>
+    API.request<TwilioAccount>(`/api/twilio/accounts/${accountId}`, { method: "PUT", body: JSON.stringify(data) }),
+  deleteTwilioAccount: (accountId: string) =>
+    API.request<void>(`/api/twilio/accounts/${accountId}`, { method: "DELETE" }),
+  setDefaultTwilioAccount: (accountId: string) =>
+    API.request<TwilioAccount>(`/api/twilio/accounts/${accountId}/set-default`, { method: "POST" }),
+
+  // Plivo Phone Numbers (mirrors the Twilio section above)
+  plivoPhoneNumbers: () => API.request<PlivoPhoneNumber[]>("/api/plivo/numbers"),
+  addPlivoPhoneNumber: (data: { phone_number: string; friendly_name?: string; plivo_account_id?: string }) =>
+    API.request<PlivoPhoneNumber>("/api/plivo/numbers", { method: "POST", body: JSON.stringify(data) }),
+  updatePlivoPhoneNumber: (numberId: string, data: { friendly_name?: string; is_active?: boolean; plivo_account_id?: string }) =>
+    API.request<PlivoPhoneNumber>(`/api/plivo/numbers/${numberId}`, { method: "PUT", body: JSON.stringify(data) }),
+  attachPlivoPhoneNumber: (numberId: string, agentId: string) =>
+    API.request<PlivoPhoneNumber>(`/api/plivo/numbers/${numberId}/attach`, { method: "POST", body: JSON.stringify({ agent_id: agentId }) }),
+  detachPlivoPhoneNumber: (numberId: string) =>
+    API.request<PlivoPhoneNumber>(`/api/plivo/numbers/${numberId}/attach`, { method: "DELETE" }),
+  deletePlivoPhoneNumber: (numberId: string) =>
+    API.request<void>(`/api/plivo/numbers/${numberId}`, { method: "DELETE" }),
+
+  // Plivo Accounts (multiple connections per user)
+  plivoAccounts: () => API.request<PlivoAccount[]>("/api/plivo/accounts"),
+  addPlivoAccount: (data: { label?: string; auth_id?: string; auth_token?: string; webhook_base_url?: string; is_default?: boolean }) =>
+    API.request<PlivoAccount>("/api/plivo/accounts", { method: "POST", body: JSON.stringify(data) }),
+  updatePlivoAccount: (accountId: string, data: { label?: string; auth_id?: string; auth_token?: string; webhook_base_url?: string }) =>
+    API.request<PlivoAccount>(`/api/plivo/accounts/${accountId}`, { method: "PUT", body: JSON.stringify(data) }),
+  deletePlivoAccount: (accountId: string) =>
+    API.request<void>(`/api/plivo/accounts/${accountId}`, { method: "DELETE" }),
+  setDefaultPlivoAccount: (accountId: string) =>
+    API.request<PlivoAccount>(`/api/plivo/accounts/${accountId}/set-default`, { method: "POST" }),
 
   // Admin
   isAdmin: () => API.request<{ is_admin: boolean }>("/api/admin/is-admin"),
@@ -418,6 +456,7 @@ export interface Campaign {
   last_call_ended_at?: string | null;
   max_retry_attempts: number;
   retry_delay_minutes: number;
+  failed_retry_delay_minutes: number;
   call_gap_minutes: number;
   created_at: string;
 }
@@ -449,6 +488,44 @@ export interface PhoneNumber {
   phone_number: string;
   friendly_name?: string | null;
   agent_id?: string | null;
+  twilio_account_id?: string | null;
   is_active: boolean;
   created_at: string;
+}
+
+export interface TwilioAccount {
+  id: string;
+  user_id: string;
+  label: string;
+  account_sid: string;
+  auth_token: string;
+  auth_token_set?: boolean;
+  webhook_base_url: string;
+  is_default: boolean;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface PlivoPhoneNumber {
+  id: string;
+  user_id: string;
+  phone_number: string;
+  friendly_name?: string | null;
+  agent_id?: string | null;
+  plivo_account_id?: string | null;
+  is_active: boolean;
+  created_at: string;
+}
+
+export interface PlivoAccount {
+  id: string;
+  user_id: string;
+  label: string;
+  auth_id: string;
+  auth_token: string;
+  auth_token_set?: boolean;
+  webhook_base_url: string;
+  is_default: boolean;
+  created_at?: string;
+  updated_at?: string;
 }

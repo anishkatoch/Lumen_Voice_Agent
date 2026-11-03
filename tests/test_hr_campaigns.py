@@ -31,7 +31,7 @@ def _campaign(**kw):
         "id": TEST_CAMPAIGN_ID, "user_id": TEST_USER_ID, "agent_id": TEST_AGENT_ID,
         "name": "Q3 Screening", "questions": [{"id": "q1", "text": "Why this role?"}],
         "status": "draft", "active_candidate_id": None, "last_call_ended_at": None,
-        "max_retry_attempts": 2, "retry_delay_minutes": 10, "call_gap_minutes": 4,
+        "max_retry_attempts": 4, "retry_delay_minutes": 3, "failed_retry_delay_minutes": 5, "call_gap_minutes": 4,
         "created_at": "2026-07-17T00:00:00+00:00",
         **kw,
     }
@@ -510,7 +510,7 @@ class TestRequeueEligibleRetries:
         mocker.patch("app.hr_campaign_repo.get_supabase", return_value=db)
 
         from app.hr_campaign_repo import requeue_eligible_retries
-        requeue_eligible_retries(TEST_CAMPAIGN_ID, retry_delay_minutes=10, max_retry_attempts=2)
+        requeue_eligible_retries(_campaign(retry_delay_minutes=10, max_retry_attempts=2), failed_retry_delay_minutes=10)
 
         db.table("hr_campaign_candidates").update.assert_any_call({"status": "queued"})
 
@@ -520,7 +520,7 @@ class TestRequeueEligibleRetries:
         mocker.patch("app.hr_campaign_repo.get_supabase", return_value=db)
 
         from app.hr_campaign_repo import requeue_eligible_retries
-        requeue_eligible_retries(TEST_CAMPAIGN_ID, retry_delay_minutes=10, max_retry_attempts=2)
+        requeue_eligible_retries(_campaign(retry_delay_minutes=10, max_retry_attempts=2), failed_retry_delay_minutes=10)
 
         db.table.assert_any_call("hr_campaign_candidates")
         assert mocker.call({"status": "queued"}) not in db.table("hr_campaign_candidates").update.call_args_list
@@ -529,11 +529,25 @@ class TestRequeueEligibleRetries:
         row = _campaign_candidate(status="no_answer", attempt_count=3, last_attempt_at=_iso(minutes_ago=15))
         db, update_chain = self._make_db(mocker, [row])
         mocker.patch("app.hr_campaign_repo.get_supabase", return_value=db)
+        mocker.patch("app.hr_campaign_repo._record_exhaustion_analytics")
 
         from app.hr_campaign_repo import requeue_eligible_retries
-        requeue_eligible_retries(TEST_CAMPAIGN_ID, retry_delay_minutes=10, max_retry_attempts=2)
+        requeue_eligible_retries(_campaign(retry_delay_minutes=10, max_retry_attempts=2), failed_retry_delay_minutes=10)
 
         db.table("hr_campaign_candidates").update.assert_any_call({"status": "exhausted"})
+
+    def test_retries_failed_candidate_on_its_own_delay(self, mocker):
+        row = _campaign_candidate(status="failed", attempt_count=1, last_attempt_at=_iso(minutes_ago=6))
+        db, update_chain = self._make_db(mocker, [row])
+        mocker.patch("app.hr_campaign_repo.get_supabase", return_value=db)
+
+        from app.hr_campaign_repo import requeue_eligible_retries
+        # retry_delay_minutes (busy/no_answer) is 10, far longer than the 6
+        # minutes elapsed - but failed_retry_delay_minutes=5 has elapsed, so
+        # this failed candidate should still be promoted back to queued.
+        requeue_eligible_retries(_campaign(retry_delay_minutes=10, max_retry_attempts=2), failed_retry_delay_minutes=5)
+
+        db.table("hr_campaign_candidates").update.assert_any_call({"status": "queued"})
 
 
 class TestMaybeCompleteCampaign:
@@ -595,7 +609,8 @@ class TestDialCandidate:
         mocker.patch("app.user_twilio_settings_repo.get_twilio_settings", return_value={
             "webhook_base_url": "https://example.ngrok.io", "account_sid": "ACfake", "auth_token": "faketoken",
         })
-        mocker.patch("app.twilio_repo.get_from_number", return_value="+15550001111")
+        mocker.patch("app.twilio_repo.get_from_number",
+                     return_value={"phone_number": "+15550001111", "twilio_account_id": None})
         mocker.patch("app.hr_campaign_service._place_twilio_call", new=mocker.AsyncMock(return_value=(TEST_CALL_SID, None)))
         mock_mark_calling = mocker.patch("app.hr_campaign_repo.mark_calling")
         mock_mark_failed = mocker.patch("app.hr_campaign_repo.mark_candidate_failed_and_release")
@@ -651,7 +666,8 @@ class TestDialCandidate:
         mocker.patch("app.user_twilio_settings_repo.get_twilio_settings", return_value={
             "webhook_base_url": "https://example.ngrok.io", "account_sid": "ACfake", "auth_token": "faketoken",
         })
-        mocker.patch("app.twilio_repo.get_from_number", return_value="+15550001111")
+        mocker.patch("app.twilio_repo.get_from_number",
+                     return_value={"phone_number": "+15550001111", "twilio_account_id": None})
         mocker.patch("app.hr_campaign_service._place_twilio_call",
                      new=mocker.AsyncMock(return_value=(None, "Twilio rejected the call - check the phone number and account status")))
         mock_mark_failed = mocker.patch("app.hr_campaign_repo.mark_candidate_failed_and_release")
@@ -670,7 +686,8 @@ class TestDialCandidate:
         mocker.patch("app.user_twilio_settings_repo.get_twilio_settings", return_value={
             "webhook_base_url": "https://example.ngrok.io", "account_sid": "ACfake", "auth_token": "faketoken",
         })
-        mocker.patch("app.twilio_repo.get_from_number", return_value="+15550001111")
+        mocker.patch("app.twilio_repo.get_from_number",
+                     return_value={"phone_number": "+15550001111", "twilio_account_id": None})
         mocker.patch("app.hr_campaign_repo.mark_calling")
         mocker.patch("app.conversation_repo.create_conversation")
 

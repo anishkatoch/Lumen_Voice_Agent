@@ -1,7 +1,7 @@
 from app.database import get_supabase
 
 MAX_USER_KB_BYTES = 10 * 1024 * 1024  # 10 MB total per user
-MAX_USER_KB_FILE_BYTES = 3 * 1024 * 1024  # 3 MB per file
+MAX_USER_KB_FILE_BYTES = 5 * 1024 * 1024  # 5 MB per file
 
 
 def get_user_kb_limit() -> int:

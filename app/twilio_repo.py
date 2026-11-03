@@ -44,6 +44,7 @@ def create_phone_number(
     user_id: str,
     phone_number: str,
     friendly_name: str | None = None,
+    twilio_account_id: str | None = None,
 ) -> dict:
     db = get_supabase()
     result = (
@@ -53,6 +54,7 @@ def create_phone_number(
                 "user_id": user_id,
                 "phone_number": phone_number.strip(),
                 "friendly_name": friendly_name,
+                "twilio_account_id": twilio_account_id,
             }
         )
         .execute()
@@ -63,7 +65,7 @@ def create_phone_number(
 
 
 def update_phone_number(number_id: str, user_id: str, **fields) -> dict:
-    allowed = {"friendly_name", "is_active"}
+    allowed = {"friendly_name", "is_active", "twilio_account_id"}
     update = {k: v for k, v in fields.items() if k in allowed}
     db = get_supabase()
     result = (
@@ -113,18 +115,21 @@ def delete_phone_number(number_id: str, user_id: str) -> None:
     ).execute()
 
 
-def get_from_number(user_id: str, agent_id: str) -> str | None:
+def get_from_number(user_id: str, agent_id: str) -> dict | None:
     """
     Pick a 'from' number for an outbound call: the agent's own attached
-    number, falling back to any other active number for the user. New,
-    additive helper for the campaign dialer (app/hr_campaign_service.py) -
-    mirrors the inline lookup in app/hr_scheduler.py's _initiate_outbound_call
-    without modifying that existing, working function.
+    number, falling back to any other active number for the user. Returns
+    the phone_number plus the twilio_account_id it's assigned to (None if
+    it's not assigned to a specific Twilio account - caller should fall
+    back to the user's default account). Additive helper for the campaign
+    dialer (app/hr_campaign_service.py) - mirrors the inline lookup in
+    app/hr_scheduler.py's _initiate_outbound_call without modifying that
+    existing, working function.
     """
     db = get_supabase()
     result = (
         db.table("twilio_phone_numbers")
-        .select("phone_number")
+        .select("phone_number, twilio_account_id")
         .eq("user_id", user_id)
         .eq("agent_id", agent_id)
         .eq("is_active", True)
@@ -134,10 +139,10 @@ def get_from_number(user_id: str, agent_id: str) -> str | None:
     if not result.data:
         result = (
             db.table("twilio_phone_numbers")
-            .select("phone_number")
+            .select("phone_number, twilio_account_id")
             .eq("user_id", user_id)
             .eq("is_active", True)
             .limit(1)
             .execute()
         )
-    return result.data[0]["phone_number"] if result.data else None
+    return result.data[0] if result.data else None

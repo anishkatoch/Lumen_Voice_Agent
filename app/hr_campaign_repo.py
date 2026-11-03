@@ -34,9 +34,10 @@ def create_campaign(
     agent_id: str,
     name: str,
     questions: list[dict],
-    max_retry_attempts: int = 2,
-    retry_delay_minutes: int = 10,
+    max_retry_attempts: int = 4,
+    retry_delay_minutes: int = 3,
     call_gap_minutes: int = 4,
+    failed_retry_delay_minutes: int = 5,
 ) -> dict:
     db = get_supabase()
     result = db.table("hr_campaigns").insert({
@@ -47,6 +48,7 @@ def create_campaign(
         "status": "draft",
         "max_retry_attempts": max_retry_attempts,
         "retry_delay_minutes": retry_delay_minutes,
+        "failed_retry_delay_minutes": failed_retry_delay_minutes,
         "call_gap_minutes": call_gap_minutes,
     }).execute()
     if not result.data:
@@ -57,7 +59,7 @@ def create_campaign(
 def update_campaign(campaign_id: str, user_id: str, **fields) -> dict:
     allowed = {
         "name", "questions", "status",
-        "max_retry_attempts", "retry_delay_minutes", "call_gap_minutes",
+        "max_retry_attempts", "retry_delay_minutes", "failed_retry_delay_minutes", "call_gap_minutes",
     }
     update = {k: v for k, v in fields.items() if k in allowed}
     db = get_supabase()
@@ -323,21 +325,61 @@ def get_next_queued_candidate(campaign_id: str) -> dict | None:
     return _attach_candidate(result.data, db)[0]
 
 
-def requeue_eligible_retries(campaign_id: str, retry_delay_minutes: int, max_retry_attempts: int) -> None:
+def _lookup_candidate_name(candidate_id: str, db) -> str:
+    try:
+        result = db.table("hr_candidates").select("name").eq("id", candidate_id).execute()
+        return result.data[0]["name"] if result.data else "candidate"
+    except Exception:
+        return "candidate"
+
+
+def _record_exhaustion_analytics(campaign: dict, row: dict, db) -> None:
+    """
+    Writes a terminal Call Analytics row once a candidate has used up every
+    retry attempt without ever completing a call - best effort, must never
+    stop the rest of the retry sweep (mirrors hr_campaign_service's
+    _record_call_analytics backstop for the same reason).
+    """
+    from app.conversation_repo import create_conversation
+    attempts = row["attempt_count"]
+    if row["status"] == "failed":
+        call_status, reason = "failed", f"Call failed after {attempts} attempts"
+    else:
+        call_status, reason = "no_answer", f"Candidate did not pick up after {attempts} attempts"
+    try:
+        candidate_name = _lookup_candidate_name(row["candidate_id"], db)
+        create_conversation(
+            campaign["user_id"], f"Campaign call - {candidate_name}",
+            agent_id=campaign.get("agent_id"), call_status=call_status, failure_reason=reason,
+        )
+    except Exception as e:
+        print(f"[HR Campaign Dialer] Exhaustion analytics write failed (non-fatal): {e}")
+
+
+def requeue_eligible_retries(campaign: dict, failed_retry_delay_minutes: int) -> None:
     """
     Only meaningful once a campaign has no 'queued' rows left (the whole list
-    has been gone through once): promotes busy/no_answer candidates whose
-    retry delay has elapsed back to 'queued', or marks them 'exhausted' once
-    they've used up max_retry_attempts. Mirrors hr_repo.get_due_interviews'
+    has been gone through once): promotes busy/no_answer/failed candidates
+    whose retry delay has elapsed back to 'queued', or marks them 'exhausted'
+    (recording a terminal Call Analytics row - see _record_exhaustion_analytics)
+    once they've used up max_retry_attempts. Mirrors hr_repo.get_due_interviews'
     Python-side date-math pattern - no raw SQL available via the
     Supabase/PostgREST client for a single conditional-date query.
+
+    Busy/no_answer candidates retry after campaign["retry_delay_minutes"];
+    failed candidates retry after failed_retry_delay_minutes - call failures
+    get their own delay since they're a different kind of problem than a
+    simple busy signal or unanswered ring.
     """
     db = get_supabase()
+    campaign_id = campaign["id"]
+    retry_delay_minutes = campaign["retry_delay_minutes"]
+    max_retry_attempts = campaign["max_retry_attempts"]
     rows = (
         db.table("hr_campaign_candidates")
         .select("*")
         .eq("campaign_id", campaign_id)
-        .in_("status", ["busy", "no_answer"])
+        .in_("status", ["busy", "no_answer", "failed"])
         .execute()
         .data
     )
@@ -345,6 +387,7 @@ def requeue_eligible_retries(campaign_id: str, retry_delay_minutes: int, max_ret
     for row in rows:
         if row["attempt_count"] > max_retry_attempts:
             db.table("hr_campaign_candidates").update({"status": "exhausted"}).eq("id", row["id"]).execute()
+            _record_exhaustion_analytics(campaign, row, db)
             continue
         last_attempt = row.get("last_attempt_at")
         if not last_attempt:
@@ -354,7 +397,8 @@ def requeue_eligible_retries(campaign_id: str, retry_delay_minutes: int, max_ret
         except Exception:
             continue
         elapsed_minutes = (now - last_attempt_dt).total_seconds() / 60
-        if elapsed_minutes >= retry_delay_minutes:
+        delay = failed_retry_delay_minutes if row["status"] == "failed" else retry_delay_minutes
+        if elapsed_minutes >= delay:
             db.table("hr_campaign_candidates").update({"status": "queued"}).eq("id", row["id"]).execute()
 
 
@@ -379,9 +423,24 @@ def mark_candidate_failed_and_release(campaign_id: str, campaign_candidate_id: s
     does it directly. Unconditional on the candidate row (not the
     eq(status, "calling") guard the callback routes use) since the dialer
     already holds this campaign's claim exclusively at this point.
+    Bumps attempt_count/last_attempt_at the same way mark_calling does, so a
+    failed dial is eligible for the same retry sweep as busy/no_answer
+    (requeue_eligible_retries) instead of being stuck forever.
     """
     db = get_supabase()
-    db.table("hr_campaign_candidates").update({"status": "failed"}).eq("id", campaign_candidate_id).execute()
+    current = (
+        db.table("hr_campaign_candidates")
+        .select("attempt_count")
+        .eq("id", campaign_candidate_id)
+        .limit(1)
+        .execute()
+    )
+    attempt_count = (current.data[0]["attempt_count"] if current.data else 0) + 1
+    db.table("hr_campaign_candidates").update({
+        "status": "failed",
+        "last_attempt_at": datetime.now(timezone.utc).isoformat(),
+        "attempt_count": attempt_count,
+    }).eq("id", campaign_candidate_id).execute()
     db.table("hr_campaigns").update({
         "active_candidate_id": None,
         "last_call_ended_at": datetime.now(timezone.utc).isoformat(),
