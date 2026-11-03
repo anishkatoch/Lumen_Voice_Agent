@@ -619,12 +619,19 @@ async def plivo_stream_endpoint(websocket: WebSocket):
         return True
 
     async def _send_mulaw(mulaw_bytes: bytes):
-        """Send raw μ-law 8 kHz bytes to Plivo via its playAudio command."""
+        """Send raw μ-law 8 kHz bytes to Plivo via its playAudio command.
+
+        contentType here must be the bare MIME type ("audio/x-mulaw") with no
+        ";rate=" suffix - that suffixed form belongs on the <Stream> XML tag's
+        contentType attribute, not on playAudio's media.contentType. Plivo
+        accepts the suffixed form on the wire without erroring, but silently
+        never plays the audio - the caller hears nothing and nothing in our
+        logs indicates why."""
         payload = base64.b64encode(mulaw_bytes).decode()
         await websocket.send_text(json.dumps({
             "event": "playAudio",
             "media": {
-                "contentType": "audio/x-mulaw;rate=8000",
+                "contentType": "audio/x-mulaw",
                 "sampleRate": 8000,
                 "payload": payload,
             },
