@@ -270,6 +270,7 @@ _PLIVO_CALL_STATUS_MAP = {
     "no-answer": "no_answer",
     "failed": "failed",
     "timeout": "no_answer",
+    "completed": "completed",  # safety net if the WS "stop" event never fired - mirrors _TWILIO_CALL_STATUS_MAP
 }
 
 @router.post("/plivo/campaign/status-callback")
