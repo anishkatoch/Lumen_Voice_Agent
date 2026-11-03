@@ -115,15 +115,21 @@ async def _dial_candidate(campaign: dict, candidate_row: dict):
 
     # Provider is decided by which number is attached to this agent: a
     # Plivo number attached to it takes priority, otherwise fall through
-    # unchanged to the pre-existing Twilio path below. Any lookup error
-    # here must never break the proven Twilio path - it degrades to "no
-    # Plivo number found".
+    # to the pre-existing Twilio path below. A lookup error here must NOT
+    # fall back to Twilio - that would silently dial a Plivo-configured
+    # agent over the wrong provider, so it's reported as its own failure.
     plivo_from = None
     try:
         from app.telephony.plivo.plivo_repo import get_number_for_agent as _plivo_number_for_agent
         plivo_from = await asyncio.to_thread(_plivo_number_for_agent, user_id, agent_id)
     except Exception as e:
-        print(f"[HR Campaign Dialer] Plivo number lookup failed (non-fatal, falling back to Twilio): {e}")
+        print(f"[HR Campaign Dialer] Plivo number lookup failed: {e}")
+        await asyncio.to_thread(mark_candidate_failed_and_release, campaign_id, campaign_candidate_id)
+        await _record_call_analytics(
+            record_failed_call, user_id, call_title, agent_id,
+            "Could not check Plivo configuration for this agent - call not placed",
+        )
+        return
     if plivo_from:
         await _dial_candidate_plivo(campaign, candidate_row, plivo_from)
         return

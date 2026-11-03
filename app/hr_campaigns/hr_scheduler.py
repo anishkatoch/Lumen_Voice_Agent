@@ -204,16 +204,22 @@ async def _check_and_call():
 
         # Provider is decided purely by which number is attached to this
         # agent: if a Plivo number is attached, dial over Plivo; otherwise
-        # fall through to the pre-existing Twilio path unchanged, so a user
-        # who never connects Plivo sees zero behavior change. Any lookup
-        # error here (DB hiccup, etc.) must never break the proven Twilio
-        # path below - it degrades to "no Plivo number found".
+        # fall through to the pre-existing Twilio path, so a user who never
+        # connects Plivo sees zero behavior change. A lookup error here must
+        # NOT fall back to Twilio - that would silently dial a Plivo-configured
+        # agent over the wrong provider, so it's reported as its own failure.
         plivo_from = None
         try:
             from app.telephony.plivo.plivo_repo import get_number_for_agent as _plivo_number_for_agent
             plivo_from = await asyncio.to_thread(_plivo_number_for_agent, user_id, agent_id)
         except Exception as e:
-            print(f"[HR Scheduler] Plivo number lookup failed (non-fatal, falling back to Twilio): {e}")
+            print(f"[HR Scheduler] Plivo number lookup failed: {e}")
+            await asyncio.to_thread(mark_interview_failed, interview["id"])
+            await _record_call_analytics(
+                record_failed_call, user_id, call_title, agent_id,
+                "Could not check Plivo configuration for this agent - call not placed",
+            )
+            continue
         if plivo_from:
             from app.telephony.plivo.user_plivo_settings_repo import resolve_account_for_number
             plivo_settings = await asyncio.to_thread(resolve_account_for_number, plivo_from, user_id)

@@ -606,6 +606,7 @@ class TestDialCandidate:
 
     async def test_successful_dial_marks_calling(self, mocker):
         mocker.patch("app.hr_campaigns.hr_campaign_repo.claim_campaign_for_dial", return_value=True)
+        mocker.patch("app.telephony.plivo.plivo_repo.get_number_for_agent", return_value=None)
         mocker.patch("app.telephony.twilio.user_twilio_settings_repo.get_twilio_settings", return_value={
             "webhook_base_url": "https://example.ngrok.io", "account_sid": "ACfake", "auth_token": "faketoken",
         })
@@ -663,6 +664,7 @@ class TestDialCandidate:
 
     async def test_twilio_api_failure_marks_failed(self, mocker):
         mocker.patch("app.hr_campaigns.hr_campaign_repo.claim_campaign_for_dial", return_value=True)
+        mocker.patch("app.telephony.plivo.plivo_repo.get_number_for_agent", return_value=None)
         mocker.patch("app.telephony.twilio.user_twilio_settings_repo.get_twilio_settings", return_value={
             "webhook_base_url": "https://example.ngrok.io", "account_sid": "ACfake", "auth_token": "faketoken",
         })
@@ -680,9 +682,27 @@ class TestDialCandidate:
         mock_record_failed.assert_called_once()
         assert "rejected" in mock_record_failed.call_args.args[-1]
 
+    async def test_plivo_lookup_error_marks_failed_without_touching_twilio(self, mocker):
+        """A Plivo lookup error must never fall back to Twilio - that would
+        silently dial a Plivo-configured agent over the wrong provider."""
+        mocker.patch("app.hr_campaigns.hr_campaign_repo.claim_campaign_for_dial", return_value=True)
+        mocker.patch("app.telephony.plivo.plivo_repo.get_number_for_agent", side_effect=RuntimeError("db hiccup"))
+        mock_twilio_settings = mocker.patch("app.telephony.twilio.user_twilio_settings_repo.get_twilio_settings")
+        mock_mark_failed = mocker.patch("app.hr_campaigns.hr_campaign_repo.mark_candidate_failed_and_release")
+        mock_record_failed = mocker.patch("app.conversations.conversation_repo.record_failed_call")
+
+        from app.hr_campaigns.hr_campaign_service import _dial_candidate
+        await _dial_candidate(_campaign(), _campaign_candidate_with_campaign())
+
+        mock_twilio_settings.assert_not_called()
+        mock_mark_failed.assert_called_once_with(TEST_CAMPAIGN_ID, TEST_CAMPAIGN_CAND_ID)
+        mock_record_failed.assert_called_once()
+        assert "Plivo" in mock_record_failed.call_args.args[-1]
+
     async def test_sync_amd_enabled_on_the_twilio_call(self, mocker):
         """MachineDetection must be set - this is what makes Stage 3's AnsweredBy query param arrive."""
         mocker.patch("app.hr_campaigns.hr_campaign_repo.claim_campaign_for_dial", return_value=True)
+        mocker.patch("app.telephony.plivo.plivo_repo.get_number_for_agent", return_value=None)
         mocker.patch("app.telephony.twilio.user_twilio_settings_repo.get_twilio_settings", return_value={
             "webhook_base_url": "https://example.ngrok.io", "account_sid": "ACfake", "auth_token": "faketoken",
         })
