@@ -68,6 +68,8 @@ class StreamingTranscriber:
         if not ok:
             print("[Deepgram Stream] Connection failed to open - check DEEPGRAM_API_KEY and network/DNS to Deepgram")
             self._connection = None
+        else:
+            print("[Deepgram] Live stream connected - using Deepgram for this utterance")
 
     async def send(self, pcm_bytes: bytes):
         self._raw_chunks.append(pcm_bytes)
@@ -83,6 +85,7 @@ class StreamingTranscriber:
                 pass
         result = self._transcript.strip()
         if result:
+            print(f"[Deepgram] Live transcript: {result}")
             return result
         if self._raw_chunks:
             print("[Deepgram] Live stream produced no transcript - falling back to OpenAI Whisper")
@@ -103,10 +106,12 @@ def get_streaming_transcriber():
     """Return a streaming transcriber for the configured STT provider."""
     from app.core.config import OPENAI_PIPELINE_ENABLED
     if OPENAI_PIPELINE_ENABLED:
+        print("[STT] OPENAI_PIPELINE_ENABLED is set - using OpenAI Whisper, not Deepgram")
         from app.voice.openai_whisper_service import StreamingWhisperTranscriber
         return StreamingWhisperTranscriber()
     from app.admin.admin_config_service import get as get_config
     if get_config("stt_provider") == "openai_whisper":
+        print("[STT] admin config stt_provider=openai_whisper - using OpenAI Whisper, not Deepgram")
         from app.voice.openai_whisper_service import StreamingWhisperTranscriber
         return StreamingWhisperTranscriber()
     return StreamingTranscriber()
