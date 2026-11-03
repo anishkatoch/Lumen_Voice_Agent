@@ -1145,6 +1145,7 @@ class TestStreamingTranscriber:
 
         mock_conn = AsyncMock()
         st._connection = mock_conn
+        st._connected = True
 
         pcm = np.zeros(320, dtype=np.int16).tobytes()
         await st.send(pcm)
@@ -1157,6 +1158,30 @@ class TestStreamingTranscriber:
         st = StreamingTranscriber()
         pcm = np.zeros(320, dtype=np.int16).tobytes()
         await st.send(pcm)  # _connection is None at this point - should be a no-op
+
+    async def test_start_failure_clears_connection_and_disables_send(self):
+        """If the Deepgram websocket handshake fails, start() returns False
+        without raising or firing on_error - start() must notice and drop
+        the connection so send() becomes a no-op instead of finish() blocking
+        for the full STT_TIMEOUT waiting on an event that will never fire."""
+        from app.voice.deepgram_service import StreamingTranscriber
+        st = StreamingTranscriber()
+
+        mock_conn = AsyncMock()
+        mock_conn.start.return_value = False
+        mock_conn.on = MagicMock()  # real .on() is sync, unlike AsyncMock's default
+        mock_client = MagicMock()
+        mock_client.listen.asynclive.v.return_value = mock_conn
+        st._client = mock_client
+
+        await st.start()
+
+        assert st._connection is None
+        assert st._connected is False
+
+        pcm = np.zeros(320, dtype=np.int16).tobytes()
+        await st.send(pcm)
+        mock_conn.send.assert_not_called()
 
     async def test_transcript_concatenates_multiple_segments(self):
         """Multiple final segments are joined with spaces."""

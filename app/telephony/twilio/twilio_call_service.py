@@ -147,7 +147,7 @@ async def text_to_speech_twilio(text: str):
         ELEVENLABS_API_KEY, TTS_VOICE_ID, TTS_MODEL_ID,
         TTS_STABILITY, TTS_SIMILARITY_BOOST, TTS_STYLE, TTS_SPEAKER_BOOST,
     )
-    print(f"[Twilio TTS] Requesting ulaw_8000 for: {text[:60]}")
+    print(f"[TTS] Requesting ulaw_8000 for: {text[:60]}")
     queue: asyncio.Queue = asyncio.Queue()
 
     def _stream_to_queue():

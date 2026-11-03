@@ -13,6 +13,7 @@ class StreamingTranscriber:
     def __init__(self):
         self._client = DeepgramClient(api_key=DEEPGRAM_API_KEY)
         self._connection = None
+        self._connected = False
         self._transcript = ""
         self._last_partial = ""
         self._done = asyncio.Event()
@@ -44,6 +45,9 @@ class StreamingTranscriber:
             if result.is_final:
                 self._transcript += (" " if self._transcript else "") + alt.transcript
 
+        async def on_open(_, *__, **___):
+            self._connected = True
+
         async def on_close(_, **__):
             self._done.set()
 
@@ -51,15 +55,23 @@ class StreamingTranscriber:
             print(f"[Deepgram Stream] Error: {error}")
             self._done.set()
 
+        self._connection.on(LiveTranscriptionEvents.Open, on_open)
         self._connection.on(LiveTranscriptionEvents.Transcript, on_transcript)
         self._connection.on(LiveTranscriptionEvents.Close, on_close)
         self._connection.on(LiveTranscriptionEvents.Error, on_error)
 
-        await self._connection.start(options)
+        # start() returns False (without raising or firing on_error) on auth
+        # failures, bad handshakes, or network errors - if we don't check it,
+        # every send() below silently no-ops and finish() blindly waits out
+        # the full STT_TIMEOUT before falling back to Whisper.
+        ok = await self._connection.start(options)
+        if not ok:
+            print("[Deepgram Stream] Connection failed to open - check DEEPGRAM_API_KEY and network/DNS to Deepgram")
+            self._connection = None
 
     async def send(self, pcm_bytes: bytes):
         self._raw_chunks.append(pcm_bytes)
-        if self._connection:
+        if self._connection and self._connected:
             await self._connection.send(pcm_bytes)
 
     async def finish(self) -> str | None:

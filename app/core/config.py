@@ -56,6 +56,8 @@ AZURE_OPENAI_API_VERSION = os.environ.get("AZURE_OPENAI_API_VERSION", "2024-10-2
 AZURE_OPENAI_DEPLOYMENT  = os.environ.get("AZURE_OPENAI_DEPLOYMENT", "gpt-4.1-mini")
 
 DEEPGRAM_API_KEY        = os.environ["DEEPGRAM_API_KEY"]
+if not DEEPGRAM_API_KEY:
+    raise RuntimeError("DEEPGRAM_API_KEY is set but empty - provide a valid Deepgram API key")
 ELEVENLABS_API_KEY      = os.environ["ELEVENLABS_API_KEY"]
 WEBHOOK_SECRET          = os.environ.get("WEBHOOK_SECRET", "")
 HUGGINGFACE_API_KEY     = os.environ.get("HUGGINGFACE_API_KEY", "")
