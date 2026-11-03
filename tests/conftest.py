@@ -127,10 +127,10 @@ def _make_mock_db(mocker):
 @pytest.fixture
 def mock_supabase(mocker):
     mock_db = _make_mock_db(mocker)
-    mocker.patch("app.database.get_supabase", return_value=mock_db)
-    mocker.patch("app.conversation_repo.get_supabase", return_value=mock_db)
-    mocker.patch("app.message_repo.get_supabase", return_value=mock_db)
-    mocker.patch("app.memory_repo.get_supabase", return_value=mock_db)
-    mocker.patch("app.document_repo.get_supabase", return_value=mock_db)
-    mocker.patch("app.doc_processor.get_supabase", return_value=mock_db)
+    mocker.patch("app.core.database.get_supabase", return_value=mock_db)
+    mocker.patch("app.conversations.conversation_repo.get_supabase", return_value=mock_db)
+    mocker.patch("app.conversations.message_repo.get_supabase", return_value=mock_db)
+    mocker.patch("app.conversations.memory_repo.get_supabase", return_value=mock_db)
+    mocker.patch("app.agents.document_repo.get_supabase", return_value=mock_db)
+    mocker.patch("app.agents.doc_processor.get_supabase", return_value=mock_db)
     return mock_db

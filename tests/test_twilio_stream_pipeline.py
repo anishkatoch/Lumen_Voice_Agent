@@ -101,9 +101,9 @@ def mock_pipeline(mocker):
     caught the retrieve_agent_context/retrieve_user_kb_context/save_message
     signature bugs before they ever reached production).
     """
-    import app.agent_rag_service as agent_rag_service
-    import app.user_kb_rag as user_kb_rag
-    import app.message_repo as message_repo
+    import app.agents.agent_rag_service as agent_rag_service
+    import app.kb.user_kb_rag as user_kb_rag
+    import app.conversations.message_repo as message_repo
 
     real_retrieve_agent_context = agent_rag_service.retrieve_agent_context
     real_retrieve_user_kb_context = user_kb_rag.retrieve_user_kb_context
@@ -124,22 +124,22 @@ def mock_pipeline(mocker):
         save_message_calls.append((args, kwargs))
         return {"id": "msg-id"}
 
-    mocker.patch("app.agent_rag_service.retrieve_agent_context", side_effect=fake_retrieve_agent_context)
-    mocker.patch("app.user_kb_rag.retrieve_user_kb_context", side_effect=fake_retrieve_user_kb_context)
-    mocker.patch("app.message_repo.save_message", side_effect=fake_save_message)
-    mocker.patch("app.message_repo.get_session_messages", return_value=[])
-    mocker.patch("app.user_kb_repo.get_user_documents", return_value=[])
-    mocker.patch("app.agent_repo.get_agent_functions", return_value=[])
-    mocker.patch("app.memory_repo.get_user_memory", return_value=None)
-    mocker.patch("app.twilio_repo.get_number_by_phone", return_value=_phone_record())
-    mocker.patch("app.agent_repo.get_agent", return_value=_agent())
+    mocker.patch("app.agents.agent_rag_service.retrieve_agent_context", side_effect=fake_retrieve_agent_context)
+    mocker.patch("app.kb.user_kb_rag.retrieve_user_kb_context", side_effect=fake_retrieve_user_kb_context)
+    mocker.patch("app.conversations.message_repo.save_message", side_effect=fake_save_message)
+    mocker.patch("app.conversations.message_repo.get_session_messages", return_value=[])
+    mocker.patch("app.kb.user_kb_repo.get_user_documents", return_value=[])
+    mocker.patch("app.agents.agent_repo.get_agent_functions", return_value=[])
+    mocker.patch("app.conversations.memory_repo.get_user_memory", return_value=None)
+    mocker.patch("app.telephony.twilio.twilio_repo.get_number_by_phone", return_value=_phone_record())
+    mocker.patch("app.agents.agent_repo.get_agent", return_value=_agent())
 
     # conversation creation via raw supabase insert
     conv_db = mocker.MagicMock()
     conv_db.table.return_value.insert.return_value.execute.return_value.data = [
         {"id": "conv-id"}
     ]
-    mocker.patch("app.database.get_supabase", return_value=conv_db)
+    mocker.patch("app.core.database.get_supabase", return_value=conv_db)
 
     async def fake_generate_response_stream(
         user_message, session_history, rag_context, long_term_memory,
@@ -147,12 +147,12 @@ def mock_pipeline(mocker):
     ):
         yield "Sure, I can help with that."
 
-    mocker.patch("app.llm_service.generate_response_stream", side_effect=fake_generate_response_stream)
+    mocker.patch("app.voice.llm_service.generate_response_stream", side_effect=fake_generate_response_stream)
 
     async def fake_text_to_speech_twilio(text):
         yield bytes([0xFF]) * 80  # one small mu-law chunk
 
-    mocker.patch("app.twilio_call_service.text_to_speech_twilio", side_effect=fake_text_to_speech_twilio)
+    mocker.patch("app.telephony.twilio.twilio_call_service.text_to_speech_twilio", side_effect=fake_text_to_speech_twilio)
 
     return {"save_message_calls": save_message_calls}
 
@@ -168,7 +168,7 @@ class TestPipelineFunctionSignatures:
 
     def test_full_utterance_triggers_correctly_shaped_calls(self, mocker, mock_pipeline):
         transcriber = _FakeStreamingTranscriber(transcript="what can you help me with")
-        mocker.patch("app.deepgram_service.get_streaming_transcriber", return_value=transcriber)
+        mocker.patch("app.voice.deepgram_service.get_streaming_transcriber", return_value=transcriber)
 
         # Force VAD to report speech for the first several chunks then silence,
         # so the SPEECH_THRESHOLD/SILENCE_THRESHOLD finalization path runs.
@@ -178,7 +178,7 @@ class TestPipelineFunctionSignatures:
             call_count["n"] += 1
             return call_count["n"] <= 5  # speak for 5 chunks, then go silent
 
-        mocker.patch("app.vad_service.detect_speech", side_effect=fake_detect_speech)
+        mocker.patch("app.voice.vad_service.detect_speech", side_effect=fake_detect_speech)
 
         from app.main import app
         client = TestClient(app)
@@ -243,10 +243,10 @@ class TestCampaignCallLiveToolRecording:
     """
 
     def test_record_answer_tool_call_writes_correctly_shaped_answer(self, mocker, mock_pipeline):
-        mocker.patch("app.hr_campaign_repo.get_campaign_candidate", return_value=_campaign_candidate_row())
+        mocker.patch("app.hr_campaigns.hr_campaign_repo.get_campaign_candidate", return_value=_campaign_candidate_row())
 
         real_record_answer = None
-        import app.hr_campaign_repo as hr_campaign_repo
+        import app.hr_campaigns.hr_campaign_repo as hr_campaign_repo
         real_record_answer = hr_campaign_repo.record_answer
         record_answer_calls = []
 
@@ -255,28 +255,28 @@ class TestCampaignCallLiveToolRecording:
             record_answer_calls.append((args, kwargs))
             return {"id": "answer-id"}
 
-        mocker.patch("app.hr_campaign_repo.record_answer", side_effect=fake_record_answer)
-        mock_completed = mocker.patch("app.hr_campaign_repo.mark_candidate_completed")
+        mocker.patch("app.hr_campaigns.hr_campaign_repo.record_answer", side_effect=fake_record_answer)
+        mock_completed = mocker.patch("app.hr_campaigns.hr_campaign_repo.mark_candidate_completed")
 
         transcriber = _FakeStreamingTranscriber(transcript="I really enjoy this kind of work")
-        mocker.patch("app.deepgram_service.get_streaming_transcriber", return_value=transcriber)
+        mocker.patch("app.voice.deepgram_service.get_streaming_transcriber", return_value=transcriber)
 
         call_count = {"n": 0}
         async def fake_detect_speech(audio_bytes, sensitivity=0.5):
             call_count["n"] += 1
             return call_count["n"] <= 5
-        mocker.patch("app.vad_service.detect_speech", side_effect=fake_detect_speech)
+        mocker.patch("app.voice.vad_service.detect_speech", side_effect=fake_detect_speech)
 
         async def fake_detect_tool_call(conv_messages, system, tools):
             tool_names = [t["function"]["name"] for t in tools]
             assert "record_answer" in tool_names, "record_answer tool was not offered to the LLM"
             return (None, "record_answer", {"question_id": "q1", "answer": "I really enjoy this kind of work"}, "call-1")
-        mocker.patch("app.llm_service.detect_tool_call", side_effect=fake_detect_tool_call)
+        mocker.patch("app.voice.llm_service.detect_tool_call", side_effect=fake_detect_tool_call)
 
         async def fake_stream_tool_result_response(conv_messages, system, tool_name, call_id, tool_args, tool_result):
             assert '"recorded": true' in tool_result.lower() or '"recorded":true' in tool_result.replace(" ", "").lower()
             yield "Great, thanks for sharing that."
-        mocker.patch("app.llm_service.stream_tool_result_response", side_effect=fake_stream_tool_result_response)
+        mocker.patch("app.voice.llm_service.stream_tool_result_response", side_effect=fake_stream_tool_result_response)
 
         from app.main import app
         client = TestClient(app)
@@ -310,28 +310,28 @@ class TestCampaignCallLiveToolRecording:
     def test_unknown_question_id_is_rejected_not_inserted(self, mocker, mock_pipeline):
         """The LLM has no enum constraint on question_id (build_openai_tool doesn't
         support one) - a hallucinated id must be rejected server-side, not silently inserted."""
-        mocker.patch("app.hr_campaign_repo.get_campaign_candidate", return_value=_campaign_candidate_row())
-        mock_record = mocker.patch("app.hr_campaign_repo.record_answer")
-        mocker.patch("app.hr_campaign_repo.mark_candidate_completed")
+        mocker.patch("app.hr_campaigns.hr_campaign_repo.get_campaign_candidate", return_value=_campaign_candidate_row())
+        mock_record = mocker.patch("app.hr_campaigns.hr_campaign_repo.record_answer")
+        mocker.patch("app.hr_campaigns.hr_campaign_repo.mark_candidate_completed")
 
         transcriber = _FakeStreamingTranscriber(transcript="some answer")
-        mocker.patch("app.deepgram_service.get_streaming_transcriber", return_value=transcriber)
+        mocker.patch("app.voice.deepgram_service.get_streaming_transcriber", return_value=transcriber)
 
         call_count = {"n": 0}
         async def fake_detect_speech(audio_bytes, sensitivity=0.5):
             call_count["n"] += 1
             return call_count["n"] <= 5
-        mocker.patch("app.vad_service.detect_speech", side_effect=fake_detect_speech)
+        mocker.patch("app.voice.vad_service.detect_speech", side_effect=fake_detect_speech)
 
         async def fake_detect_tool_call(conv_messages, system, tools):
             return (None, "record_answer", {"question_id": "not-a-real-id", "answer": "some answer"}, "call-1")
-        mocker.patch("app.llm_service.detect_tool_call", side_effect=fake_detect_tool_call)
+        mocker.patch("app.voice.llm_service.detect_tool_call", side_effect=fake_detect_tool_call)
 
         captured_result = {}
         async def fake_stream_tool_result_response(conv_messages, system, tool_name, call_id, tool_args, tool_result):
             captured_result["value"] = tool_result
             yield "Sorry, let me ask that again."
-        mocker.patch("app.llm_service.stream_tool_result_response", side_effect=fake_stream_tool_result_response)
+        mocker.patch("app.voice.llm_service.stream_tool_result_response", side_effect=fake_stream_tool_result_response)
 
         from app.main import app
         client = TestClient(app)
@@ -362,16 +362,16 @@ class TestCampaignCallLiveToolRecording:
         campaign_candidate_id in customParameters) must behave exactly as
         before - no record_answer tool offered, no campaign repo calls at all.
         """
-        mock_get_campaign_candidate = mocker.patch("app.hr_campaign_repo.get_campaign_candidate")
+        mock_get_campaign_candidate = mocker.patch("app.hr_campaigns.hr_campaign_repo.get_campaign_candidate")
 
         transcriber = _FakeStreamingTranscriber(transcript="regular inbound question")
-        mocker.patch("app.deepgram_service.get_streaming_transcriber", return_value=transcriber)
+        mocker.patch("app.voice.deepgram_service.get_streaming_transcriber", return_value=transcriber)
 
         call_count = {"n": 0}
         async def fake_detect_speech(audio_bytes, sensitivity=0.5):
             call_count["n"] += 1
             return call_count["n"] <= 5
-        mocker.patch("app.vad_service.detect_speech", side_effect=fake_detect_speech)
+        mocker.patch("app.voice.vad_service.detect_speech", side_effect=fake_detect_speech)
 
         from app.main import app
         client = TestClient(app)
@@ -458,7 +458,7 @@ class TestDeepgramFallback:
         # Streaming transcriber "succeeds" technically but returns nothing -
         # exactly what was observed in production.
         transcriber = _FakeStreamingTranscriber(transcript=None)
-        mocker.patch("app.deepgram_service.get_streaming_transcriber", return_value=transcriber)
+        mocker.patch("app.voice.deepgram_service.get_streaming_transcriber", return_value=transcriber)
 
         fallback_calls = []
 
@@ -466,7 +466,7 @@ class TestDeepgramFallback:
             fallback_calls.append(wav_bytes)
             return "recovered via prerecorded fallback"
 
-        mocker.patch("app.deepgram_service.transcribe_audio_smart", side_effect=fake_transcribe_audio_smart)
+        mocker.patch("app.voice.deepgram_service.transcribe_audio_smart", side_effect=fake_transcribe_audio_smart)
 
         call_count = {"n": 0}
 
@@ -474,7 +474,7 @@ class TestDeepgramFallback:
             call_count["n"] += 1
             return call_count["n"] <= 5
 
-        mocker.patch("app.vad_service.detect_speech", side_effect=fake_detect_speech)
+        mocker.patch("app.voice.vad_service.detect_speech", side_effect=fake_detect_speech)
 
         from app.main import app
         client = TestClient(app)
@@ -509,7 +509,7 @@ class TestMuLawDecodeCorrectness:
     ITU-T G.711 reference algorithm."""
 
     def test_decode_table_matches_reference_algorithm(self):
-        from app.twilio_call_service import _build_decode_table
+        from app.telephony.twilio.twilio_call_service import _build_decode_table
 
         BIAS = 0x84
 
@@ -527,7 +527,7 @@ class TestMuLawDecodeCorrectness:
         """A realistic speech-level tone must decode back to a realistic
         amplitude, not be crushed toward zero (the exact symptom that made
         VAD unable to detect real callers speaking)."""
-        from app.twilio_call_service import mulaw_encode, mulaw_decode
+        from app.telephony.twilio.twilio_call_service import mulaw_encode, mulaw_decode
 
         t = np.linspace(0, 1, 8000, dtype=np.float32)
         tone = (np.sin(2 * np.pi * 200 * t) * 10000).astype(np.int16)
@@ -544,7 +544,7 @@ class TestVADWindowing:
     still invoke the model at least once."""
 
     def test_short_chunk_still_invokes_model(self, mocker):
-        import app.vad_service as vad_service
+        import app.voice.vad_service as vad_service
 
         call_lengths = []
         fake_model = mocker.MagicMock()
@@ -572,7 +572,7 @@ class TestSaveMessageSignature:
     'user' into a UUID column and crashed with a Postgres error."""
 
     def test_real_signature_is_conversation_user_role_content(self):
-        from app.message_repo import save_message
+        from app.conversations.message_repo import save_message
         sig = inspect.signature(save_message)
         assert list(sig.parameters) == ["conversation_id", "user_id", "role", "content"]
 
@@ -590,7 +590,7 @@ class TestBargeInStopsGenerationAndSpeech:
         import asyncio
 
         transcriber = _FakeStreamingTranscriber(transcript="what is the leave policy")
-        mocker.patch("app.deepgram_service.get_streaming_transcriber", return_value=transcriber)
+        mocker.patch("app.voice.deepgram_service.get_streaming_transcriber", return_value=transcriber)
 
         # First ~5 chunks are the caller's initial question (speech), then
         # silence to finalize it. Every chunk after that (the barge-in burst,
@@ -607,7 +607,7 @@ class TestBargeInStopsGenerationAndSpeech:
                 return True
             return fake_detect_speech
 
-        mocker.patch("app.vad_service.detect_speech", side_effect=fake_detect_speech_factory())
+        mocker.patch("app.voice.vad_service.detect_speech", side_effect=fake_detect_speech_factory())
 
         generation_state = {"cancelled": False, "yielded": []}
 
@@ -625,7 +625,7 @@ class TestBargeInStopsGenerationAndSpeech:
                 generation_state["cancelled"] = True
                 raise
 
-        mocker.patch("app.llm_service.generate_response_stream", side_effect=slow_multi_sentence_stream)
+        mocker.patch("app.voice.llm_service.generate_response_stream", side_effect=slow_multi_sentence_stream)
 
         tts_calls = []
 
@@ -634,7 +634,7 @@ class TestBargeInStopsGenerationAndSpeech:
             yield bytes([0xFF]) * 80
 
         mocker.patch(
-            "app.twilio_call_service.text_to_speech_twilio", side_effect=recording_text_to_speech_twilio
+            "app.telephony.twilio.twilio_call_service.text_to_speech_twilio", side_effect=recording_text_to_speech_twilio
         )
 
         from app.main import app
@@ -685,14 +685,14 @@ class TestCallEndCancelsInFlightResponse:
         import asyncio
 
         transcriber = _FakeStreamingTranscriber(transcript="what is the leave policy")
-        mocker.patch("app.deepgram_service.get_streaming_transcriber", return_value=transcriber)
+        mocker.patch("app.voice.deepgram_service.get_streaming_transcriber", return_value=transcriber)
 
         call_count = {"n": 0}
 
         async def fake_detect_speech(audio_bytes, sensitivity=0.5):
             call_count["n"] += 1
             return call_count["n"] <= 5  # 5 speech chunks, then silence to finalize
-        mocker.patch("app.vad_service.detect_speech", side_effect=fake_detect_speech)
+        mocker.patch("app.voice.vad_service.detect_speech", side_effect=fake_detect_speech)
 
         generation_state = {"cancelled": False}
 
@@ -708,7 +708,7 @@ class TestCallEndCancelsInFlightResponse:
                 generation_state["cancelled"] = True
                 raise
 
-        mocker.patch("app.llm_service.generate_response_stream", side_effect=slow_multi_sentence_stream)
+        mocker.patch("app.voice.llm_service.generate_response_stream", side_effect=slow_multi_sentence_stream)
 
         tts_calls = []
 
@@ -717,7 +717,7 @@ class TestCallEndCancelsInFlightResponse:
             yield bytes([0xFF]) * 80
 
         mocker.patch(
-            "app.twilio_call_service.text_to_speech_twilio", side_effect=recording_text_to_speech_twilio
+            "app.telephony.twilio.twilio_call_service.text_to_speech_twilio", side_effect=recording_text_to_speech_twilio
         )
 
         from app.main import app
@@ -756,16 +756,16 @@ class TestRetrievalFiller:
     gap instead of leaving the caller in silence."""
 
     async def test_slow_llm_response_triggers_filler_phrase(self, mocker, mock_pipeline):
-        from app.llm_service import FILLER_PHRASES
+        from app.voice.llm_service import FILLER_PHRASES
 
         transcriber = _FakeStreamingTranscriber(transcript="tell me about my order")
-        mocker.patch("app.deepgram_service.get_streaming_transcriber", return_value=transcriber)
+        mocker.patch("app.voice.deepgram_service.get_streaming_transcriber", return_value=transcriber)
 
         async def fake_detect_speech(audio_bytes, sensitivity=0.5):
             fake_detect_speech.n += 1
             return fake_detect_speech.n <= 5  # speak for 5 chunks, then go silent
         fake_detect_speech.n = 0
-        mocker.patch("app.vad_service.detect_speech", side_effect=fake_detect_speech)
+        mocker.patch("app.voice.vad_service.detect_speech", side_effect=fake_detect_speech)
 
         import asyncio
 
@@ -776,7 +776,7 @@ class TestRetrievalFiller:
             await asyncio.sleep(1.5)  # longer than RETRIEVAL_FILLER_DELAY_SECONDS (1.2s)
             yield "Here is your order status."
 
-        mocker.patch("app.llm_service.generate_response_stream", side_effect=slow_generate_response_stream)
+        mocker.patch("app.voice.llm_service.generate_response_stream", side_effect=slow_generate_response_stream)
 
         from app.main import app
         client = TestClient(app)

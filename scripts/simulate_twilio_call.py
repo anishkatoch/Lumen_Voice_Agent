@@ -33,7 +33,7 @@ import websockets
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app.twilio_call_service import mulaw_decode, text_to_speech_twilio  # noqa: E402
+from app.telephony.twilio.twilio_call_service import mulaw_decode, text_to_speech_twilio  # noqa: E402
 
 CHUNK_BYTES = 160  # 20ms of mu-law @ 8kHz, matches a real Twilio media event
 CHUNK_SECONDS = 0.02

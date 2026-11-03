@@ -73,7 +73,7 @@ async def test_get_messages_other_users_conversation(client, mocker, auth_header
     mock_db.table("conversations").select().eq().limit().execute.return_value.data = [{
         "id": TEST_CONV_ID, "user_id": other_user_id   # different owner
     }]
-    mocker.patch("app.conversation_repo.get_supabase", return_value=mock_db)
+    mocker.patch("app.conversations.conversation_repo.get_supabase", return_value=mock_db)
 
     r = await client.get(f"/api/conversations/{TEST_CONV_ID}/messages", headers=auth_headers)
     assert r.status_code == 404
@@ -82,7 +82,7 @@ async def test_get_messages_other_users_conversation(client, mocker, auth_header
 async def test_get_messages_nonexistent_conversation(client, mocker, auth_headers):
     mock_db = mocker.MagicMock()
     mock_db.table("conversations").select().eq().limit().execute.return_value.data = []
-    mocker.patch("app.conversation_repo.get_supabase", return_value=mock_db)
+    mocker.patch("app.conversations.conversation_repo.get_supabase", return_value=mock_db)
 
     r = await client.get(f"/api/conversations/nonexistent-id/messages", headers=auth_headers)
     assert r.status_code == 404

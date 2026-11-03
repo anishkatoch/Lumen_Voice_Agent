@@ -3,8 +3,8 @@ import psycopg2
 from sqlalchemy import create_engine, pool
 from alembic import context
 
-from app.config import DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME
-from app.models import Base
+from app.core.config import DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME
+from app.core.models import Base
 
 config = context.config
 
@@ -31,7 +31,7 @@ def _make_engine():
 
 def run_migrations_offline() -> None:
     # Offline mode generates SQL without connecting - use DATABASE_URL here
-    from app.config import DATABASE_URL
+    from app.core.config import DATABASE_URL
     context.configure(
         url=DATABASE_URL,
         target_metadata=target_metadata,

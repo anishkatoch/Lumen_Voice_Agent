@@ -20,7 +20,7 @@ async def test_ingest_dev_with_md_files(client, mock_supabase, mocker):
         {"name": "faq.md"}, {"name": "readme.txt"}   # only .md processed
     ]
     mock_supabase.storage.from_.return_value.download.return_value = b"# Title\nSome content here."
-    mocker.patch("app.doc_processor.embed_text", return_value=[0.1] * 1536)
+    mocker.patch("app.agents.doc_processor.embed_text", return_value=[0.1] * 1536)
 
     r = await client.post("/api/ingest-all-dev")
     assert r.status_code == 200
@@ -33,7 +33,7 @@ async def test_ingest_dev_with_md_files(client, mock_supabase, mocker):
 async def test_ingest_dev_handles_file_error(client, mock_supabase, mocker):
     mock_supabase.storage.from_.return_value.list.return_value = [{"name": "bad.md"}]
     mock_supabase.storage.from_.return_value.download.return_value = None   # → ValueError
-    mocker.patch("app.rag_service.embed_text", return_value=[0.1] * 1536)
+    mocker.patch("app.agents.rag_service.embed_text", return_value=[0.1] * 1536)
 
     r = await client.post("/api/ingest-all-dev")
     assert r.status_code == 200
@@ -83,8 +83,8 @@ async def test_webhook_ignores_missing_filename(client):
 
 
 async def test_webhook_queues_md_file(client, mocker):
-    mocker.patch("app.main.asyncio.create_task")
-    mocker.patch("app.doc_processor.ingest_document")
+    mocker.patch("app.routers.ingest.asyncio.create_task")
+    mocker.patch("app.agents.doc_processor.ingest_document")
 
     r = await client.post("/webhook/new-document", json={
         "type": "INSERT",
@@ -96,7 +96,7 @@ async def test_webhook_queues_md_file(client, mocker):
 
 
 async def test_webhook_rejects_bad_secret(client, mocker):
-    mocker.patch("app.main.WEBHOOK_SECRET", "real-secret")
+    mocker.patch("app.routers.ingest.WEBHOOK_SECRET", "real-secret")
     r = await client.post(
         "/webhook/new-document",
         json={"record": {"name": "file.md", "bucket_id": "documents"}},
@@ -106,9 +106,9 @@ async def test_webhook_rejects_bad_secret(client, mocker):
 
 
 async def test_webhook_accepts_correct_secret(client, mocker):
-    mocker.patch("app.main.WEBHOOK_SECRET", "real-secret")
-    mocker.patch("app.main.asyncio.create_task")
-    mocker.patch("app.doc_processor.ingest_document")
+    mocker.patch("app.routers.ingest.WEBHOOK_SECRET", "real-secret")
+    mocker.patch("app.routers.ingest.asyncio.create_task")
+    mocker.patch("app.agents.doc_processor.ingest_document")
 
     r = await client.post(
         "/webhook/new-document",

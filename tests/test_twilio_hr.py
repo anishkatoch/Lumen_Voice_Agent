@@ -94,21 +94,21 @@ class TestAudioConversion:
 
     def test_mulaw_decode_silence_byte(self):
         """μ-law byte 0xFF (silence) decodes to a PCM value close to 0."""
-        from app.twilio_call_service import mulaw_decode
+        from app.telephony.twilio.twilio_call_service import mulaw_decode
         result = mulaw_decode(bytes([0xFF]))
         pcm = int.from_bytes(result, "little", signed=True)
         assert abs(pcm) < 200
 
     def test_mulaw_encode_silence(self):
         """PCM silence (0x0000) encodes to the μ-law silence byte 0xFF."""
-        from app.twilio_call_service import mulaw_encode
+        from app.telephony.twilio.twilio_call_service import mulaw_encode
         pcm_silence = (0).to_bytes(2, "little", signed=True)
         result = mulaw_encode(pcm_silence)
         assert result == bytes([0xFF])
 
     def test_mulaw_round_trip_preserves_amplitude(self):
         """Encode then decode a sine wave - peak amplitude within 10% tolerance."""
-        from app.twilio_call_service import mulaw_encode, mulaw_decode
+        from app.telephony.twilio.twilio_call_service import mulaw_encode, mulaw_decode
         t = np.linspace(0, 1, 160, dtype=np.float32)
         sine = (np.sin(2 * np.pi * 440 * t) * 16000).astype(np.int16)
         encoded = mulaw_encode(sine.tobytes())
@@ -120,19 +120,19 @@ class TestAudioConversion:
 
     def test_resample_8k_to_16k_doubles_samples(self):
         """Upsampling 8kHz → 16kHz doubles the byte count."""
-        from app.twilio_call_service import resample_8k_to_16k
+        from app.telephony.twilio.twilio_call_service import resample_8k_to_16k
         pcm8k = np.zeros(160, dtype=np.int16).tobytes()
         assert len(resample_8k_to_16k(pcm8k)) == len(pcm8k) * 2
 
     def test_resample_16k_to_8k_halves_samples(self):
         """Downsampling 16kHz → 8kHz halves the byte count."""
-        from app.twilio_call_service import resample_16k_to_8k
+        from app.telephony.twilio.twilio_call_service import resample_16k_to_8k
         pcm16k = np.zeros(320, dtype=np.int16).tobytes()
         assert len(resample_16k_to_8k(pcm16k)) == len(pcm16k) // 2
 
     def test_twilio_payload_to_pcm16k_output_size(self):
         """160 μ-law samples at 8kHz → 320 int16 samples at 16kHz = 640 bytes."""
-        from app.twilio_call_service import twilio_payload_to_pcm16k
+        from app.telephony.twilio.twilio_call_service import twilio_payload_to_pcm16k
         mulaw = bytes([0xFF] * 160)
         payload = base64.b64encode(mulaw).decode()
         pcm16k = twilio_payload_to_pcm16k(payload)
@@ -140,7 +140,7 @@ class TestAudioConversion:
 
     def test_empty_bytes_handled_gracefully(self):
         """All converters return empty bytes for empty input without crashing."""
-        from app.twilio_call_service import (
+        from app.telephony.twilio.twilio_call_service import (
             mulaw_decode, mulaw_encode, resample_8k_to_16k, resample_16k_to_8k,
         )
         assert mulaw_decode(b"") == b""
@@ -150,7 +150,7 @@ class TestAudioConversion:
 
     def test_pcm16k_round_trip_via_twilio_payload(self):
         """PCM16k → twilio_payload → PCM16k should preserve audio shape within 15%."""
-        from app.twilio_call_service import twilio_payload_to_pcm16k, pcm16k_to_twilio_payload
+        from app.telephony.twilio.twilio_call_service import twilio_payload_to_pcm16k, pcm16k_to_twilio_payload
         t = np.linspace(0, 1, 320, dtype=np.float32)
         original = (np.sin(2 * np.pi * 400 * t) * 10000).astype(np.int16)
         payload = pcm16k_to_twilio_payload(original.tobytes())
@@ -169,9 +169,9 @@ class TestTwiMLRoutes:
 
     async def test_inbound_known_number_returns_stream_twiml(self, client, mocker):
         """/twilio/voice for a configured number returns <Connect><Stream> TwiML."""
-        mocker.patch("app.twilio_repo.get_number_by_phone",
+        mocker.patch("app.telephony.twilio.twilio_repo.get_number_by_phone",
                      return_value=_phone_record(agent_id=TEST_AGENT_ID))
-        mocker.patch("app.user_twilio_settings_repo.get_twilio_settings",
+        mocker.patch("app.telephony.twilio.user_twilio_settings_repo.get_twilio_settings",
                      return_value=_settings())
 
         resp = await client.post("/twilio/voice", data={"To": TEST_PHONE, "From": "+10000000001"})
@@ -185,7 +185,7 @@ class TestTwiMLRoutes:
 
     async def test_inbound_unknown_number_returns_error_twiml(self, client, mocker):
         """Unknown phone number → <Say> error TwiML, no <Connect>."""
-        mocker.patch("app.twilio_repo.get_number_by_phone", return_value=None)
+        mocker.patch("app.telephony.twilio.twilio_repo.get_number_by_phone", return_value=None)
 
         resp = await client.post("/twilio/voice", data={"To": "+10000000099"})
         assert resp.status_code == 200
@@ -194,7 +194,7 @@ class TestTwiMLRoutes:
 
     async def test_inbound_number_without_agent_returns_error(self, client, mocker):
         """Number in DB but no agent_id → error TwiML, not a stream."""
-        mocker.patch("app.twilio_repo.get_number_by_phone",
+        mocker.patch("app.telephony.twilio.twilio_repo.get_number_by_phone",
                      return_value=_phone_record(agent_id=None))
 
         resp = await client.post("/twilio/voice", data={"To": TEST_PHONE})
@@ -203,9 +203,9 @@ class TestTwiMLRoutes:
 
     async def test_inbound_missing_webhook_url_returns_error(self, client, mocker):
         """Number + agent attached but no webhook URL → error TwiML."""
-        mocker.patch("app.twilio_repo.get_number_by_phone",
+        mocker.patch("app.telephony.twilio.twilio_repo.get_number_by_phone",
                      return_value=_phone_record(agent_id=TEST_AGENT_ID))
-        mocker.patch("app.user_twilio_settings_repo.get_twilio_settings",
+        mocker.patch("app.telephony.twilio.user_twilio_settings_repo.get_twilio_settings",
                      return_value=_settings(webhook_base_url=""))
 
         resp = await client.post("/twilio/voice", data={"To": TEST_PHONE})
@@ -214,8 +214,8 @@ class TestTwiMLRoutes:
 
     async def test_outbound_valid_interview_returns_stream_twiml(self, client, mocker):
         """Outbound TwiML for a valid interview contains interview_id in the stream URL."""
-        mocker.patch("app.hr_repo.get_interview", return_value=_interview())
-        mocker.patch("app.user_twilio_settings_repo.get_twilio_settings",
+        mocker.patch("app.hr_campaigns.hr_repo.get_interview", return_value=_interview())
+        mocker.patch("app.telephony.twilio.user_twilio_settings_repo.get_twilio_settings",
                      return_value=_settings())
 
         resp = await client.get(f"/twilio/outbound/voice?interview_id={TEST_INT_ID}")
@@ -225,7 +225,7 @@ class TestTwiMLRoutes:
 
     async def test_outbound_missing_interview_returns_error(self, client, mocker):
         """Missing interview_id in outbound TwiML → <Say> error, no <Connect>."""
-        mocker.patch("app.hr_repo.get_interview", return_value=None)
+        mocker.patch("app.hr_campaigns.hr_repo.get_interview", return_value=None)
 
         resp = await client.get("/twilio/outbound/voice?interview_id=nonexistent")
         assert resp.status_code == 200
@@ -240,9 +240,9 @@ class TestTwiMLRoutes:
 
     async def test_inbound_stream_url_contains_phone_number(self, client, mocker):
         """The generated stream URL must carry the 'to' phone number for the WS handler."""
-        mocker.patch("app.twilio_repo.get_number_by_phone",
+        mocker.patch("app.telephony.twilio.twilio_repo.get_number_by_phone",
                      return_value=_phone_record(agent_id=TEST_AGENT_ID))
-        mocker.patch("app.user_twilio_settings_repo.get_twilio_settings",
+        mocker.patch("app.telephony.twilio.user_twilio_settings_repo.get_twilio_settings",
                      return_value=_settings())
 
         resp = await client.post("/twilio/voice", data={"To": TEST_PHONE})
@@ -258,7 +258,7 @@ class TestPhoneNumberCRUD:
     """Add, list, update, attach, detach, delete phone numbers via API."""
 
     async def test_list_phone_numbers(self, client, mocker):
-        mocker.patch("app.twilio_repo.get_phone_numbers", return_value=[_phone_record()])
+        mocker.patch("app.telephony.twilio.twilio_repo.get_phone_numbers", return_value=[_phone_record()])
 
         resp = await client.get("/api/twilio/numbers", headers=_auth())
         assert resp.status_code == 200
@@ -267,15 +267,15 @@ class TestPhoneNumberCRUD:
         assert data[0]["phone_number"] == TEST_PHONE
 
     async def test_list_returns_empty_when_no_numbers(self, client, mocker):
-        mocker.patch("app.twilio_repo.get_phone_numbers", return_value=[])
+        mocker.patch("app.telephony.twilio.twilio_repo.get_phone_numbers", return_value=[])
 
         resp = await client.get("/api/twilio/numbers", headers=_auth())
         assert resp.status_code == 200
         assert resp.json() == []
 
     async def test_add_number_returns_201(self, client, mocker):
-        mocker.patch("app.twilio_repo.create_phone_number", return_value=_phone_record())
-        mocker.patch("app.user_twilio_settings_repo.get_twilio_settings",
+        mocker.patch("app.telephony.twilio.twilio_repo.create_phone_number", return_value=_phone_record())
+        mocker.patch("app.telephony.twilio.user_twilio_settings_repo.get_twilio_settings",
                      return_value=_settings(account_sid="", auth_token="", webhook_base_url=""))
 
         resp = await client.post(
@@ -287,11 +287,11 @@ class TestPhoneNumberCRUD:
 
     async def test_add_number_triggers_webhook_config_when_credentials_exist(self, client, mocker):
         """Adding a number fires configure_number_webhook as a background task."""
-        mocker.patch("app.twilio_repo.create_phone_number", return_value=_phone_record())
-        mocker.patch("app.user_twilio_settings_repo.get_twilio_settings",
+        mocker.patch("app.telephony.twilio.twilio_repo.create_phone_number", return_value=_phone_record())
+        mocker.patch("app.telephony.twilio.user_twilio_settings_repo.get_twilio_settings",
                      return_value=_settings())
         mock_cfg = mocker.patch(
-            "app.twilio_webhook_config.configure_number_webhook",
+            "app.telephony.twilio.twilio_webhook_config.configure_number_webhook",
             new_callable=AsyncMock,
         )
 
@@ -308,11 +308,11 @@ class TestPhoneNumberCRUD:
 
     async def test_add_number_skips_webhook_when_no_credentials(self, client, mocker):
         """Adding a number without saved credentials does NOT configure webhook."""
-        mocker.patch("app.twilio_repo.create_phone_number", return_value=_phone_record())
-        mocker.patch("app.user_twilio_settings_repo.get_twilio_settings",
+        mocker.patch("app.telephony.twilio.twilio_repo.create_phone_number", return_value=_phone_record())
+        mocker.patch("app.telephony.twilio.user_twilio_settings_repo.get_twilio_settings",
                      return_value=_settings(account_sid="", auth_token="", webhook_base_url=""))
         mock_cfg = mocker.patch(
-            "app.twilio_webhook_config.configure_number_webhook",
+            "app.telephony.twilio.twilio_webhook_config.configure_number_webhook",
             new_callable=AsyncMock,
         )
 
@@ -321,7 +321,7 @@ class TestPhoneNumberCRUD:
         mock_cfg.assert_not_called()
 
     async def test_attach_number_to_agent(self, client, mocker):
-        mocker.patch("app.twilio_repo.attach_number_to_agent",
+        mocker.patch("app.telephony.twilio.twilio_repo.attach_number_to_agent",
                      return_value=_phone_record(agent_id=TEST_AGENT_ID))
 
         resp = await client.post(
@@ -333,7 +333,7 @@ class TestPhoneNumberCRUD:
         assert resp.json()["agent_id"] == TEST_AGENT_ID
 
     async def test_detach_number_from_agent(self, client, mocker):
-        mocker.patch("app.twilio_repo.detach_number_from_agent",
+        mocker.patch("app.telephony.twilio.twilio_repo.detach_number_from_agent",
                      return_value=_phone_record(agent_id=None))
 
         resp = await client.delete(
@@ -343,7 +343,7 @@ class TestPhoneNumberCRUD:
         assert resp.json()["agent_id"] is None
 
     async def test_delete_phone_number_returns_204(self, client, mocker):
-        mocker.patch("app.twilio_repo.delete_phone_number", return_value=None)
+        mocker.patch("app.telephony.twilio.twilio_repo.delete_phone_number", return_value=None)
 
         resp = await client.delete(f"/api/twilio/numbers/{TEST_NUMBER_ID}", headers=_auth())
         assert resp.status_code == 204
@@ -362,7 +362,7 @@ class TestTwilioSettings:
 
     async def test_get_settings_masks_auth_token(self, client, mocker):
         """Raw auth token must never be returned to the client."""
-        mocker.patch("app.user_twilio_settings_repo.get_twilio_settings",
+        mocker.patch("app.telephony.twilio.user_twilio_settings_repo.get_twilio_settings",
                      return_value=_settings())
 
         resp = await client.get("/api/twilio/settings", headers=_auth())
@@ -374,7 +374,7 @@ class TestTwilioSettings:
 
     async def test_get_settings_empty_shows_not_set(self, client, mocker):
         """When no credentials are saved, auth_token_set is False."""
-        mocker.patch("app.user_twilio_settings_repo.get_twilio_settings",
+        mocker.patch("app.telephony.twilio.user_twilio_settings_repo.get_twilio_settings",
                      return_value={"account_sid": "", "auth_token": "", "webhook_base_url": ""})
 
         resp = await client.get("/api/twilio/settings", headers=_auth())
@@ -383,7 +383,7 @@ class TestTwilioSettings:
 
     async def test_get_settings_returns_account_sid_plaintext(self, client, mocker):
         """account_sid is not sensitive and should be returned as-is."""
-        mocker.patch("app.user_twilio_settings_repo.get_twilio_settings",
+        mocker.patch("app.telephony.twilio.user_twilio_settings_repo.get_twilio_settings",
                      return_value=_settings())
 
         resp = await client.get("/api/twilio/settings", headers=_auth())
@@ -391,12 +391,12 @@ class TestTwilioSettings:
 
     async def test_save_settings_triggers_configure_all_numbers(self, client, mocker):
         """Saving credentials fires configure_all_user_numbers for all existing numbers."""
-        mocker.patch("app.user_twilio_settings_repo.get_twilio_settings",
+        mocker.patch("app.telephony.twilio.user_twilio_settings_repo.get_twilio_settings",
                      return_value=_settings(auth_token=""))
-        mocker.patch("app.user_twilio_settings_repo.upsert_twilio_settings",
+        mocker.patch("app.telephony.twilio.user_twilio_settings_repo.upsert_twilio_settings",
                      return_value=_settings())
         mock_all = mocker.patch(
-            "app.twilio_webhook_config.configure_all_user_numbers",
+            "app.telephony.twilio.twilio_webhook_config.configure_all_user_numbers",
             new_callable=AsyncMock,
         )
 
@@ -414,12 +414,12 @@ class TestTwilioSettings:
     async def test_save_settings_bullet_token_keeps_existing(self, client, mocker):
         """Sending the bullet-masked placeholder preserves the stored token."""
         existing = _settings(auth_token="real_secret_token")
-        mocker.patch("app.user_twilio_settings_repo.get_twilio_settings", return_value=existing)
+        mocker.patch("app.telephony.twilio.user_twilio_settings_repo.get_twilio_settings", return_value=existing)
         mock_upsert = mocker.patch(
-            "app.user_twilio_settings_repo.upsert_twilio_settings",
+            "app.telephony.twilio.user_twilio_settings_repo.upsert_twilio_settings",
             return_value=existing,
         )
-        mocker.patch("app.twilio_webhook_config.configure_all_user_numbers",
+        mocker.patch("app.telephony.twilio.twilio_webhook_config.configure_all_user_numbers",
                      new_callable=AsyncMock)
 
         await client.put(
@@ -444,7 +444,7 @@ class TestHRCandidates:
     """Candidate CRUD via HTTP API."""
 
     async def test_list_candidates(self, client, mocker):
-        mocker.patch("app.hr_repo.list_candidates", return_value=[_candidate()])
+        mocker.patch("app.hr_campaigns.hr_repo.list_candidates", return_value=[_candidate()])
 
         resp = await client.get("/api/hr/candidates", headers=_auth())
         assert resp.status_code == 200
@@ -453,14 +453,14 @@ class TestHRCandidates:
         assert data[0]["name"] == "Priya Sharma"
 
     async def test_list_candidates_empty(self, client, mocker):
-        mocker.patch("app.hr_repo.list_candidates", return_value=[])
+        mocker.patch("app.hr_campaigns.hr_repo.list_candidates", return_value=[])
 
         resp = await client.get("/api/hr/candidates", headers=_auth())
         assert resp.status_code == 200
         assert resp.json() == []
 
     async def test_create_candidate_returns_201(self, client, mocker):
-        mocker.patch("app.hr_repo.create_candidate", return_value=_candidate())
+        mocker.patch("app.hr_campaigns.hr_repo.create_candidate", return_value=_candidate())
 
         resp = await client.post(
             "/api/hr/candidates", headers=_auth(),
@@ -487,7 +487,7 @@ class TestHRCandidates:
         assert resp.status_code == 422
 
     async def test_update_candidate(self, client, mocker):
-        mocker.patch("app.hr_repo.update_candidate",
+        mocker.patch("app.hr_campaigns.hr_repo.update_candidate",
                      return_value=_candidate(role="Senior Engineer"))
 
         resp = await client.put(
@@ -498,7 +498,7 @@ class TestHRCandidates:
         assert resp.json()["role"] == "Senior Engineer"
 
     async def test_update_candidate_not_found_returns_404(self, client, mocker):
-        mocker.patch("app.hr_repo.update_candidate",
+        mocker.patch("app.hr_campaigns.hr_repo.update_candidate",
                      side_effect=RuntimeError("Candidate not found"))
 
         resp = await client.put(
@@ -508,7 +508,7 @@ class TestHRCandidates:
         assert resp.status_code == 404
 
     async def test_delete_candidate_returns_204(self, client, mocker):
-        mocker.patch("app.hr_repo.delete_candidate", return_value=None)
+        mocker.patch("app.hr_campaigns.hr_repo.delete_candidate", return_value=None)
 
         resp = await client.delete(f"/api/hr/candidates/{TEST_CAND_ID}", headers=_auth())
         assert resp.status_code == 204
@@ -526,14 +526,14 @@ class TestHRInterviews:
     """Interview CRUD via HTTP API."""
 
     async def test_list_interviews(self, client, mocker):
-        mocker.patch("app.hr_repo.list_interviews", return_value=[_interview()])
+        mocker.patch("app.hr_campaigns.hr_repo.list_interviews", return_value=[_interview()])
 
         resp = await client.get("/api/hr/interviews", headers=_auth())
         assert resp.status_code == 200
         assert len(resp.json()) == 1
 
     async def test_create_interview_returns_201(self, client, mocker):
-        mocker.patch("app.hr_repo.create_interview", return_value=_interview())
+        mocker.patch("app.hr_campaigns.hr_repo.create_interview", return_value=_interview())
 
         sched = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
         resp = await client.post(
@@ -570,7 +570,7 @@ class TestHRInterviews:
         assert resp.status_code == 422
 
     async def test_update_interview_status(self, client, mocker):
-        mocker.patch("app.hr_repo.update_interview",
+        mocker.patch("app.hr_campaigns.hr_repo.update_interview",
                      return_value=_interview(status="cancelled"))
 
         resp = await client.put(
@@ -581,7 +581,7 @@ class TestHRInterviews:
         assert resp.json()["status"] == "cancelled"
 
     async def test_update_interview_not_found_returns_404(self, client, mocker):
-        mocker.patch("app.hr_repo.update_interview",
+        mocker.patch("app.hr_campaigns.hr_repo.update_interview",
                      side_effect=RuntimeError("Interview not found"))
 
         resp = await client.put(
@@ -591,7 +591,7 @@ class TestHRInterviews:
         assert resp.status_code == 404
 
     async def test_delete_interview_returns_204(self, client, mocker):
-        mocker.patch("app.hr_repo.delete_interview", return_value=None)
+        mocker.patch("app.hr_campaigns.hr_repo.delete_interview", return_value=None)
 
         resp = await client.delete(f"/api/hr/interviews/{TEST_INT_ID}", headers=_auth())
         assert resp.status_code == 204
@@ -727,15 +727,15 @@ class TestSchedulerDeduplication:
             call_order.append("twilio_call")
             return "CAtest123", None
 
-        mocker.patch("app.database.get_supabase", return_value=db)
-        mocker.patch("app.hr_repo.get_due_interviews", return_value=[iv])
-        mocker.patch("app.user_twilio_settings_repo.get_twilio_settings", return_value=_settings())
-        mocker.patch("app.hr_repo.mark_interview_calling")
-        mocker.patch("app.hr_repo.mark_interview_failed")
-        mocker.patch("app.hr_scheduler._initiate_outbound_call", side_effect=fake_initiate)
-        mocker.patch("app.conversation_repo.create_conversation")
+        mocker.patch("app.core.database.get_supabase", return_value=db)
+        mocker.patch("app.hr_campaigns.hr_repo.get_due_interviews", return_value=[iv])
+        mocker.patch("app.telephony.twilio.user_twilio_settings_repo.get_twilio_settings", return_value=_settings())
+        mocker.patch("app.hr_campaigns.hr_repo.mark_interview_calling")
+        mocker.patch("app.hr_campaigns.hr_repo.mark_interview_failed")
+        mocker.patch("app.hr_campaigns.hr_scheduler._initiate_outbound_call", side_effect=fake_initiate)
+        mocker.patch("app.conversations.conversation_repo.create_conversation")
 
-        from app.hr_scheduler import _check_and_call
+        from app.hr_campaigns.hr_scheduler import _check_and_call
         await _check_and_call()
 
         assert "db_update" in call_order
@@ -746,14 +746,14 @@ class TestSchedulerDeduplication:
         """When the conditional UPDATE returns no rows (claimed), skip the call."""
         db = self._make_claim_db(mocker, claim_data=[])  # empty = already claimed
 
-        mock_twilio = mocker.patch("app.hr_scheduler._initiate_outbound_call",
+        mock_twilio = mocker.patch("app.hr_campaigns.hr_scheduler._initiate_outbound_call",
                                    new_callable=AsyncMock)
-        mocker.patch("app.database.get_supabase", return_value=db)
-        mocker.patch("app.hr_repo.get_due_interviews", return_value=[_interview()])
-        mocker.patch("app.user_twilio_settings_repo.get_twilio_settings", return_value=_settings())
-        mocker.patch("app.hr_repo.mark_interview_failed")
+        mocker.patch("app.core.database.get_supabase", return_value=db)
+        mocker.patch("app.hr_campaigns.hr_repo.get_due_interviews", return_value=[_interview()])
+        mocker.patch("app.telephony.twilio.user_twilio_settings_repo.get_twilio_settings", return_value=_settings())
+        mocker.patch("app.hr_campaigns.hr_repo.mark_interview_failed")
 
-        from app.hr_scheduler import _check_and_call
+        from app.hr_campaigns.hr_scheduler import _check_and_call
         await _check_and_call()
 
         mock_twilio.assert_not_called()
@@ -763,17 +763,17 @@ class TestSchedulerDeduplication:
         iv = _interview()
         db = self._make_claim_db(mocker, claim_data=[iv])
 
-        mock_twilio = mocker.patch("app.hr_scheduler._initiate_outbound_call",
+        mock_twilio = mocker.patch("app.hr_campaigns.hr_scheduler._initiate_outbound_call",
                                    new_callable=AsyncMock)
-        mock_fail = mocker.patch("app.hr_repo.mark_interview_failed")
-        mocker.patch("app.database.get_supabase", return_value=db)
-        mocker.patch("app.hr_repo.get_due_interviews", return_value=[iv])
-        mocker.patch("app.user_twilio_settings_repo.get_twilio_settings",
+        mock_fail = mocker.patch("app.hr_campaigns.hr_repo.mark_interview_failed")
+        mocker.patch("app.core.database.get_supabase", return_value=db)
+        mocker.patch("app.hr_campaigns.hr_repo.get_due_interviews", return_value=[iv])
+        mocker.patch("app.telephony.twilio.user_twilio_settings_repo.get_twilio_settings",
                      return_value=_settings(webhook_base_url=""))
-        mocker.patch("app.hr_repo.mark_interview_calling")
-        mock_record_failed = mocker.patch("app.conversation_repo.record_failed_call")
+        mocker.patch("app.hr_campaigns.hr_repo.mark_interview_calling")
+        mock_record_failed = mocker.patch("app.conversations.conversation_repo.record_failed_call")
 
-        from app.hr_scheduler import _check_and_call
+        from app.hr_campaigns.hr_scheduler import _check_and_call
         await _check_and_call()
 
         mock_twilio.assert_not_called()
@@ -785,16 +785,16 @@ class TestSchedulerDeduplication:
         iv = _interview()
         db = self._make_claim_db(mocker, claim_data=[iv])
 
-        mocker.patch("app.hr_scheduler._initiate_outbound_call",
+        mocker.patch("app.hr_campaigns.hr_scheduler._initiate_outbound_call",
                      new_callable=AsyncMock, return_value=(None, "Twilio rejected the call - check the phone number and account status"))
-        mock_fail = mocker.patch("app.hr_repo.mark_interview_failed")
-        mocker.patch("app.database.get_supabase", return_value=db)
-        mocker.patch("app.hr_repo.get_due_interviews", return_value=[iv])
-        mocker.patch("app.user_twilio_settings_repo.get_twilio_settings", return_value=_settings())
-        mocker.patch("app.hr_repo.mark_interview_calling")
-        mock_record_failed = mocker.patch("app.conversation_repo.record_failed_call")
+        mock_fail = mocker.patch("app.hr_campaigns.hr_repo.mark_interview_failed")
+        mocker.patch("app.core.database.get_supabase", return_value=db)
+        mocker.patch("app.hr_campaigns.hr_repo.get_due_interviews", return_value=[iv])
+        mocker.patch("app.telephony.twilio.user_twilio_settings_repo.get_twilio_settings", return_value=_settings())
+        mocker.patch("app.hr_campaigns.hr_repo.mark_interview_calling")
+        mock_record_failed = mocker.patch("app.conversations.conversation_repo.record_failed_call")
 
-        from app.hr_scheduler import _check_and_call
+        from app.hr_campaigns.hr_scheduler import _check_and_call
         await _check_and_call()
 
         mock_fail.assert_called_once_with(TEST_INT_ID)
@@ -803,11 +803,11 @@ class TestSchedulerDeduplication:
 
     async def test_no_due_interviews_returns_early(self, mocker):
         """When no interviews are due, _initiate_outbound_call is never called."""
-        mock_twilio = mocker.patch("app.hr_scheduler._initiate_outbound_call",
+        mock_twilio = mocker.patch("app.hr_campaigns.hr_scheduler._initiate_outbound_call",
                                    new_callable=AsyncMock)
-        mocker.patch("app.hr_repo.get_due_interviews", return_value=[])
+        mocker.patch("app.hr_campaigns.hr_repo.get_due_interviews", return_value=[])
 
-        from app.hr_scheduler import _check_and_call
+        from app.hr_campaigns.hr_scheduler import _check_and_call
         await _check_and_call()
 
         mock_twilio.assert_not_called()
@@ -830,7 +830,7 @@ class TestInitiateOutboundCall:
         chain.limit.return_value = chain
         chain.execute.return_value.data = [{"phone_number": phone}]
         db.table.return_value.select.return_value = chain
-        mocker.patch("app.database.get_supabase", return_value=db)
+        mocker.patch("app.core.database.get_supabase", return_value=db)
         return db
 
     def _mock_db_no_number(self, mocker):
@@ -840,18 +840,18 @@ class TestInitiateOutboundCall:
         chain.limit.return_value = chain
         chain.execute.return_value.data = []
         db.table.return_value.select.return_value = chain
-        mocker.patch("app.database.get_supabase", return_value=db)
+        mocker.patch("app.core.database.get_supabase", return_value=db)
         return db
 
     async def test_no_credentials_returns_short_reason(self, mocker):
-        from app.hr_scheduler import _initiate_outbound_call
+        from app.hr_campaigns.hr_scheduler import _initiate_outbound_call
         iv = _interview()
         call_sid, reason = await _initiate_outbound_call(iv, _settings(account_sid="", auth_token=""), TEST_WEBHOOK)
         assert call_sid is None
         assert reason == "No Twilio account connected for this user"
 
     async def test_no_candidate_phone_returns_short_reason(self, mocker):
-        from app.hr_scheduler import _initiate_outbound_call
+        from app.hr_campaigns.hr_scheduler import _initiate_outbound_call
         iv = _interview(hr_candidates={"name": "Priya Sharma", "phone": ""})
         call_sid, reason = await _initiate_outbound_call(iv, _settings(), TEST_WEBHOOK)
         assert call_sid is None
@@ -859,7 +859,7 @@ class TestInitiateOutboundCall:
 
     async def test_no_phone_number_configured_returns_short_reason(self, mocker):
         self._mock_db_no_number(mocker)
-        from app.hr_scheduler import _initiate_outbound_call
+        from app.hr_campaigns.hr_scheduler import _initiate_outbound_call
         iv = _interview()
         call_sid, reason = await _initiate_outbound_call(iv, _settings(), TEST_WEBHOOK)
         assert call_sid is None
@@ -878,7 +878,7 @@ class TestInitiateOutboundCall:
         mock_client.post = AsyncMock(return_value=R())
         mocker.patch("httpx.AsyncClient", return_value=mock_client)
 
-        from app.hr_scheduler import _initiate_outbound_call
+        from app.hr_campaigns.hr_scheduler import _initiate_outbound_call
         iv = _interview()
         call_sid, reason = await _initiate_outbound_call(iv, _settings(), TEST_WEBHOOK)
         assert call_sid is None
@@ -890,7 +890,7 @@ class TestInitiateOutboundCall:
         mock_client.__aenter__ = AsyncMock(side_effect=ConnectionError("boom"))
         mocker.patch("httpx.AsyncClient", return_value=mock_client)
 
-        from app.hr_scheduler import _initiate_outbound_call
+        from app.hr_campaigns.hr_scheduler import _initiate_outbound_call
         iv = _interview()
         call_sid, reason = await _initiate_outbound_call(iv, _settings(), TEST_WEBHOOK)
         assert call_sid is None
@@ -909,7 +909,7 @@ class TestInitiateOutboundCall:
         mock_client.post = AsyncMock(return_value=R())
         mocker.patch("httpx.AsyncClient", return_value=mock_client)
 
-        from app.hr_scheduler import _initiate_outbound_call
+        from app.hr_campaigns.hr_scheduler import _initiate_outbound_call
         iv = _interview()
         call_sid, reason = await _initiate_outbound_call(iv, _settings(), TEST_WEBHOOK)
         assert call_sid == "CAsuccess000000000000000000000000000"
@@ -934,7 +934,7 @@ class TestInitiateOutboundCall:
         mock_client.post = fake_post
         mocker.patch("httpx.AsyncClient", return_value=mock_client)
 
-        from app.hr_scheduler import _initiate_outbound_call
+        from app.hr_campaigns.hr_scheduler import _initiate_outbound_call
         iv = _interview()
         await _initiate_outbound_call(iv, _settings(), TEST_WEBHOOK)
         assert captured.get("StatusCallback") == f"{TEST_WEBHOOK}/twilio/interview/status-callback"
@@ -954,20 +954,20 @@ class TestCheckAndCallWritesCallAnalytics:
         chain.execute.return_value.data = claim_data
         db.table.return_value.update.return_value = chain
         db.table.return_value.select.return_value = chain
-        mocker.patch("app.database.get_supabase", return_value=db)
+        mocker.patch("app.core.database.get_supabase", return_value=db)
         return db
 
     async def test_no_credentials_end_to_end(self, mocker):
         iv = _interview()
         self._claim_db(mocker, claim_data=[iv])
-        mocker.patch("app.hr_repo.get_due_interviews", return_value=[iv])
-        mocker.patch("app.hr_repo.mark_interview_calling")
-        mock_fail = mocker.patch("app.hr_repo.mark_interview_failed")
-        mocker.patch("app.user_twilio_settings_repo.get_twilio_settings",
+        mocker.patch("app.hr_campaigns.hr_repo.get_due_interviews", return_value=[iv])
+        mocker.patch("app.hr_campaigns.hr_repo.mark_interview_calling")
+        mock_fail = mocker.patch("app.hr_campaigns.hr_repo.mark_interview_failed")
+        mocker.patch("app.telephony.twilio.user_twilio_settings_repo.get_twilio_settings",
                      return_value=_settings(account_sid="", auth_token=""))
-        mock_record = mocker.patch("app.conversation_repo.record_failed_call")
+        mock_record = mocker.patch("app.conversations.conversation_repo.record_failed_call")
 
-        from app.hr_scheduler import _check_and_call
+        from app.hr_campaigns.hr_scheduler import _check_and_call
         await _check_and_call()
 
         mock_fail.assert_called_once_with(TEST_INT_ID)
@@ -979,13 +979,13 @@ class TestCheckAndCallWritesCallAnalytics:
     async def test_no_candidate_phone_end_to_end(self, mocker):
         iv = _interview(hr_candidates={"name": "Priya Sharma", "phone": ""})
         self._claim_db(mocker, claim_data=[iv])
-        mocker.patch("app.hr_repo.get_due_interviews", return_value=[iv])
-        mocker.patch("app.hr_repo.mark_interview_calling")
-        mock_fail = mocker.patch("app.hr_repo.mark_interview_failed")
-        mocker.patch("app.user_twilio_settings_repo.get_twilio_settings", return_value=_settings())
-        mock_record = mocker.patch("app.conversation_repo.record_failed_call")
+        mocker.patch("app.hr_campaigns.hr_repo.get_due_interviews", return_value=[iv])
+        mocker.patch("app.hr_campaigns.hr_repo.mark_interview_calling")
+        mock_fail = mocker.patch("app.hr_campaigns.hr_repo.mark_interview_failed")
+        mocker.patch("app.telephony.twilio.user_twilio_settings_repo.get_twilio_settings", return_value=_settings())
+        mock_record = mocker.patch("app.conversations.conversation_repo.record_failed_call")
 
-        from app.hr_scheduler import _check_and_call
+        from app.hr_campaigns.hr_scheduler import _check_and_call
         await _check_and_call()
 
         mock_fail.assert_called_once_with(TEST_INT_ID)
@@ -1002,13 +1002,13 @@ class TestCheckAndCallWritesCallAnalytics:
         iv1 = _interview(candidate_id="cand-1", hr_candidates={"name": "Candidate One", "phone": ""})
         iv2 = {**_interview(candidate_id="cand-2", hr_candidates={"name": "Candidate Two", "phone": ""}), "id": "eeeeeeee-2222-2222-2222-eeeeeeeeeeee"}
         self._claim_db(mocker, claim_data=[iv1])  # same mock answers every claim update
-        mocker.patch("app.hr_repo.get_due_interviews", return_value=[iv1, iv2])
-        mocker.patch("app.hr_repo.mark_interview_calling")
-        mock_fail = mocker.patch("app.hr_repo.mark_interview_failed")
-        mocker.patch("app.user_twilio_settings_repo.get_twilio_settings", return_value=_settings())
-        mocker.patch("app.conversation_repo.record_failed_call", side_effect=RuntimeError("column call_status does not exist"))
+        mocker.patch("app.hr_campaigns.hr_repo.get_due_interviews", return_value=[iv1, iv2])
+        mocker.patch("app.hr_campaigns.hr_repo.mark_interview_calling")
+        mock_fail = mocker.patch("app.hr_campaigns.hr_repo.mark_interview_failed")
+        mocker.patch("app.telephony.twilio.user_twilio_settings_repo.get_twilio_settings", return_value=_settings())
+        mocker.patch("app.conversations.conversation_repo.record_failed_call", side_effect=RuntimeError("column call_status does not exist"))
 
-        from app.hr_scheduler import _check_and_call
+        from app.hr_campaigns.hr_scheduler import _check_and_call
         await _check_and_call()
 
         assert mock_fail.call_count == 2
@@ -1028,10 +1028,10 @@ class TestTwilioTTS:
         mock_client = MagicMock()
         mock_client.text_to_speech.convert_as_stream.return_value = iter([fake_mulaw])
 
-        with patch("app.admin_config_service.get", return_value=None), \
+        with patch("app.admin.admin_config_service.get", return_value=None), \
              patch("elevenlabs.client.ElevenLabs", return_value=mock_client), \
              patch("elevenlabs.VoiceSettings"):
-            from app.twilio_call_service import text_to_speech_twilio
+            from app.telephony.twilio.twilio_call_service import text_to_speech_twilio
             chunks = [c async for c in text_to_speech_twilio("Hello there")]
 
         assert len(chunks) == 1
@@ -1044,10 +1044,10 @@ class TestTwilioTTS:
         mock_client = MagicMock()
         mock_client.text_to_speech.convert_as_stream.return_value = iter([b"", fake_mulaw, b""])
 
-        with patch("app.admin_config_service.get", return_value=None), \
+        with patch("app.admin.admin_config_service.get", return_value=None), \
              patch("elevenlabs.client.ElevenLabs", return_value=mock_client), \
              patch("elevenlabs.VoiceSettings"):
-            from app.twilio_call_service import text_to_speech_twilio
+            from app.telephony.twilio.twilio_call_service import text_to_speech_twilio
             chunks = [c async for c in text_to_speech_twilio("Skip empties")]
 
         assert len(chunks) == 1
@@ -1067,9 +1067,9 @@ class TestTwilioTTS:
             "tts_openai_model": "tts-1",
         }
 
-        with patch("app.admin_config_service.get", side_effect=lambda k: config_vals.get(k)), \
-             patch("app.openai_tts_service.text_to_speech_openai", side_effect=fake_openai_tts):
-            from app.twilio_call_service import text_to_speech_twilio
+        with patch("app.admin.admin_config_service.get", side_effect=lambda k: config_vals.get(k)), \
+             patch("app.voice.openai_tts_service.text_to_speech_openai", side_effect=fake_openai_tts):
+            from app.telephony.twilio.twilio_call_service import text_to_speech_twilio
             chunks = [c async for c in text_to_speech_twilio("Hello")]
 
         assert len(chunks) > 0
@@ -1084,9 +1084,9 @@ class TestTwilioTTS:
 
         config_vals = {"tts_provider": "openai_tts"}
 
-        with patch("app.admin_config_service.get", side_effect=lambda k: config_vals.get(k)), \
-             patch("app.openai_tts_service.text_to_speech_openai", side_effect=fake_empty_tts):
-            from app.twilio_call_service import text_to_speech_twilio
+        with patch("app.admin.admin_config_service.get", side_effect=lambda k: config_vals.get(k)), \
+             patch("app.voice.openai_tts_service.text_to_speech_openai", side_effect=fake_empty_tts):
+            from app.telephony.twilio.twilio_call_service import text_to_speech_twilio
             chunks = [c async for c in text_to_speech_twilio("Hello")]
 
         assert chunks == []
@@ -1101,7 +1101,7 @@ class TestStreamingTranscriber:
 
     async def test_finish_returns_accumulated_transcript(self):
         """finish() returns transcript that was built up by on_transcript callbacks."""
-        from app.deepgram_service import StreamingTranscriber
+        from app.voice.deepgram_service import StreamingTranscriber
         st = StreamingTranscriber()
 
         mock_conn = AsyncMock()
@@ -1114,7 +1114,7 @@ class TestStreamingTranscriber:
 
     async def test_finish_returns_none_when_no_transcript(self):
         """finish() returns None when no speech was detected."""
-        from app.deepgram_service import StreamingTranscriber
+        from app.voice.deepgram_service import StreamingTranscriber
         st = StreamingTranscriber()
 
         mock_conn = AsyncMock()
@@ -1127,7 +1127,7 @@ class TestStreamingTranscriber:
 
     async def test_finish_strips_whitespace(self):
         """Trailing/leading whitespace in transcript is stripped."""
-        from app.deepgram_service import StreamingTranscriber
+        from app.voice.deepgram_service import StreamingTranscriber
         st = StreamingTranscriber()
 
         mock_conn = AsyncMock()
@@ -1140,7 +1140,7 @@ class TestStreamingTranscriber:
 
     async def test_send_passes_bytes_to_connection(self):
         """send() forwards PCM bytes to the underlying Deepgram connection."""
-        from app.deepgram_service import StreamingTranscriber
+        from app.voice.deepgram_service import StreamingTranscriber
         st = StreamingTranscriber()
 
         mock_conn = AsyncMock()
@@ -1153,14 +1153,14 @@ class TestStreamingTranscriber:
 
     async def test_send_before_start_does_not_crash(self):
         """send() before start() (connection is None) must not raise."""
-        from app.deepgram_service import StreamingTranscriber
+        from app.voice.deepgram_service import StreamingTranscriber
         st = StreamingTranscriber()
         pcm = np.zeros(320, dtype=np.int16).tobytes()
         await st.send(pcm)  # _connection is None at this point - should be a no-op
 
     async def test_transcript_concatenates_multiple_segments(self):
         """Multiple final segments are joined with spaces."""
-        from app.deepgram_service import StreamingTranscriber
+        from app.voice.deepgram_service import StreamingTranscriber
         st = StreamingTranscriber()
 
         mock_conn = AsyncMock()

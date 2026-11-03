@@ -25,8 +25,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app.conversation_repo import record_failed_call, get_conversations  # noqa: E402
-from app.database import get_supabase  # noqa: E402
+from app.conversations.conversation_repo import record_failed_call, get_conversations  # noqa: E402
+from app.core.database import get_supabase  # noqa: E402
 
 TEST_REASON = "VERIFY SCRIPT - this is a test row, safe to ignore/delete"
 TEST_TITLE = "Call Analytics verification"
