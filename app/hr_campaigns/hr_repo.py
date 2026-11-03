@@ -215,6 +215,15 @@ def mark_interview_failed(interview_id: str) -> None:
     db.table("hr_interviews").update({"status": "failed"}).eq("id", interview_id).execute()
 
 
+def mark_interview_status(interview_id: str, status: str) -> None:
+    """Conditionally update an interview's status by id - only if it's still
+    'calling', so this never clobbers a status something else already
+    resolved for the same interview (same guard as mark_interview_status_by_call_sid,
+    for the case where call_sid isn't available to key off of)."""
+    db = get_supabase()
+    db.table("hr_interviews").update({"status": status}).eq("id", interview_id).eq("status", "calling").execute()
+
+
 def mark_interview_status_by_call_sid(call_sid: str, new_status: str) -> dict | None:
     """Conditionally update an interview's status by call_sid - only if it's
     still 'calling', so a status-callback race never clobbers a status the

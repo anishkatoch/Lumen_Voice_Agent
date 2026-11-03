@@ -70,6 +70,12 @@ async def _prewarm():
     from app.hr_campaigns.hr_campaign_service import run_campaign_dialer
     asyncio.create_task(run_campaign_dialer())
 
+    # Safety net: resolves hr_interviews rows abandoned in "calling" when a
+    # provider never delivers a final status (dead webhook tunnel, or a
+    # provider status value with no mapping) - checks every 5 minutes
+    from app.hr_campaigns.call_reconciliation import run_reconciliation_loop
+    asyncio.create_task(run_reconciliation_loop())
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ORIGINS,
