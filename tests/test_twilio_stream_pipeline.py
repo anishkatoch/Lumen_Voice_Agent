@@ -21,6 +21,7 @@ import time
 import numpy as np
 import pytest
 from starlette.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
 pytestmark = pytest.mark.asyncio
 
@@ -748,6 +749,60 @@ class TestCallEndCancelsInFlightResponse:
                 f"{later!r} was spoken after the call ended - the pipeline task wasn't cancelled "
                 f"on hangup, got tts_calls={tts_calls}"
             )
+
+
+class _FakeTwilioWebSocket:
+    """Drives twilio_stream_endpoint directly instead of through the real
+    ASGI/thread transport - deterministic, unlike racing a background
+    thread's disconnect delivery against a sleep."""
+
+    def __init__(self, messages):
+        self._messages = list(messages)
+        self.sent: list[str] = []
+
+    async def accept(self):
+        pass
+
+    async def receive_text(self):
+        if self._messages:
+            return self._messages.pop(0)
+        # Mirrors what Starlette raises when Twilio closes the stream
+        # normally (no more "stop" event follows) - str() on this renders
+        # as "(1000, '')".
+        raise WebSocketDisconnect(code=1000)
+
+    async def send_text(self, text):
+        self.sent.append(text)
+
+    async def close(self, code=1000):
+        pass
+
+
+class TestNormalDisconnectNotMarkedFailed:
+    """Regression test: when the client (Twilio) closes the media-stream
+    websocket normally - without sending a "stop" event first - Starlette
+    raises WebSocketDisconnect(code=1000), whose str() renders as "(1000, '')".
+    That string used to get stored as the call's failure_reason, marking a
+    perfectly ordinary call end as "failed" in Call Analytics."""
+
+    async def test_client_closing_without_stop_event_marks_completed(self, mocker, mock_pipeline):
+        mock_set_status = mocker.patch("app.conversations.conversation_repo.set_call_status")
+
+        transcriber = _FakeStreamingTranscriber(transcript="hello there")
+        mocker.patch("app.voice.deepgram_service.get_streaming_transcriber", return_value=transcriber)
+        mocker.patch("app.voice.vad_service.detect_speech", return_value=False)
+
+        from app.routers.telephony_twilio import twilio_stream_endpoint
+        fake_ws = _FakeTwilioWebSocket([json.dumps({
+            "event": "start",
+            "start": {"streamSid": STREAM_SID, "customParameters": {"to": TEST_PHONE}},
+        })])
+        await twilio_stream_endpoint(fake_ws)
+
+        mock_set_status.assert_called_once()
+        args = mock_set_status.call_args.args
+        assert args[1] == "completed", f"expected a normal client close to be 'completed', got {args}"
+        assert args[2] is None, f"expected no failure_reason for a normal close, got {args}"
 
 
 class TestRetrievalFiller:

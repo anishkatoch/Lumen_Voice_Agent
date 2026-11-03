@@ -986,6 +986,14 @@ async def twilio_stream_endpoint(websocket: WebSocket):
                     await asyncio.to_thread(mark_candidate_completed, campaign_id, campaign_candidate_id)
                 break
 
+    except WebSocketDisconnect as e:
+        # Twilio closes the media stream with code 1000/1001 at the end of a
+        # normal call - str(e) on this exception renders as "(1000, '')",
+        # which previously got stored as the failure_reason, marking a
+        # perfectly successful call as "failed" in Call Analytics.
+        if e.code not in (1000, 1001):
+            print(f"[Twilio WS] Disconnected with code {e.code}: {e.reason!r}")
+            _call_failure_reason = f"WebSocket closed with code {e.code}" + (f": {e.reason}" if e.reason else "")
     except Exception as e:
         if "disconnect" not in str(e).lower():
             print(f"[Twilio WS] Error: {e}")
