@@ -199,7 +199,7 @@ body {
 
 /* view scaffolding */
 .lumenc .view-scroll { flex: 1; overflow-y: auto; overflow-x: hidden; }
-.lumenc .view { padding: 28px 24px 60px; max-width: none; width: 100%; }
+.lumenc .view { padding: 28px 24px 60px; max-width: 1440px; width: 100%; }
 .lumenc .view-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 22px; }
 .lumenc .view-title { font-family: var(--font-display); font-size: 28px; font-weight: 600; letter-spacing: -.01em; color: var(--ink); }
 .lumenc .view-sub { color: var(--ink-muted); font-size: 14px; margin-top: 5px; max-width: 52ch; }
@@ -295,10 +295,10 @@ body {
 .lumenc .chip-btn .icon { width: 13px; height: 13px; }
 .lumenc .field { margin-bottom: 12px; }
 .lumenc .field label { display: block; font-size: 12.5px; font-weight: 600; color: var(--ink-2); margin-bottom: 6px; }
-.lumenc .input, .lumenc .textarea, .lumenc select.select { width: 100%; border: 1px solid var(--border); background: var(--bg); border-radius: var(--r-md); padding: 10px 12px; font-size: 13.5px; color: var(--ink); outline: none; transition: border-color .15s, box-shadow .15s; }
+.lumenc .input, .lumenc .textarea, .lumenc select.select { width: 100%; max-width: 640px; border: 1px solid var(--border); background: var(--bg); border-radius: var(--r-md); padding: 10px 12px; font-size: 13.5px; color: var(--ink); outline: none; transition: border-color .15s, box-shadow .15s; }
 .lumenc .input:focus, .lumenc .textarea:focus, .lumenc select.select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-ring); }
-.lumenc .textarea { resize: vertical; min-height: 120px; font-family: var(--font-body); line-height: 1.6; }
-.lumenc .char-count { text-align: right; font-size: 11px; color: var(--ink-faint); margin-top: 4px; font-family: var(--font-mono); }
+.lumenc .textarea { max-width: 74ch; resize: vertical; min-height: 120px; font-family: var(--font-body); line-height: 1.6; }
+.lumenc .char-count { max-width: 74ch; text-align: right; font-size: 11px; color: var(--ink-faint); margin-top: 4px; font-family: var(--font-mono); }
 .lumenc .kb-note { background: var(--accent-soft); border-radius: var(--r-md); padding: 12px 14px; display: flex; gap: 10px; align-items: flex-start; }
 .lumenc .kb-note .icon { color: var(--accent); width: 16px; height: 16px; margin-top: 1px; }
 .lumenc .kb-note b { color: var(--accent-strong); font-size: 13px; display: block; margin-bottom: 2px; }

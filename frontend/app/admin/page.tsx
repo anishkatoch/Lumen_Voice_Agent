@@ -1,23 +1,12 @@
 "use client";
 import { useState, useEffect, useCallback } from "react";
+import {
+  Settings, Plug, HardDrive, KeyRound, LogOut, Check, X, RefreshCw,
+  Eye, EyeOff, Loader2,
+} from "lucide-react";
 
 const BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8004";
 const ADMIN_EMAIL = "katochaneesh@gmail.com";
-
-// ── Palette (matches main app) ────────────────────────────────────────────────
-const C = {
-  bg:         "#f8f9fc",
-  surface:    "#ffffff",
-  surfaceBdr: "#e5e7eb",
-  header:     "rgba(255,255,255,0.95)",
-  text:       "#111827",
-  muted:      "#6b7280",
-  accent:     "#7c6cfc",
-  errBg:      "#fef2f2",
-  errBdr:     "#fecaca",
-  errText:    "#dc2626",
-  green:      "#16a34a",
-};
 
 // ── Tiny API helpers ──────────────────────────────────────────────────────────
 function getToken() {
@@ -62,11 +51,21 @@ interface KbRequest {
 }
 interface KbUser { user_id: string; granted_at?: string | null; }
 
+type Tab = "providers" | "storage" | "kb";
+const NAV_ITEMS: { id: Tab; label: string; icon: typeof Plug }[] = [
+  { id: "providers", label: "Providers", icon: Plug },
+  { id: "storage",   label: "Storage",   icon: HardDrive },
+  { id: "kb",        label: "KB Access", icon: KeyRound },
+];
+
 // ── Sub-components ────────────────────────────────────────────────────────────
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <div className="mb-6 rounded-xl border p-5" style={{ borderColor: C.surfaceBdr, background: C.surface }}>
-      <h3 className="text-sm font-semibold mb-4 pb-2 border-b" style={{ color: C.text, borderColor: C.surfaceBdr }}>{title}</h3>
+    <div className="card" style={{ padding: "20px 22px", marginBottom: 18 }}>
+      <h3 style={{
+        fontSize: 14.5, fontWeight: 700, color: "var(--ink)",
+        marginBottom: 16, paddingBottom: 12, borderBottom: "1px solid var(--border)",
+      }}>{title}</h3>
       {children}
     </div>
   );
@@ -77,17 +76,13 @@ function RadioGroup({ label, value, options, onChange }: {
   onChange: (v: string) => void;
 }) {
   return (
-    <div className="mb-4">
-      <p className="text-xs font-medium mb-2" style={{ color: C.muted }}>{label}</p>
-      <div className="flex flex-wrap gap-2">
+    <div className="field">
+      <label>{label}</label>
+      <div className="chip-row" style={{ marginBottom: 0 }}>
         {options.map(o => (
-          <button key={o.value} onClick={() => onChange(o.value)}
-            className="px-3 py-1.5 rounded-full text-sm font-medium border transition-all"
-            style={{
-              background: value === o.value ? C.accent : C.surface,
-              color: value === o.value ? "white" : C.muted,
-              borderColor: value === o.value ? C.accent : C.surfaceBdr,
-            }}>
+          <button key={o.value} type="button" onClick={() => onChange(o.value)}
+            className="chip-btn"
+            style={value === o.value ? { background: "var(--accent)", borderColor: "var(--accent)", color: "var(--accent-ink)" } : undefined}>
             {o.label}
           </button>
         ))}
@@ -103,27 +98,48 @@ function Field({ label, value, onChange, placeholder, type = "text", hint }: {
   const [show, setShow] = useState(false);
   const isPassword = type === "password";
   return (
-    <div className="mb-3">
-      <label className="block text-xs font-medium mb-1" style={{ color: C.muted }}>{label}</label>
-      <div className="relative">
+    <div className="field">
+      <label>{label}</label>
+      <div style={{ position: "relative" }}>
         <input
           type={isPassword && !show ? "password" : "text"}
           value={value}
           onChange={e => onChange(e.target.value)}
           placeholder={placeholder}
-          className="w-full px-3 py-2 rounded-lg text-sm outline-none border"
-          style={{ borderColor: C.surfaceBdr, background: "#f9fafb", color: C.text, paddingRight: isPassword ? "2.5rem" : undefined }}
+          className="input"
+          style={isPassword ? { paddingRight: 42 } : undefined}
         />
         {isPassword && (
           <button type="button" onClick={() => setShow(s => !s)}
-            className="absolute right-2 top-1/2 -translate-y-1/2 text-xs"
-            style={{ color: C.muted }}>
-            {show ? "Hide" : "Show"}
+            aria-label={show ? "Hide value" : "Show value"}
+            style={{
+              position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)",
+              background: "none", border: "none", color: "var(--ink-faint)", display: "flex", padding: 2,
+            }}>
+            {show ? <EyeOff size={15} /> : <Eye size={15} />}
           </button>
         )}
       </div>
-      {hint && <p className="text-xs mt-1" style={{ color: C.muted }}>{hint}</p>}
+      {hint && <p style={{ fontSize: 12, color: "var(--ink-muted)", marginTop: 5, lineHeight: 1.5 }}>{hint}</p>}
     </div>
+  );
+}
+
+function Notice({ children }: { children: React.ReactNode }) {
+  return (
+    <p style={{
+      fontSize: 12.5, lineHeight: 1.55, padding: "9px 12px", borderRadius: "var(--r-md)",
+      background: "var(--warning-soft)", color: "var(--warning)",
+    }}>{children}</p>
+  );
+}
+
+function SaveButton({ saving, saved, onClick, label }: { saving: boolean; saved: boolean; onClick: () => void; label: string }) {
+  return (
+    <button onClick={onClick} disabled={saving} className={`btn ${saved ? "btn-success" : "btn-primary"}`} style={{ marginTop: 4 }}>
+      {saving ? <Loader2 size={15} style={{ animation: "lc-spin .7s linear infinite" }} /> : saved ? <Check size={15} /> : null}
+      {saving ? "Saving…" : saved ? "Saved" : label}
+    </button>
   );
 }
 
@@ -145,42 +161,40 @@ function ProvidersTab({ config, onSave }: { config: AdminConfig; onSave: (update
   }
 
   return (
-    <div className="max-w-2xl">
+    <div style={{ maxWidth: 640 }}>
       <Section title="Speech-to-Text (STT)">
-        <RadioGroup label="STT Provider" value={local.stt_provider} onChange={set("stt_provider")}
+        <RadioGroup label="STT provider" value={local.stt_provider} onChange={set("stt_provider")}
           options={[
             { value: "deepgram",       label: "Deepgram (default)" },
             { value: "openai_whisper", label: "OpenAI Whisper" },
           ]} />
         {local.stt_provider === "openai_whisper" && (
-          <p className="text-xs p-2 rounded-lg" style={{ background: "#fffbeb", color: "#92400e" }}>
+          <Notice>
             Whisper is batch-only (no streaming). Each utterance is sent to OpenAI after silence is detected.
             Uses the OpenAI API key configured under LLM.
-          </p>
+          </Notice>
         )}
       </Section>
 
       <Section title="Text-to-Speech (TTS)">
-        <RadioGroup label="TTS Provider" value={local.tts_provider} onChange={set("tts_provider")}
+        <RadioGroup label="TTS provider" value={local.tts_provider} onChange={set("tts_provider")}
           options={[
             { value: "elevenlabs", label: "ElevenLabs (default)" },
             { value: "openai_tts", label: "OpenAI TTS" },
           ]} />
         {local.tts_provider === "openai_tts" && (
-          <div className="mt-3 space-y-1">
+          <div style={{ marginTop: 14, display: "flex", flexDirection: "column", gap: 4 }}>
             <RadioGroup label="Voice" value={local.tts_openai_voice} onChange={set("tts_openai_voice")}
               options={["alloy","echo","fable","onyx","nova","shimmer"].map(v => ({ value: v, label: v }))} />
             <RadioGroup label="Model" value={local.tts_openai_model} onChange={set("tts_openai_model")}
               options={[{ value: "tts-1", label: "tts-1 (fast)" }, { value: "tts-1-hd", label: "tts-1-hd (quality)" }]} />
-            <p className="text-xs p-2 rounded-lg" style={{ background: "#fffbeb", color: "#92400e" }}>
-              OpenAI TTS outputs 24 kHz PCM; it is automatically resampled to 16 kHz.
-            </p>
+            <Notice>OpenAI TTS outputs 24 kHz PCM; it is automatically resampled to 16 kHz.</Notice>
           </div>
         )}
       </Section>
 
       <Section title="Language Model (LLM)">
-        <RadioGroup label="LLM Provider" value={local.llm_provider} onChange={set("llm_provider")}
+        <RadioGroup label="LLM provider" value={local.llm_provider} onChange={set("llm_provider")}
           options={[
             { value: "openai",    label: "OpenAI (default)" },
             { value: "groq",      label: "Groq" },
@@ -188,60 +202,72 @@ function ProvidersTab({ config, onSave }: { config: AdminConfig; onSave: (update
             { value: "ollama",    label: "Ollama (local)" },
           ]} />
 
-        <div className="mt-3 space-y-0">
-          <Field label="Model name" value={local.llm_model} onChange={set("llm_model")}
+        <Field label="Model name" value={local.llm_model} onChange={set("llm_model")}
+          placeholder={
+            local.llm_provider === "groq"      ? "llama-3.1-8b-instant" :
+            local.llm_provider === "anthropic"  ? "claude-haiku-4-5" :
+            local.llm_provider === "ollama"     ? "llama3.2" :
+                                                  "gpt-4o-mini"
+          }
+          hint={
+            local.llm_provider === "groq"      ? "e.g. llama-3.1-8b-instant, mixtral-8x7b-32768" :
+            local.llm_provider === "anthropic"  ? "e.g. claude-haiku-4-5, claude-sonnet-4-5" :
+            local.llm_provider === "ollama"     ? "Any model pulled in Ollama (ollama list)" :
+                                                  "e.g. gpt-4o-mini, gpt-4o"
+          }
+        />
+
+        {local.llm_provider !== "openai" && (
+          <Field label="API key" value={local.llm_api_key} onChange={set("llm_api_key")}
             placeholder={
-              local.llm_provider === "groq"      ? "llama-3.1-8b-instant" :
-              local.llm_provider === "anthropic"  ? "claude-haiku-4-5" :
-              local.llm_provider === "ollama"     ? "llama3.2" :
-                                                    "gpt-4o-mini"
+              local.llm_provider === "groq"      ? "gsk_..." :
+              local.llm_provider === "anthropic"  ? "sk-ant-..." :
+                                                    "Leave empty for Ollama"
             }
-            hint={
-              local.llm_provider === "groq"      ? "e.g. llama-3.1-8b-instant, mixtral-8x7b-32768" :
-              local.llm_provider === "anthropic"  ? "e.g. claude-haiku-4-5, claude-sonnet-4-5" :
-              local.llm_provider === "ollama"     ? "Any model pulled in Ollama (ollama list)" :
-                                                    "e.g. gpt-4o-mini, gpt-4o"
-            }
+            type="password"
+            hint="Leave empty to use the environment variable (GROQ_API_KEY / ANTHROPIC_API_KEY)."
           />
+        )}
 
-          {local.llm_provider !== "openai" && (
-            <Field label="API Key" value={local.llm_api_key} onChange={set("llm_api_key")}
-              placeholder={
-                local.llm_provider === "groq"      ? "gsk_..." :
-                local.llm_provider === "anthropic"  ? "sk-ant-..." :
-                                                      "Leave empty for Ollama"
-              }
-              type="password"
-              hint="Leave empty to use the environment variable (GROQ_API_KEY / ANTHROPIC_API_KEY)."
-            />
-          )}
+        {local.llm_provider === "openai" && (
+          <Field label="API key override" value={local.llm_api_key} onChange={set("llm_api_key")}
+            placeholder="sk-... (leave empty to use OPENAI_API_KEY env var)"
+            type="password" />
+        )}
 
-          {local.llm_provider === "openai" && (
-            <Field label="API Key override" value={local.llm_api_key} onChange={set("llm_api_key")}
-              placeholder="sk-... (leave empty to use OPENAI_API_KEY env var)"
-              type="password" />
-          )}
-
-          {local.llm_provider === "ollama" && (
-            <Field label="Ollama base URL" value={local.llm_base_url} onChange={set("llm_base_url")}
-              placeholder="http://localhost:11434"
-              hint="Default: http://localhost:11434. Change if Ollama runs on another host/port." />
-          )}
-        </div>
+        {local.llm_provider === "ollama" && (
+          <Field label="Ollama base URL" value={local.llm_base_url} onChange={set("llm_base_url")}
+            placeholder="http://localhost:11434"
+            hint="Default: http://localhost:11434. Change if Ollama runs on another host/port." />
+        )}
       </Section>
 
-      {err && <p className="text-sm mb-3" style={{ color: C.errText }}>{err}</p>}
-
-      <button onClick={handleSave} disabled={saving}
-        className="px-8 py-2.5 rounded-xl font-bold text-sm"
-        style={{ background: saved ? C.green : "linear-gradient(135deg,#7c6cfc,#9d8dfd)", color: "white" }}>
-        {saving ? "Saving…" : saved ? "✓ Saved" : "Save Provider Settings"}
-      </button>
+      {err && <p style={{ color: "var(--danger)", fontSize: 13, marginBottom: 12 }}>{err}</p>}
+      <SaveButton saving={saving} saved={saved} onClick={handleSave} label="Save provider settings" />
     </div>
   );
 }
 
 // ── Storage Tab ───────────────────────────────────────────────────────────────
+function StorageField({ label, hint, value, onChange }: {
+  label: string; hint: string; value: string; onChange: (v: string) => void;
+}) {
+  return (
+    <div className="field">
+      <label>{label}</label>
+      <p style={{ fontSize: 12.5, color: "var(--ink-muted)", marginTop: -2, marginBottom: 10, lineHeight: 1.5 }}>{hint}</p>
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <input type="number" min="1" max="500" value={value} onChange={e => onChange(e.target.value)}
+          className="input" style={{ width: 96 }} />
+        <span style={{ fontSize: 13.5, color: "var(--ink-muted)" }}>MB</span>
+        <span style={{ fontSize: 12, color: "var(--ink-faint)", fontFamily: "var(--font-mono)" }}>
+          ({(parseInt(value || "5") * 1024 * 1024).toLocaleString()} bytes)
+        </span>
+      </div>
+    </div>
+  );
+}
+
 function StorageTab({ config, onSave }: { config: AdminConfig; onSave: (u: Partial<AdminConfig>) => Promise<void> }) {
   const [userMb,  setUserMb]  = useState(config.user_kb_max_mb);
   const [agentMb, setAgentMb] = useState(config.agent_kb_max_mb);
@@ -261,45 +287,17 @@ function StorageTab({ config, onSave }: { config: AdminConfig; onSave: (u: Parti
   }
 
   return (
-    <div className="max-w-lg">
-      <Section title="Knowledge Base Storage Limits">
-        <div className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium mb-1" style={{ color: C.text }}>
-              User KB limit (MB per user)
-            </label>
-            <p className="text-xs mb-2" style={{ color: C.muted }}>Max total document storage each user can upload to their personal Knowledge Base.</p>
-            <div className="flex items-center gap-3">
-              <input type="number" min="1" max="500" value={userMb}
-                onChange={e => setUserMb(e.target.value)}
-                className="w-24 px-3 py-2 rounded-lg text-sm border outline-none"
-                style={{ borderColor: C.surfaceBdr, background: "#f9fafb", color: C.text }} />
-              <span className="text-sm" style={{ color: C.muted }}>MB</span>
-              <span className="text-xs" style={{ color: C.muted }}>({(parseInt(userMb || "5") * 1024 * 1024).toLocaleString()} bytes)</span>
-            </div>
-          </div>
+    <div style={{ maxWidth: 560 }}>
+      <Section title="Knowledge base storage limits">
+        <StorageField label="User KB limit (MB per user)"
+          hint="Max total document storage each user can upload to their personal Knowledge Base."
+          value={userMb} onChange={setUserMb} />
+        <StorageField label="Agent documents limit (MB per agent)"
+          hint="Max total document storage per agent (personal + global docs combined)."
+          value={agentMb} onChange={setAgentMb} />
 
-          <div>
-            <label className="block text-sm font-medium mb-1" style={{ color: C.text }}>
-              Agent documents limit (MB per agent)
-            </label>
-            <p className="text-xs mb-2" style={{ color: C.muted }}>Max total document storage per agent (personal + global docs combined).</p>
-            <div className="flex items-center gap-3">
-              <input type="number" min="1" max="500" value={agentMb}
-                onChange={e => setAgentMb(e.target.value)}
-                className="w-24 px-3 py-2 rounded-lg text-sm border outline-none"
-                style={{ borderColor: C.surfaceBdr, background: "#f9fafb", color: C.text }} />
-              <span className="text-sm" style={{ color: C.muted }}>MB</span>
-              <span className="text-xs" style={{ color: C.muted }}>({(parseInt(agentMb || "5") * 1024 * 1024).toLocaleString()} bytes)</span>
-            </div>
-          </div>
-        </div>
-
-        {err && <p className="text-sm mt-3" style={{ color: C.errText }}>{err}</p>}
-        <button onClick={handleSave} disabled={saving} className="mt-4 px-8 py-2.5 rounded-xl font-bold text-sm"
-          style={{ background: saved ? C.green : "linear-gradient(135deg,#7c6cfc,#9d8dfd)", color: "white" }}>
-          {saving ? "Saving…" : saved ? "✓ Saved" : "Save Storage Limits"}
-        </button>
+        {err && <p style={{ color: "var(--danger)", fontSize: 13, marginTop: 4, marginBottom: 12 }}>{err}</p>}
+        <SaveButton saving={saving} saved={saved} onClick={handleSave} label="Save storage limits" />
       </Section>
     </div>
   );
@@ -330,66 +328,69 @@ function KbAccessTab() {
   const resolved = requests.filter(r => r.status !== "pending");
 
   return (
-    <div className="max-w-2xl">
-      <div className="flex border-b mb-4 gap-1" style={{ borderColor: C.surfaceBdr }}>
-        {(["requests","users"] as const).map(t => (
-          <button key={t} onClick={() => setTab(t)}
-            className="px-4 py-2.5 text-sm font-medium"
-            style={{ color: tab === t ? C.accent : C.muted, borderBottom: tab === t ? `2px solid ${C.accent}` : "2px solid transparent" }}>
-            {t === "requests" ? `Access Requests${pending.length ? ` (${pending.length})` : ""}` : "Approved Users"}
-          </button>
-        ))}
-        <button onClick={load} className="ml-auto text-xs px-3 py-2" style={{ color: C.muted }}>↻ Refresh</button>
+    <div style={{ maxWidth: 760 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 18 }}>
+        <div className="segmented">
+          {(["requests","users"] as const).map(t => (
+            <button key={t} className={tab === t ? "active" : ""} onClick={() => setTab(t)}>
+              {t === "requests" ? `Access requests${pending.length ? ` (${pending.length})` : ""}` : "Approved users"}
+            </button>
+          ))}
+        </div>
+        <button className="icon-btn" aria-label="Refresh" onClick={load}>
+          <RefreshCw size={15} />
+        </button>
       </div>
 
       {loading ? (
-        <p className="text-sm text-center py-8" style={{ color: C.muted }}>Loading…</p>
+        <p style={{ fontSize: 13.5, textAlign: "center", padding: "32px 0", color: "var(--ink-muted)" }}>Loading…</p>
       ) : tab === "requests" ? (
-        <div className="space-y-3">
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           {pending.length === 0 && resolved.length === 0 && (
-            <p className="text-sm text-center py-8" style={{ color: C.muted }}>No requests yet.</p>
+            <div className="empty"><p>No requests yet.</p></div>
           )}
           {pending.map(r => (
-            <div key={r.id} className="p-4 rounded-xl border" style={{ borderColor: "#fde68a", background: "#fffbeb" }}>
-              <div className="flex items-center justify-between gap-3">
+            <div key={r.id} className="card" style={{ padding: "14px 16px", borderColor: "var(--warning)", background: "var(--warning-soft)" }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
                 <div>
-                  <p className="font-medium text-sm" style={{ color: C.text }}>{r.user_email}</p>
-                  <p className="text-xs" style={{ color: C.muted }}>{new Date(r.created_at).toLocaleString()}</p>
+                  <p style={{ fontSize: 13.5, fontWeight: 600, color: "var(--ink)" }}>{r.user_email}</p>
+                  <p style={{ fontSize: 12, color: "var(--ink-muted)", marginTop: 2 }}>{new Date(r.created_at).toLocaleString()}</p>
                 </div>
-                <div className="flex gap-2">
-                  <button onClick={async () => { await api(`/api/admin/kb-requests/${r.id}/approve`, { method: "POST" }); load(); }}
-                    className="px-3 py-1.5 rounded-lg text-xs font-semibold"
-                    style={{ background: "#dcfce7", color: "#15803d" }}>✓ Approve</button>
-                  <button onClick={async () => { await api(`/api/admin/kb-requests/${r.id}/reject`, { method: "POST" }); load(); }}
-                    className="px-3 py-1.5 rounded-lg text-xs font-semibold"
-                    style={{ background: "#fee2e2", color: "#dc2626" }}>✕ Reject</button>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button className="btn btn-success btn-sm"
+                    onClick={async () => { await api(`/api/admin/kb-requests/${r.id}/approve`, { method: "POST" }); load(); }}>
+                    <Check size={13} /> Approve
+                  </button>
+                  <button className="btn btn-danger btn-sm"
+                    onClick={async () => { await api(`/api/admin/kb-requests/${r.id}/reject`, { method: "POST" }); load(); }}>
+                    <X size={13} /> Reject
+                  </button>
                 </div>
               </div>
             </div>
           ))}
           {resolved.map(r => (
-            <div key={r.id} className="p-3 rounded-lg border flex items-center justify-between" style={{ borderColor: C.surfaceBdr }}>
-              <div>
-                <p className="text-sm" style={{ color: C.text }}>{r.user_email}</p>
-                <span className={`text-xs font-medium ${r.status === "approved" ? "text-green-600" : "text-red-500"}`}>
-                  {r.status.charAt(0).toUpperCase() + r.status.slice(1)}
-                </span>
-              </div>
+            <div key={r.id} className="card" style={{ padding: "12px 16px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <p style={{ fontSize: 13.5, color: "var(--ink)" }}>{r.user_email}</p>
+              <span className={`pill ${r.status === "approved" ? "pill-success" : "pill-danger"}`}>
+                {r.status.charAt(0).toUpperCase() + r.status.slice(1)}
+              </span>
             </div>
           ))}
         </div>
       ) : (
-        <div className="space-y-2">
-          {users.length === 0 && <p className="text-sm text-center py-8" style={{ color: C.muted }}>No users with Global KB access.</p>}
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {users.length === 0 && <div className="empty"><p>No users with Global KB access.</p></div>}
           {users.map(u => (
-            <div key={u.user_id} className="p-3 rounded-lg border flex items-center justify-between" style={{ borderColor: C.surfaceBdr }}>
+            <div key={u.user_id} className="card" style={{ padding: "12px 16px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
               <div>
-                <p className="text-sm font-mono" style={{ color: C.text }}>{u.user_id.slice(0, 16)}…</p>
-                {u.granted_at && <p className="text-xs" style={{ color: C.muted }}>Granted: {new Date(u.granted_at).toLocaleDateString()}</p>}
+                <p style={{ fontSize: 13, fontFamily: "var(--font-mono)", color: "var(--ink)" }}>{u.user_id.slice(0, 16)}…</p>
+                {u.granted_at && <p style={{ fontSize: 12, color: "var(--ink-muted)", marginTop: 2 }}>Granted: {new Date(u.granted_at).toLocaleDateString()}</p>}
               </div>
-              <button onClick={async () => { await api(`/api/admin/users/${u.user_id}/revoke-kb`, { method: "POST" }); load(); }}
-                className="px-3 py-1.5 rounded-lg text-xs font-semibold"
-                style={{ background: "#fee2e2", color: "#dc2626" }}>Revoke</button>
+              <button className="btn btn-danger btn-sm"
+                onClick={async () => { await api(`/api/admin/users/${u.user_id}/revoke-kb`, { method: "POST" }); load(); }}>
+                Revoke
+              </button>
             </div>
           ))}
         </div>
@@ -404,10 +405,11 @@ export default function AdminPage() {
   const [checkDone, setCheckDone] = useState(false);
   const [email,     setEmail]     = useState("");
   const [password,  setPassword]  = useState("");
+  const [showPwd,   setShowPwd]   = useState(false);
   const [loginErr,  setLoginErr]  = useState("");
   const [loggingIn, setLoggingIn] = useState(false);
   const [config,    setConfig]    = useState<AdminConfig | null>(null);
-  const [tab, setTab] = useState<"providers"|"storage"|"kb">("providers");
+  const [tab, setTab] = useState<Tab>("providers");
 
   // Check existing token on mount
   useEffect(() => {
@@ -416,8 +418,7 @@ export default function AdminPage() {
     api<AdminConfig>("/api/admin/config")
       .then(cfg => { setConfig(cfg); setLoggedIn(true); })
       .catch(() => { /* not admin or expired */ })
-      .finally(() => setCheckDone(false));
-    setCheckDone(true);
+      .finally(() => setCheckDone(true));
   }, []);
 
   async function handleLogin(e: React.FormEvent) {
@@ -430,7 +431,7 @@ export default function AdminPage() {
         { method: "POST", body: JSON.stringify({ email: email.trim(), password }) }
       );
       if (res.user.email !== ADMIN_EMAIL) {
-        setLoginErr("Access denied - not the admin account.");
+        setLoginErr("Access denied — not the admin account.");
         return;
       }
       localStorage.setItem("access_token", res.access_token);
@@ -463,38 +464,37 @@ export default function AdminPage() {
   // ── Sign-in screen ──────────────────────────────────────────────────────────
   if (!loggedIn) {
     return (
-      <div className="min-h-screen flex items-center justify-center" style={{ background: C.bg }}>
-        <div className="w-full max-w-sm">
-          <div className="text-center mb-8">
-            <div className="w-14 h-14 rounded-2xl flex items-center justify-center mx-auto mb-4"
-              style={{ background: "linear-gradient(135deg,#7c6cfc,#9d8dfd)", boxShadow: "0 4px 20px rgba(124,108,252,0.4)" }}>
-              <span className="text-white text-2xl">⚙</span>
+      <div className="lumenc" style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
+        <div style={{ width: "100%", maxWidth: 380 }}>
+          <div style={{ textAlign: "center", marginBottom: 28 }}>
+            <div className="brand-mark" style={{ margin: "0 auto 16px" }}>
+              <Settings size={18} />
             </div>
-            <h1 className="text-2xl font-bold" style={{ color: C.text }}>Admin Panel</h1>
-            <p className="text-sm mt-1" style={{ color: C.muted }}>Sign in with your admin account</p>
+            <h1 className="view-title" style={{ fontSize: 24 }}>Admin panel</h1>
+            <p className="view-sub" style={{ margin: "6px auto 0", textAlign: "center" }}>Sign in with your admin account</p>
           </div>
 
-          <form onSubmit={handleLogin} className="rounded-2xl p-6 space-y-4 shadow-sm"
-            style={{ background: C.surface, border: `1px solid ${C.surfaceBdr}` }}>
-            <div>
-              <label className="block text-sm font-medium mb-1" style={{ color: C.text }}>Email</label>
+          <form onSubmit={handleLogin} className="card" style={{ padding: 22, display: "flex", flexDirection: "column", gap: 14 }}>
+            <div className="field" style={{ marginBottom: 0 }}>
+              <label>Email</label>
               <input type="email" value={email} onChange={e => setEmail(e.target.value)}
-                placeholder="katochaneesh@gmail.com" autoFocus
-                className="w-full px-4 py-2.5 rounded-xl text-sm outline-none border"
-                style={{ borderColor: C.surfaceBdr, color: C.text }} />
+                placeholder="you@company.com" autoFocus className="input" />
             </div>
-            <div>
-              <label className="block text-sm font-medium mb-1" style={{ color: C.text }}>Password</label>
-              <input type="password" value={password} onChange={e => setPassword(e.target.value)}
-                placeholder="••••••••"
-                className="w-full px-4 py-2.5 rounded-xl text-sm outline-none border"
-                style={{ borderColor: C.surfaceBdr, color: C.text }} />
+            <div className="field" style={{ marginBottom: 0 }}>
+              <label>Password</label>
+              <div style={{ position: "relative" }}>
+                <input type={showPwd ? "text" : "password"} value={password} onChange={e => setPassword(e.target.value)}
+                  placeholder="••••••••" className="input" style={{ paddingRight: 42 }} />
+                <button type="button" onClick={() => setShowPwd(v => !v)} aria-label={showPwd ? "Hide password" : "Show password"}
+                  style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", color: "var(--ink-faint)", display: "flex", padding: 2 }}>
+                  {showPwd ? <EyeOff size={15} /> : <Eye size={15} />}
+                </button>
+              </div>
             </div>
-            {loginErr && <p className="text-sm" style={{ color: C.errText }}>{loginErr}</p>}
-            <button type="submit" disabled={loggingIn}
-              className="w-full py-2.5 rounded-xl font-bold text-sm"
-              style={{ background: "linear-gradient(135deg,#7c6cfc,#9d8dfd)", color: "white" }}>
-              {loggingIn ? "Signing in…" : "Sign In"}
+            {loginErr && <p style={{ color: "var(--danger)", fontSize: 13 }}>{loginErr}</p>}
+            <button type="submit" disabled={loggingIn} className="btn btn-primary btn-block">
+              {loggingIn ? <Loader2 size={15} style={{ animation: "lc-spin .7s linear infinite" }} /> : null}
+              {loggingIn ? "Signing in…" : "Sign in"}
             </button>
           </form>
         </div>
@@ -502,62 +502,73 @@ export default function AdminPage() {
     );
   }
 
+  const tabMeta: Record<Tab, { title: string; sub: string }> = {
+    providers: { title: "Provider settings", sub: "Choose which speech and language providers power every agent." },
+    storage:   { title: "Storage limits",     sub: "Set how much document storage users and agents can use." },
+    kb:        { title: "Knowledge base access", sub: "Review requests and manage who can use the global Knowledge Base." },
+  };
+
   // ── Admin dashboard ─────────────────────────────────────────────────────────
   return (
-    <div className="min-h-screen" style={{ background: C.bg }}>
-      {/* Header */}
-      <header className="px-6 py-4 border-b flex items-center justify-between"
-        style={{ background: C.header, borderColor: C.surfaceBdr }}>
-        <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-lg flex items-center justify-center"
-            style={{ background: "linear-gradient(135deg,#7c6cfc,#9d8dfd)" }}>
-            <span className="text-white text-sm">⚙</span>
-          </div>
+    <div className="lumenc app-shell">
+      <aside className="rail">
+        <div className="rail-brand">
+          <div className="brand-mark"><Settings size={18} /></div>
           <div>
-            <span className="font-bold" style={{ color: C.text }}>Lumen Admin</span>
-            <span className="ml-2 text-xs" style={{ color: C.muted }}>{ADMIN_EMAIL}</span>
+            <div className="brand-word">Lumen</div>
+            <div className="brand-tag">Admin</div>
           </div>
         </div>
-        <button onClick={handleSignOut} className="text-sm px-4 py-1.5 rounded-lg border"
-          style={{ borderColor: C.surfaceBdr, color: C.muted }}>
-          Sign Out
-        </button>
-      </header>
-
-      <div className="flex">
-        {/* Sidebar */}
-        <nav className="w-52 shrink-0 border-r min-h-screen py-4"
-          style={{ background: C.surface, borderColor: C.surfaceBdr }}>
-          {([
-            { id: "providers", label: "Providers",   icon: "🔌" },
-            { id: "storage",   label: "Storage",     icon: "💾" },
-            { id: "kb",        label: "KB Access",   icon: "🔑" },
-          ] as const).map(item => (
-            <button key={item.id} onClick={() => setTab(item.id)}
-              className="w-full flex items-center gap-3 px-4 py-2.5 text-sm font-medium transition-all"
-              style={{
-                background: tab === item.id ? "rgba(124,108,252,0.10)" : "transparent",
-                borderLeft: tab === item.id ? `2px solid ${C.accent}` : "2px solid transparent",
-                color: tab === item.id ? C.accent : C.text,
-              }}>
-              <span>{item.icon}</span>
+        <nav className="rail-nav">
+          {NAV_ITEMS.map(item => (
+            <button key={item.id} className={`nav-item${tab === item.id ? " active" : ""}`} onClick={() => setTab(item.id)}>
+              <item.icon className="icon" size={17} strokeWidth={1.8} />
               {item.label}
             </button>
           ))}
         </nav>
+        <div className="rail-foot">
+          <div className="account-row">
+            <span className="av">{ADMIN_EMAIL[0]?.toUpperCase()}</span>
+            <span className="meta">
+              <span className="name">Admin</span>
+              <span className="mail">{ADMIN_EMAIL}</span>
+            </span>
+          </div>
+          <button className="btn btn-ghost btn-sm btn-block" onClick={handleSignOut}>
+            <LogOut size={14} /> Sign out
+          </button>
+        </div>
+      </aside>
 
-        {/* Main content */}
-        <main className="flex-1 p-8">
-          <h2 className="text-xl font-bold mb-6" style={{ color: C.text }}>
-            {tab === "providers" ? "Provider Settings"
-             : tab === "storage"  ? "Storage Limits"
-             : "Knowledge Base Access"}
-          </h2>
+      <nav className="tabbar">
+        {NAV_ITEMS.map(item => (
+          <button key={item.id} className={`tab-item${tab === item.id ? " active" : ""}`} onClick={() => setTab(item.id)}>
+            <item.icon className="icon" size={19} strokeWidth={1.8} />
+            {item.label}
+          </button>
+        ))}
+      </nav>
 
-          {config && tab === "providers" && <ProvidersTab config={config} onSave={saveConfig} />}
-          {config && tab === "storage"   && <StorageTab   config={config} onSave={saveConfig} />}
-          {tab === "kb" && <KbAccessTab />}
-        </main>
+      <div className="main">
+        <div className="topbar">
+          <span className="crumb">Admin / {NAV_ITEMS.find(n => n.id === tab)?.label}</span>
+          <div className="topbar-spacer" />
+        </div>
+        <div className="view-scroll">
+          <div className="view">
+            <div className="view-head">
+              <div>
+                <h1 className="view-title" style={{ fontSize: 24 }}>{tabMeta[tab].title}</h1>
+                <p className="view-sub">{tabMeta[tab].sub}</p>
+              </div>
+            </div>
+
+            {config && tab === "providers" && <ProvidersTab config={config} onSave={saveConfig} />}
+            {config && tab === "storage"   && <StorageTab   config={config} onSave={saveConfig} />}
+            {tab === "kb" && <KbAccessTab />}
+          </div>
+        </div>
       </div>
     </div>
   );
