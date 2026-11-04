@@ -12,6 +12,13 @@ import time
 import os
 
 # ── set env vars BEFORE any app module is imported ───────────────────
+# DB_HOST/DB_USER/DB_PASSWORD have no .get() fallback in app/core/config.py
+# (by design - a silently-wrong DB connection is worse than a loud startup
+# crash), so they must be set here too, not just DATABASE_URL - locally this
+# was masked by .env providing real values, but CI has no .env file.
+os.environ["DB_HOST"]                    = "fake-db-host"
+os.environ["DB_USER"]                    = "fake-db-user"
+os.environ["DB_PASSWORD"]                = "fake-db-password"
 os.environ["DATABASE_URL"]               = "postgresql://fake:fake@localhost/fake"
 os.environ["SUPABASE_URL"]               = "https://fake.supabase.co"
 os.environ["SUPABASE_ANON_KEY"]          = "fake.anon-key.token"
