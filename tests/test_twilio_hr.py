@@ -728,6 +728,7 @@ class TestSchedulerDeduplication:
             return "CAtest123", None
 
         mocker.patch("app.core.database.get_supabase", return_value=db)
+        mocker.patch("app.telephony.plivo.plivo_repo.get_number_for_agent", return_value=None)
         mocker.patch("app.hr_campaigns.hr_repo.get_due_interviews", return_value=[iv])
         mocker.patch("app.telephony.twilio.user_twilio_settings_repo.get_twilio_settings", return_value=_settings())
         mocker.patch("app.hr_campaigns.hr_repo.mark_interview_calling")
@@ -767,6 +768,7 @@ class TestSchedulerDeduplication:
                                    new_callable=AsyncMock)
         mock_fail = mocker.patch("app.hr_campaigns.hr_repo.mark_interview_failed")
         mocker.patch("app.core.database.get_supabase", return_value=db)
+        mocker.patch("app.telephony.plivo.plivo_repo.get_number_for_agent", return_value=None)
         mocker.patch("app.hr_campaigns.hr_repo.get_due_interviews", return_value=[iv])
         mocker.patch("app.telephony.twilio.user_twilio_settings_repo.get_twilio_settings",
                      return_value=_settings(webhook_base_url=""))
@@ -789,6 +791,7 @@ class TestSchedulerDeduplication:
                      new_callable=AsyncMock, return_value=(None, "Twilio rejected the call - check the phone number and account status"))
         mock_fail = mocker.patch("app.hr_campaigns.hr_repo.mark_interview_failed")
         mocker.patch("app.core.database.get_supabase", return_value=db)
+        mocker.patch("app.telephony.plivo.plivo_repo.get_number_for_agent", return_value=None)
         mocker.patch("app.hr_campaigns.hr_repo.get_due_interviews", return_value=[iv])
         mocker.patch("app.telephony.twilio.user_twilio_settings_repo.get_twilio_settings", return_value=_settings())
         mocker.patch("app.hr_campaigns.hr_repo.mark_interview_calling")
@@ -960,6 +963,7 @@ class TestCheckAndCallWritesCallAnalytics:
     async def test_no_credentials_end_to_end(self, mocker):
         iv = _interview()
         self._claim_db(mocker, claim_data=[iv])
+        mocker.patch("app.telephony.plivo.plivo_repo.get_number_for_agent", return_value=None)
         mocker.patch("app.hr_campaigns.hr_repo.get_due_interviews", return_value=[iv])
         mocker.patch("app.hr_campaigns.hr_repo.mark_interview_calling")
         mock_fail = mocker.patch("app.hr_campaigns.hr_repo.mark_interview_failed")
@@ -979,6 +983,7 @@ class TestCheckAndCallWritesCallAnalytics:
     async def test_no_candidate_phone_end_to_end(self, mocker):
         iv = _interview(hr_candidates={"name": "Priya Sharma", "phone": ""})
         self._claim_db(mocker, claim_data=[iv])
+        mocker.patch("app.telephony.plivo.plivo_repo.get_number_for_agent", return_value=None)
         mocker.patch("app.hr_campaigns.hr_repo.get_due_interviews", return_value=[iv])
         mocker.patch("app.hr_campaigns.hr_repo.mark_interview_calling")
         mock_fail = mocker.patch("app.hr_campaigns.hr_repo.mark_interview_failed")
@@ -1002,6 +1007,7 @@ class TestCheckAndCallWritesCallAnalytics:
         iv1 = _interview(candidate_id="cand-1", hr_candidates={"name": "Candidate One", "phone": ""})
         iv2 = {**_interview(candidate_id="cand-2", hr_candidates={"name": "Candidate Two", "phone": ""}), "id": "eeeeeeee-2222-2222-2222-eeeeeeeeeeee"}
         self._claim_db(mocker, claim_data=[iv1])  # same mock answers every claim update
+        mocker.patch("app.telephony.plivo.plivo_repo.get_number_for_agent", return_value=None)
         mocker.patch("app.hr_campaigns.hr_repo.get_due_interviews", return_value=[iv1, iv2])
         mocker.patch("app.hr_campaigns.hr_repo.mark_interview_calling")
         mock_fail = mocker.patch("app.hr_campaigns.hr_repo.mark_interview_failed")

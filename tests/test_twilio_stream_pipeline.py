@@ -81,6 +81,19 @@ def _mulaw_media_event(payload_bytes: bytes = None) -> str:
     })
 
 
+def _wait_until(predicate, timeout=2.0, interval=0.02):
+    """Poll predicate() until truthy or timeout - used instead of a fixed
+    time.sleep() where the thing being waited on (a mock recording a call)
+    is directly observable, so a slow/loaded CI runner gets as long as it
+    needs instead of racing a hardcoded duration."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(interval)
+    return predicate()
+
+
 def _assert_call_matches_signature(real_func, call_args, call_kwargs):
     """Fail with a clear message if call_args/kwargs don't bind to real_func's signature."""
     sig = inspect.signature(real_func)
@@ -296,8 +309,20 @@ class TestCampaignCallLiveToolRecording:
             # crash with "Cannot call send once a close message has been sent",
             # silently dropping the assistant save_message call this test
             # asserts on - a real timing characteristic, not a mocking gap.
-            time.sleep(0.3)
+            # Polls instead of a fixed sleep - a hardcoded duration flaked on
+            # a slower/loaded CI runner (found 2026-11-04) because it just
+            # wasn't long enough there, while passing reliably on a dev machine.
+            _wait_until(lambda: len(record_answer_calls) >= 1)
             ws.send_text(json.dumps({"event": "stop", "streamSid": STREAM_SID}))
+            # The server processes "stop" (and awaits mark_candidate_completed)
+            # concurrently with this thread sending it - send_text() only
+            # guarantees the frame was written, not that the server has
+            # finished reacting to it. Without this wait, the `with` block's
+            # own exit (closing the socket) can race ahead of that and the
+            # assertion below sees 0 calls (found 2026-11-04, after switching
+            # the pre-stop wait above off a fixed sleep - that fixed sleep's
+            # slack had been incidentally absorbing this second race too).
+            _wait_until(lambda: mock_completed.called)
 
         assert len(record_answer_calls) == 1
         args = record_answer_calls[0][0]

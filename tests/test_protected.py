@@ -44,7 +44,13 @@ async def test_list_conversations_requires_auth(client):
     assert r.status_code == 403
 
 
-async def test_list_conversations(client, auth_headers):
+async def test_list_conversations(client, mocker, auth_headers):
+    mock_db = mocker.MagicMock()
+    mock_db.table("conversations").select().eq().order().execute.return_value.data = [
+        {"id": TEST_CONV_ID, "user_id": TEST_USER_ID, "title": "Voice session"}
+    ]
+    mocker.patch("app.conversations.conversation_repo.get_supabase", return_value=mock_db)
+
     r = await client.get("/api/conversations", headers=auth_headers)
     assert r.status_code == 200
     assert isinstance(r.json(), list)
@@ -58,7 +64,17 @@ async def test_get_messages_requires_auth(client):
     assert r.status_code == 403
 
 
-async def test_get_messages_own_conversation(client, auth_headers):
+async def test_get_messages_own_conversation(client, mocker, auth_headers):
+    mock_db = mocker.MagicMock()
+    mock_db.table("conversations").select().eq().limit().execute.return_value.data = [
+        {"id": TEST_CONV_ID, "user_id": TEST_USER_ID}
+    ]
+    mock_db.table("messages").select().eq().order().execute.return_value.data = [
+        {"role": "user", "content": "hello", "created_at": "2024-01-01T00:00:00"}
+    ]
+    mocker.patch("app.conversations.conversation_repo.get_supabase", return_value=mock_db)
+    mocker.patch("app.conversations.message_repo.get_supabase", return_value=mock_db)
+
     r = await client.get(f"/api/conversations/{TEST_CONV_ID}/messages", headers=auth_headers)
     assert r.status_code == 200
     msgs = r.json()

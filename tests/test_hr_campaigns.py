@@ -637,6 +637,7 @@ class TestDialCandidate:
 
     async def test_missing_credentials_marks_failed_not_busy(self, mocker):
         mocker.patch("app.hr_campaigns.hr_campaign_repo.claim_campaign_for_dial", return_value=True)
+        mocker.patch("app.telephony.plivo.plivo_repo.get_number_for_agent", return_value=None)
         mocker.patch("app.telephony.twilio.user_twilio_settings_repo.get_twilio_settings", return_value={
             "webhook_base_url": "", "account_sid": "", "auth_token": "",
         })
@@ -650,6 +651,7 @@ class TestDialCandidate:
 
     async def test_missing_from_number_marks_failed(self, mocker):
         mocker.patch("app.hr_campaigns.hr_campaign_repo.claim_campaign_for_dial", return_value=True)
+        mocker.patch("app.telephony.plivo.plivo_repo.get_number_for_agent", return_value=None)
         mocker.patch("app.telephony.twilio.user_twilio_settings_repo.get_twilio_settings", return_value={
             "webhook_base_url": "https://example.ngrok.io", "account_sid": "ACfake", "auth_token": "faketoken",
         })
