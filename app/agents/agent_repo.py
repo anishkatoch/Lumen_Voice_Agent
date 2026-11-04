@@ -51,10 +51,14 @@ _DEFAULT_KB_INSTRUCTIONS = (
     "documents, say so honestly instead of guessing."
 )
 _DEFAULT_HR_INSTRUCTIONS = (
-    "Always greet the candidate warmly by name. Confirm the role they're "
-    "interviewing for, then walk through the standard screening questions. "
-    "If they ask about next steps, let them know HR will follow up within a "
-    "few business days."
+    "Always greet the candidate warmly by name, then listen to how they respond before saying "
+    "anything else - if they confirm it's them, continue; if their reply suggests it's the wrong "
+    "person or they ask who's calling, clarify who you're trying to reach before moving on. "
+    "Confirm the role they're interviewing for, then walk through the standard screening questions "
+    "one at a time, waiting for each answer before asking the next. If they ask about their own "
+    "background, experience, or resume, answer from the resume details you were given rather than "
+    "guessing. If they ask about next steps, let them know HR will follow up within a few business "
+    "days."
 )
 # Same reasoning as above, for the filler-phrases box - without this, every
 # new agent's filler_phrases column stayed NULL and the person never saw
