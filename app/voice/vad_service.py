@@ -66,7 +66,8 @@ def _detect_speech_sync(audio_bytes: bytes, sensitivity: float = 0.5) -> bool:
 
         max_prob = max(probs) if probs else 0.0
         is_speech = max_prob > silero_threshold
-        print(f"[VAD] silero max_prob={max_prob:.3f} threshold={silero_threshold:.2f} speech={is_speech}")
+        if is_speech:
+            print(f"[VAD] silero max_prob={max_prob:.3f} threshold={silero_threshold:.2f} speech={is_speech}")
         return is_speech
 
     except Exception as e:

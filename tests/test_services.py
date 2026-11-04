@@ -68,7 +68,8 @@ async def test_generate_memory_summary(mocker):
     mock_response.choices[0].message.content = "Summary of user."
     mock_client = AsyncMock()
     mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
-    mocker.patch("app.voice.llm_service._get_openai", return_value=mock_client)
+    mocker.patch("app.voice.llm_service._get_llm_client", return_value=(mock_client, "openai", "gpt-4o-mini"))
+    mocker.patch("app.voice.llm_service._get_azure_openai", return_value=None)
 
     from app.voice.llm_service import generate_memory_summary
     result = await generate_memory_summary("Old summary.", [{"role": "user", "content": "I like Python."}])
@@ -78,7 +79,8 @@ async def test_generate_memory_summary(mocker):
 async def test_generate_memory_summary_error_returns_old(mocker):
     mock_client = AsyncMock()
     mock_client.chat.completions.create = AsyncMock(side_effect=Exception("API down"))
-    mocker.patch("app.voice.llm_service._get_openai", return_value=mock_client)
+    mocker.patch("app.voice.llm_service._get_llm_client", return_value=(mock_client, "openai", "gpt-4o-mini"))
+    mocker.patch("app.voice.llm_service._get_azure_openai", return_value=None)
 
     from app.voice.llm_service import generate_memory_summary
     result = await generate_memory_summary("Previous summary.", [])
@@ -88,7 +90,8 @@ async def test_generate_memory_summary_error_returns_old(mocker):
 async def test_generate_memory_summary_no_old_summary_returns_empty(mocker):
     mock_client = AsyncMock()
     mock_client.chat.completions.create = AsyncMock(side_effect=Exception("API down"))
-    mocker.patch("app.voice.llm_service._get_openai", return_value=mock_client)
+    mocker.patch("app.voice.llm_service._get_llm_client", return_value=(mock_client, "openai", "gpt-4o-mini"))
+    mocker.patch("app.voice.llm_service._get_azure_openai", return_value=None)
 
     from app.voice.llm_service import generate_memory_summary
     result = await generate_memory_summary(None, [])

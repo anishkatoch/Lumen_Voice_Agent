@@ -27,6 +27,7 @@ class AgentUpdate(BaseModel):
     kb_instructions: Optional[str] = None
     hr_instructions: Optional[str] = None
     selected_kb_doc_ids: Optional[List[str]] = None
+    filler_phrases: Optional[str] = None
 
 class AgentFunctionCreate(BaseModel):
     name: str

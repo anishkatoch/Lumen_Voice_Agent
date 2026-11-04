@@ -43,7 +43,12 @@ from urllib.parse import quote_plus as _qp
 DATABASE_URL = f"postgresql://{DB_USER}:{_qp(DB_PASSWORD)}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 SUPABASE_URL            = os.environ["SUPABASE_URL"]
 SUPABASE_ANON_KEY       = os.environ["SUPABASE_ANON_KEY"]
-SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or os.environ["SUPABASE_ANON_KEY"]
+# Must be the real service-role key, not a silent fallback to the anon key -
+# get_supabase() uses this for every DB call in the app, with no DB-level RLS
+# backstop (see app/core/database.py); a silent anon-key fallback would cause
+# widespread, hard-to-diagnose empty-result/permission failures the moment
+# RLS is enabled on any table, with nothing in the logs pointing at the cause.
+SUPABASE_SERVICE_ROLE_KEY = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
 SUPABASE_JWT_SECRET     = os.environ.get("SUPABASE_JWT_SECRET") or ""
 OPENAI_API_KEY          = os.environ["OPENAI_API_KEY"]
 

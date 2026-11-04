@@ -73,6 +73,24 @@ def update_candidate(candidate_id: str, user_id: str, **fields) -> dict:
 
 def delete_candidate(candidate_id: str, user_id: str) -> None:
     db = get_supabase()
+    # Clean up dependent rows first - hr_interviews/hr_interview_answers have
+    # no DB-level FK/cascade onto hr_candidates, so deleting the candidate
+    # without this orphans them permanently (same reasoning as
+    # remove_campaign_candidate's hr_campaign_answers cleanup below).
+    interview_ids = [
+        r["id"] for r in
+        db.table("hr_interviews").select("id").eq("candidate_id", candidate_id).execute().data
+    ]
+    if interview_ids:
+        db.table("hr_interview_answers").delete().in_("interview_id", interview_ids).execute()
+        db.table("hr_interviews").delete().in_("id", interview_ids).execute()
+    campaign_candidate_ids = [
+        r["id"] for r in
+        db.table("hr_campaign_candidates").select("id").eq("candidate_id", candidate_id).execute().data
+    ]
+    if campaign_candidate_ids:
+        db.table("hr_campaign_answers").delete().in_("campaign_candidate_id", campaign_candidate_ids).execute()
+        db.table("hr_campaign_candidates").delete().in_("id", campaign_candidate_ids).execute()
     db.table("hr_candidates").delete().eq("id", candidate_id).eq("user_id", user_id).execute()
 
 
@@ -166,6 +184,7 @@ def update_interview(interview_id: str, user_id: str, **fields) -> dict:
 
 def delete_interview(interview_id: str, user_id: str) -> None:
     db = get_supabase()
+    db.table("hr_interview_answers").delete().eq("interview_id", interview_id).execute()
     db.table("hr_interviews").delete().eq("id", interview_id).eq("user_id", user_id).execute()
 
 
@@ -215,6 +234,31 @@ def mark_interview_failed(interview_id: str) -> None:
     db.table("hr_interviews").update({"status": "failed"}).eq("id", interview_id).execute()
 
 
+def record_interview_answer(interview_id: str, question_id: str, question_text: str, answer_text: str) -> dict:
+    db = get_supabase()
+    result = db.table("hr_interview_answers").insert({
+        "interview_id": interview_id,
+        "question_id": question_id,
+        "question_text": question_text,
+        "answer_text": answer_text,
+    }).execute()
+    if not result.data:
+        raise RuntimeError("Failed to record answer")
+    return result.data[0]
+
+
+def list_interview_answers(interview_id: str) -> list[dict]:
+    db = get_supabase()
+    return (
+        db.table("hr_interview_answers")
+        .select("*")
+        .eq("interview_id", interview_id)
+        .order("recorded_at", desc=False)
+        .execute()
+        .data
+    )
+
+
 def mark_interview_status(interview_id: str, status: str) -> None:
     """Conditionally update an interview's status by id - only if it's still
     'calling', so this never clobbers a status something else already
@@ -238,4 +282,10 @@ def mark_interview_status_by_call_sid(call_sid: str, new_status: str) -> dict | 
         .eq("status", "calling")
         .execute()
     )
+    return result.data[0] if result.data else None
+
+
+def get_interview_by_call_sid(call_sid: str) -> dict | None:
+    db = get_supabase()
+    result = db.table("hr_interviews").select("*").eq("call_sid", call_sid).limit(1).execute()
     return result.data[0] if result.data else None

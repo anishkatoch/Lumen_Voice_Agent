@@ -90,6 +90,9 @@ def _make_mock_db(mocker):
     msg_select.eq.return_value.order.return_value.execute.return_value.data = [
         {"role": "user", "content": "hello", "created_at": "2024-01-01T00:00:00"}
     ]
+    msg_select.eq.return_value.order.return_value.limit.return_value.execute.return_value.data = [
+        {"role": "user", "content": "hello", "created_at": "2024-01-01T00:00:00"}
+    ]
     msg_table.select.return_value = msg_select
 
     # user_memory table

@@ -34,6 +34,21 @@ def get_conversation_history(conversation_id: str) -> list[dict]:
 
 
 def get_session_messages(conversation_id: str, limit: int = 20) -> list[dict]:
-    """Return last `limit` messages formatted for LLM context."""
-    rows = get_conversation_history(conversation_id)
-    return [{"role": r["role"], "content": r["content"]} for r in rows[-limit:]]
+    """Return last `limit` messages formatted for LLM context.
+
+    Queries only the last `limit` rows directly instead of fetching the
+    conversation's entire history and slicing in Python - this runs on
+    every single turn of every live call, so without the DB-side limit, cost
+    grows with total conversation length (O(n) per turn, O(n^2) over a long
+    call) instead of staying constant."""
+    db = get_supabase()
+    result = (
+        db.table("messages")
+        .select("role, content, created_at")
+        .eq("conversation_id", conversation_id)
+        .order("created_at", desc=True)
+        .limit(limit)
+        .execute()
+    )
+    rows = list(reversed(result.data))
+    return [{"role": r["role"], "content": r["content"]} for r in rows]

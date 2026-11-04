@@ -1,8 +1,11 @@
 """General (non-telephony) voice websocket pipelines - moved verbatim from
 the pre-refactor app/main.py, same reasoning as the telephony websockets."""
 import asyncio
-from fastapi import APIRouter, WebSocket
+import json
+import time
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from app.auth.dependencies import decode_supabase_token
 from app.core.config import (
     VAD_SENSITIVITY, VAD_BARGE_IN_SENSITIVITY, VAD_SILENCE_LIMIT, VAD_MIN_SPEECH,
     MEMORY_UPDATE_EVERY,
@@ -360,7 +363,7 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
         import traceback; traceback.print_exc()
         _ws_failure_reason = str(e)[:500]
     finally:
-        manager.remove_session(user_id)
+        manager.remove_session(session)
         loop = asyncio.get_event_loop()
         if loop.is_running():
             loop.create_task(update_memory(user_id, conversation_id))
@@ -401,8 +404,11 @@ async def agent_websocket_endpoint(websocket: WebSocket, agent_id: str, token: s
 
     agent_sensitivity = float(agent.get("barge_in_sensitivity", VAD_BARGE_IN_SENSITIVITY))
     _hr = (agent.get("hr_instructions") or "").strip()
+    _name = (agent.get("name") or "").strip()
     agent_system_prompt = (
-        (agent.get("system_prompt") or "") + (f"\n\n--- HR INSTRUCTIONS ---\n{_hr}" if _hr else "")
+        (f"Your name is {_name}. If asked your name, say {_name}.\n\n" if _name else "")
+        + (agent.get("system_prompt") or "")
+        + (f"\n\n--- HR INSTRUCTIONS ---\n{_hr}" if _hr else "")
     ) or None
     agent_kb_instructions = agent.get("kb_instructions") or None
     doc_ids = [d.strip() for d in docs.split(",") if d.strip()] if docs else []
@@ -504,13 +510,19 @@ async def agent_websocket_endpoint(websocket: WebSocket, agent_id: str, token: s
         await manager.send_json(websocket, {"type": "state", "state": "LISTENING"})
 
     import random
-    _agent_greetings = [
-        f"Hey! I'm {agent['name']}. How can I help you today?",
-        f"Hi there! {agent['name']} here. What can I do for you?",
-        f"Hello! I'm {agent['name']} and I'm ready to assist. What's on your mind?",
-        f"Hey, good to have you here! I'm {agent['name']}. How can I assist you?",
-    ]
-    asyncio.create_task(speak_agent_greeting(random.choice(_agent_greetings)))
+    # Respect the agent's own "Agent speaks first"/"Opening message" settings,
+    # same as the phone-call paths (telephony_plivo.py/telephony_twilio.py) -
+    # this previously always spoke one of these hardcoded templates regardless
+    # of first_message_enabled or whatever text was configured in first_message.
+    if agent.get("first_message_enabled", True):
+        _agent_greetings = [
+            f"Hey! I'm {agent['name']}. How can I help you today?",
+            f"Hi there! {agent['name']} here. What can I do for you?",
+            f"Hello! I'm {agent['name']} and I'm ready to assist. What's on your mind?",
+            f"Hey, good to have you here! I'm {agent['name']}. How can I assist you?",
+        ]
+        greeting_text = agent.get("first_message") or random.choice(_agent_greetings)
+        asyncio.create_task(speak_agent_greeting(greeting_text))
 
     async def run_agent_pipeline(pcm_bytes: bytes, sr: int = 16000,
                                  transcript_override: str | None = None, dg_stream=None):
@@ -560,11 +572,12 @@ async def agent_websocket_endpoint(websocket: WebSocket, agent_id: str, token: s
             from app.voice.llm_service import (
                 build_system_prompt, build_openai_tool,
                 detect_tool_call, stream_tool_result_response,
-                stream_text_as_sentences, FILLER_PHRASES,
+                stream_text_as_sentences, get_filler_phrases,
             )
 
             system_str = build_system_prompt(
-                agent_system_prompt, long_term_memory, rag_context, agent_kb_instructions
+                agent_system_prompt, long_term_memory, rag_context, agent_kb_instructions,
+                has_kb=bool(doc_ids),
             )
             conv_messages = list(session_history) + [{"role": "user", "content": transcript}]
 
@@ -607,7 +620,7 @@ async def agent_websocket_endpoint(websocket: WebSocket, agent_id: str, token: s
                     if tool_name and call_id:
                         print(f"[Agent Pipeline] Tool call: {tool_name}({tool_args})")
                         # Speak a filler phrase immediately so the user doesn't hear silence
-                        filler = random.choice(FILLER_PHRASES)
+                        filler = random.choice(get_filler_phrases(agent))
                         async for chunk in text_to_speech_stream(filler):
                             if session.state != AgentState.SPEAKING:
                                 break
@@ -809,7 +822,7 @@ async def agent_websocket_endpoint(websocket: WebSocket, agent_id: str, token: s
         import traceback; traceback.print_exc()
         _ws_failure_reason = str(e)[:500]
     finally:
-        manager.remove_session(user_id)
+        manager.remove_session(session)
         loop = asyncio.get_event_loop()
         if loop.is_running():
             loop.create_task(_update_agent_memory(user_id, conversation_id))

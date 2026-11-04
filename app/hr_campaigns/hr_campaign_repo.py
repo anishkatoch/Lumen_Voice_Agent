@@ -250,6 +250,17 @@ def mark_candidate_status_from_call_sid(call_sid: str, new_status: str) -> dict 
     return row
 
 
+def get_campaign_candidate_by_call_sid(call_sid: str) -> dict | None:
+    db = get_supabase()
+    result = db.table("hr_campaign_candidates").select("*").eq("call_sid", call_sid).limit(1).execute()
+    if not result.data:
+        return None
+    row = result.data[0]
+    campaign = db.table("hr_campaigns").select("*").eq("id", row["campaign_id"]).limit(1).execute()
+    row["hr_campaigns"] = campaign.data[0] if campaign.data else None
+    return row
+
+
 def mark_candidate_machine_detected(campaign_candidate_id: str) -> dict | None:
     """
     Twilio's synchronous AMD identified an answering machine/fax - the

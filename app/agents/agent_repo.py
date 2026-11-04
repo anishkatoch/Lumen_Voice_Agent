@@ -38,6 +38,25 @@ _VOICE_PERSONA_BLOCK = (
     "Confident, not pushy"
 )
 
+# Starting text for the KB/HR instruction boxes - real, editable content (not
+# just a placeholder hint), same reasoning as the other _DEFAULT_* constants
+# below. Defined here (not in the Agent CRUD section further down) so the
+# seed templates above can use them too - previously _DEFAULT_AGENTS only
+# set system_prompt/first_message, silently leaving kb_instructions and
+# hr_instructions NULL on every seeded agent even though create_agent() (the
+# user-initiated "new agent" path) has always filled them.
+_DEFAULT_KB_INSTRUCTIONS = (
+    "When the caller's question relates to the attached knowledge base "
+    "documents, use them as your source of truth. If the answer isn't in the "
+    "documents, say so honestly instead of guessing."
+)
+_DEFAULT_HR_INSTRUCTIONS = (
+    "Always greet the candidate warmly by name. Confirm the role they're "
+    "interviewing for, then walk through the standard screening questions. "
+    "If they ask about next steps, let them know HR will follow up within a "
+    "few business days."
+)
+
 _DEFAULT_AGENTS = [
     {
         "name": "Meeting Assistant",
@@ -61,6 +80,7 @@ _DEFAULT_AGENTS = [
         ),
         "first_message_enabled": True,
         "first_message": "Hello! I'm your meeting assistant. How can I help you schedule something today?",
+        "kb_instructions": _DEFAULT_KB_INSTRUCTIONS,
     },
     {
         "name": "HR Support Agent",
@@ -84,12 +104,22 @@ _DEFAULT_AGENTS = [
         ),
         "first_message_enabled": True,
         "first_message": "Hi there! This is the HR support line. How can I assist you today?",
+        "kb_instructions": _DEFAULT_KB_INSTRUCTIONS,
+        "hr_instructions": _DEFAULT_HR_INSTRUCTIONS,
     },
 ]
 
 
 def seed_default_agents(user_id: str) -> None:
-    """Ensure each default agent exists for the user (by name); skips if already present."""
+    """Ensure each default agent exists for the user (by name); skips if already present.
+
+    The existing-names check below is not atomic with the insert, so two
+    concurrent calls for the same brand-new user (e.g. two tabs loading the
+    dashboard at once) can both pass it and both try to insert the same seed
+    agent. The uq_agents_user_id_name DB constraint (migration 0023) turns
+    the loser's insert into a unique-violation instead of a silent duplicate
+    row - caught here and treated as a no-op, since that's exactly what it
+    means: the agent already exists now."""
     db = get_supabase()
     existing_names = {
         r["name"]
@@ -97,7 +127,11 @@ def seed_default_agents(user_id: str) -> None:
     }
     for template in _DEFAULT_AGENTS:
         if template["name"] not in existing_names:
-            db.table("agents").insert({"user_id": user_id, **template}).execute()
+            try:
+                db.table("agents").insert({"user_id": user_id, **template}).execute()
+            except Exception as e:
+                if "duplicate key" not in str(e).lower() and "uq_agents_user_id_name" not in str(e):
+                    raise
 
 
 # ── Agent CRUD ────────────────────────────────────────────────────────────────
@@ -111,18 +145,10 @@ _DEFAULT_SYSTEM_PROMPT = (
     "Listen carefully to what the caller needs, ask clarifying questions when "
     "something is unclear, and confirm important details before taking action."
 )
-_DEFAULT_KB_INSTRUCTIONS = (
-    "When the caller's question relates to the attached knowledge base "
-    "documents, use them as your source of truth. If the answer isn't in the "
-    "documents, say so honestly instead of guessing."
-)
 _DEFAULT_FIRST_MESSAGE = "Hi! How can I help you today?"
-_DEFAULT_HR_INSTRUCTIONS = (
-    "Always greet the candidate warmly by name. Confirm the role they're "
-    "interviewing for, then walk through the standard screening questions. "
-    "If they ask about next steps, let them know HR will follow up within a "
-    "few business days."
-)
+# _DEFAULT_KB_INSTRUCTIONS / _DEFAULT_HR_INSTRUCTIONS are defined above, next
+# to _DEFAULT_AGENTS, since both the seed templates and create_agent() below
+# need them.
 
 
 def create_agent(user_id: str, name: str, description: str | None = None,
@@ -180,7 +206,7 @@ def duplicate_agent(agent_id: str, user_id: str) -> dict:
 def update_agent(agent_id: str, user_id: str, **fields) -> dict:
     allowed = {"name", "description", "system_prompt", "barge_in_sensitivity",
                "first_message_enabled", "first_message", "is_active", "kb_instructions",
-               "selected_kb_doc_ids", "hr_instructions"}
+               "selected_kb_doc_ids", "hr_instructions", "filler_phrases"}
     update = {k: v for k, v in fields.items() if k in allowed}
     update["updated_at"] = datetime.now(timezone.utc).isoformat()
     db = get_supabase()

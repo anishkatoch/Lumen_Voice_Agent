@@ -426,16 +426,13 @@ async def twilio_stream_endpoint(websocket: WebSocket):
     from app.voice.deepgram_service import get_streaming_transcriber
     from app.voice.llm_service import (
         generate_response_stream, build_system_prompt,
-        FILLER_PHRASES, detect_tool_call, build_openai_tool,
+        FILLER_PHRASES, get_filler_phrases, detect_tool_call, build_openai_tool,
         stream_tool_result_response, stream_text_as_sentences,
     )
     from app.voice.elevenlabs_service import text_to_speech_stream
     from app.conversations.message_repo import save_message, get_session_messages
     from app.agents.agent_repo import get_agent, get_agent_functions
-    from app.conversations.memory_repo import get_user_memory
     from app.conversations.conversation_repo import set_call_status
-    from app.agents.agent_rag_service import retrieve_agent_context, format_agent_context
-    from app.kb.user_kb_rag import retrieve_user_kb_context, format_user_kb_context
     from app.voice.deepgram_service import transcribe_audio_smart
     from app.voice.vad_service import build_wav_bytes
     from app.voice.turn_heuristics import sounds_unfinished
@@ -450,6 +447,7 @@ async def twilio_stream_endpoint(websocket: WebSocket):
     campaign_candidate_id: str = ""  # set only for HR call-campaign calls (Stage 6)
     campaign_id: str = ""            # parent campaign, needed to release the dialer's claim
     campaign_data: dict | None = None  # holds questions, for context + record_answer validation
+    call_questions: list = []  # trackable questions for interview or campaign calls
     extra_system_context: str = ""  # injected for outbound HR calls
     greeting_override: str | None = None
     agent: dict | None = None
@@ -460,6 +458,14 @@ async def twilio_stream_endpoint(websocket: WebSocket):
     stream_sid: str | None = None
     is_speaking = False     # True while TTS audio is being sent to Twilio
     is_processing = False   # True while LLM pipeline is running
+    # Bumped every time a new task takes over speaking/processing (greeting,
+    # a fresh run_pipeline, or a barge-in). asyncio.Task.cancel() is
+    # cooperative - the cancelled task's own `finally` can still run well
+    # after a newer task has already started and set is_speaking/is_processing
+    # True, and would otherwise stomp that newer task's state back to False.
+    # Each task captures its own generation at creation time and only resets
+    # the shared flag if it's still the current generation when it finishes.
+    _speech_gen = 0
     _call_ended = False     # tracks whether we've already marked the interview done
     _call_failure_reason: str | None = None  # set on genuine errors, surfaced in Call Analytics
     _dg_stream = None       # active StreamingTranscriber (opened on first speech chunk)
@@ -484,104 +490,24 @@ async def twilio_stream_endpoint(websocket: WebSocket):
         tags instead, which arrive here once the stream actually starts."""
         nonlocal agent_id, user_id, interview_id, extra_system_context, greeting_override
         nonlocal agent, conversation_id, _tool_functions, initial_memory
-        nonlocal campaign_candidate_id, campaign_id, campaign_data
+        nonlocal campaign_candidate_id, campaign_id, campaign_data, call_questions
 
         interview_id = custom_params.get("interview_id", "")
         campaign_candidate_id = custom_params.get("campaign_candidate_id", "")
         to = custom_params.get("to", "")
 
-        if interview_id:
-            # Outbound HR call - load candidate + interview context
-            from app.hr_campaigns.hr_repo import get_interview
-            interview = await asyncio.to_thread(get_interview, interview_id)
-            if not interview:
-                print(f"[Twilio Stream] Closing: no interview found for interview_id={interview_id!r}")
-                return False
-            agent_id = interview["agent_id"]
-            user_id = interview["user_id"]
-            candidate = interview.get("hr_candidates") or {}
-            c_name = candidate.get("name", "the candidate")
-            c_role = candidate.get("role", "")
-            c_resume = candidate.get("resume_text", "")
-            c_notes = candidate.get("notes", "")
-            questions = interview.get("specific_questions", "")
-            call_lead = interview.get("call_lead_minutes", 30)
-            sched_at_raw = interview.get("scheduled_at", "")
-            sched_formatted = ""
-            if sched_at_raw:
-                try:
-                    from datetime import datetime as _dt
-                    _sdt = _dt.fromisoformat(sched_at_raw.replace("Z", "+00:00"))
-                    sched_formatted = _sdt.strftime("%A, %B %d, %Y at %I:%M %p UTC")
-                except Exception:
-                    sched_formatted = sched_at_raw
-            extra_system_context = (
-                f"\n\n--- CURRENT CALL CONTEXT ---"
-                f"\nYou are calling {c_name} for a{'n' if c_role and c_role[0].lower() in 'aeiou' else ''} {c_role or 'interview'} interview."
-                + (f"\nThe interview is scheduled for: {sched_formatted}." if sched_formatted else "")
-                + f"\nYou are calling {call_lead} minutes before the interview time as a pre-interview reminder."
-                + (f"\n\nCandidate resume:\n{c_resume}" if c_resume else "")
-                + (f"\n\nHR notes about this candidate:\n{c_notes}" if c_notes else "")
-                + (f"\n\nSpecific questions to ask this candidate:\n{questions}" if questions else "")
-                + "\n\nStart by greeting them by name and confirming you're calling from HR."
-                + "\nMention the interview time when greeting them. Ask the specific questions listed. Be professional and friendly."
-            )
-            greeting_override = f"Hello, may I speak with {c_name}? This is an automated call from HR regarding your upcoming interview."
-        elif campaign_candidate_id:
-            # Outbound HR call-campaign call - load candidate + campaign + questions.
-            # New, additive branch (Stage 6) - does not alter the interview_id or
-            # inbound branches above/below at all.
-            from app.hr_campaigns.hr_campaign_repo import get_campaign_candidate
-            row = await asyncio.to_thread(get_campaign_candidate, campaign_candidate_id)
-            campaign_data = row.get("hr_campaigns") if row else None
-            if not row or not campaign_data:
-                print(f"[Twilio Stream] Closing: no campaign_candidate found for campaign_candidate_id={campaign_candidate_id!r}")
-                return False
-            campaign_id = campaign_data["id"]
-            agent_id = campaign_data["agent_id"]
-            user_id = campaign_data["user_id"]
-            candidate = row.get("hr_candidates") or {}
-            c_name = candidate.get("name", "the candidate")
-            questions_list = campaign_data.get("questions") or []
-            # Spoken text and internal ids are kept in separate lists - a combined
-            # "1. [id=q1] question text" format got read aloud verbatim by the LLM
-            # in live testing ("bracket id q2 close bracket..."), and the model
-            # also invented an extra question beyond the configured list.
-            questions_to_ask = "\n".join(
-                f"- {q.get('text', '')}" for q in questions_list if q.get("text")
-            )
-            id_mapping = "\n".join(
-                f'  "{q.get("text", "")}" -> question_id="{q.get("id")}"'
-                for q in questions_list if q.get("text")
-            )
-            extra_system_context = (
-                f"\n\n--- CURRENT CALL CONTEXT ---"
-                f"\nYou are calling {c_name} for a brief screening call."
-                + (
-                    f"\n\nThese are the ONLY questions to ask, in this exact order. Do not ask "
-                    f"any other questions and do not invent additional ones:\n{questions_to_ask}"
-                    f"\n\nAfter the candidate answers a question, call the record_answer tool. "
-                    f"Use this mapping to choose the correct question_id argument - this mapping "
-                    f"is for your internal use only, never say a question_id or the word "
-                    f"'mapping' out loud to the caller:\n{id_mapping}"
-                    if questions_to_ask else ""
-                )
-                + "\n\nStart by greeting them by name and confirming you're calling regarding their application."
-                + "\nBe professional and friendly. Ask one question at a time and wait for their answer."
-                + "\nOnce every question above has been asked and answered, thank them and end the call politely."
-            )
-            greeting_override = f"Hello, may I speak with {c_name}? This is a quick screening call regarding your application."
-        else:
-            # Inbound call - resolve via phone number
-            from app.telephony.twilio.twilio_repo import get_number_by_phone
-            print(f"[Twilio Stream] Inbound call, to={to!r}")
-            number_record = await asyncio.to_thread(get_number_by_phone, to) if to else None
-            if not number_record or not number_record.get("agent_id"):
-                print(f"[Twilio Stream] Closing: no active number_record with agent_id for to={to!r} (record={number_record})")
-                return False
-            agent_id = number_record["agent_id"]
-            user_id = number_record["user_id"]
-            print(f"[Twilio Stream] Resolved agent_id={agent_id} user_id={user_id}")
+        from app.telephony.shared import resolve_call_context
+        from app.telephony.twilio.twilio_repo import get_number_by_phone
+        ctx = await resolve_call_context(interview_id, campaign_candidate_id, to, get_number_by_phone, "Twilio Stream")
+        if ctx is None:
+            return False
+        agent_id = ctx.agent_id
+        user_id = ctx.user_id
+        extra_system_context = ctx.extra_system_context
+        greeting_override = ctx.greeting_override
+        campaign_id = ctx.campaign_id
+        campaign_data = ctx.campaign_data
+        call_questions = ctx.questions
 
         agent = await asyncio.to_thread(get_agent, agent_id)
         if not agent:
@@ -643,30 +569,25 @@ async def twilio_stream_endpoint(websocket: WebSocket):
         _all_fns = await asyncio.to_thread(get_agent_functions, agent_id)
         _tool_functions = [f for f in _all_fns if f.get("url") and f.get("trigger_type") == "llm_tool_call"]
 
-        if campaign_candidate_id and campaign_data:
+        if call_questions:
             # Synthesized in-memory tool, not stored in agent_functions - only
-            # ever present for campaign calls. Dispatched by a "kind" marker
-            # (checked at the call site below), not by name, since a real
+            # ever present for interview/campaign calls. Dispatched by a "kind"
+            # marker (checked at the call site below), not by name, since a real
             # webhook-backed agent_functions row could theoretically share the
             # name "record_answer" and _execute_webhook_twilio indexes fn["url"]
             # without .get(), which would KeyError/500 mid-call on a collision.
-            question_ids = ", ".join(q.get("id", "") for q in (campaign_data.get("questions") or []) if q.get("id"))
-            _tool_functions = _tool_functions + [{
-                "name": "record_answer",
-                "kind": "internal_record_answer",
-                "description": "Record the candidate's answer to one of the screening questions.",
-                "parameters": [
-                    {"name": "question_id", "type": "string",
-                     "description": f"The question ID being answered. Must be exactly one of: {question_ids}"},
-                    {"name": "answer", "type": "string",
-                     "description": "The candidate's answer, summarized concisely."},
-                ],
-            }]
+            from app.telephony.shared import build_record_answer_tool
+            _tool_functions = _tool_functions + [build_record_answer_tool(call_questions)]
 
-        try:
-            initial_memory = await asyncio.to_thread(get_user_memory, user_id)
-        except Exception:
-            initial_memory = None
+        # Never inject the agent OWNER's long_term_memory into a phone call -
+        # the caller on a phone call is never the account owner (unlike the
+        # browser agent_websocket_endpoint, where it genuinely is), so this
+        # would otherwise mislead the LLM into addressing whoever's on the
+        # line by the owner's own remembered name/details (e.g. "Anurag,
+        # based in Berlin..."), since both get labeled "the user" in the
+        # prompt. The row in user_memory is left alone - this only stops it
+        # from being read here.
+        initial_memory = None
 
         return True
 
@@ -703,29 +624,26 @@ async def twilio_stream_endpoint(websocket: WebSocket):
             return json.dumps({"error": str(e)})
 
     async def _record_answer_tool(args: dict) -> str:
-        """Handler for the synthesized "internal_record_answer" tool (campaign
-        calls only). question_id is validated against the campaign's own
+        """Handler for the synthesized "internal_record_answer" tool (interview
+        and campaign calls). question_id is validated against this call's own
         configured question list before insert - the LLM has no enum
         constraint available (build_openai_tool doesn't support one), so a
-        hallucinated/paraphrased id must not silently corrupt hr_campaign_answers."""
-        from app.hr_campaigns.hr_campaign_repo import record_answer as _record_answer
+        hallucinated/paraphrased id must not silently corrupt the answers table."""
+        from app.telephony.shared import record_question_answer
         question_id = args.get("question_id", "")
         answer_text = args.get("answer", "")
-        question_map = {
-            q.get("id"): q.get("text", "")
-            for q in (campaign_data.get("questions") or [])
-        } if campaign_data else {}
-        if question_id not in question_map:
-            return json.dumps({"error": f"Unknown question_id {question_id!r}"})
         try:
-            await asyncio.to_thread(
-                _record_answer, campaign_candidate_id, question_id, question_map[question_id], answer_text
+            question_map = {q["id"]: q["text"] for q in call_questions}
+            if question_id not in question_map:
+                return json.dumps({"error": f"Unknown question_id {question_id!r}"})
+            await record_question_answer(
+                interview_id, campaign_candidate_id, question_id, question_map[question_id], answer_text
             )
             return json.dumps({"recorded": True})
         except Exception as e:
             return json.dumps({"error": str(e)})
 
-    async def _speak(text: str):
+    async def _speak(text: str, gen: int):
         """TTS → μ-law → send to Twilio, set/unset is_speaking flag."""
         nonlocal is_speaking
         is_speaking = True
@@ -733,7 +651,8 @@ async def twilio_stream_endpoint(websocket: WebSocket):
             async for mulaw_chunk in text_to_speech_twilio(text):
                 await _send_mulaw(mulaw_chunk)
         finally:
-            is_speaking = False
+            if gen == _speech_gen:
+                is_speaking = False
 
     async def _warn_if_stuck_processing(label: str):
         """While is_processing is True, the caller's mic is only checked against
@@ -745,7 +664,7 @@ async def twilio_stream_endpoint(websocket: WebSocket):
         print(f"[{label}] run_pipeline still processing after 10s (slow webhook/LLM?) - "
               f"caller's speech is gated by the barge-in threshold, not normal listening, until this resolves")
 
-    async def run_pipeline(user_message: str):
+    async def run_pipeline(user_message: str, gen: int):
         nonlocal is_processing
         is_processing = True
         full_reply_parts: list[str] = []
@@ -758,9 +677,9 @@ async def twilio_stream_endpoint(websocket: WebSocket):
             # this window, say a filler phrase so the caller hears something
             # instead of dead air, rather than cancelling or rushing the work.
             await asyncio.sleep(RETRIEVAL_FILLER_DELAY_SECONDS)
-            filler = random.choice(FILLER_PHRASES)
+            filler = random.choice(get_filler_phrases(agent))
             full_reply_parts.append(filler)
-            await _speak(filler)
+            await _speak(filler, gen)
 
         async def _speak_covering_delay(text: str):
             """Like _speak(), but also cancels the pending retrieval filler -
@@ -769,7 +688,7 @@ async def twilio_stream_endpoint(websocket: WebSocket):
             nonlocal _retrieval_filler_task
             if _retrieval_filler_task and not _retrieval_filler_task.done():
                 _retrieval_filler_task.cancel()
-            await _speak(text)
+            await _speak(text, gen)
 
         try:
             _retrieval_filler_task = asyncio.create_task(_cover_retrieval_delay())
@@ -777,27 +696,16 @@ async def twilio_stream_endpoint(websocket: WebSocket):
             session_msgs = await asyncio.to_thread(get_session_messages, conversation_id)
             await asyncio.to_thread(save_message, conversation_id, user_id, "user", user_message)
 
-            doc_ids = agent.get("selected_kb_doc_ids") or []
-            rag_ctx = ""
-            if doc_ids:
-                raw = await asyncio.to_thread(
-                    retrieve_agent_context, user_message, agent_id, user_id, ["personal", "global"]
-                )
-                rag_ctx = format_agent_context(raw)
-            from app.kb.user_kb_repo import get_user_documents
-            user_doc_ids = [d["id"] for d in await asyncio.to_thread(get_user_documents, user_id)]
-            kb_rag = await asyncio.to_thread(
-                retrieve_user_kb_context, user_message, user_doc_ids
-            )
-            kb_ctx = format_user_kb_context(kb_rag) if kb_rag else ""
-            full_rag = "\n\n".join(filter(None, [rag_ctx, kb_ctx]))
+            from app.telephony.shared import retrieve_phone_rag_context, build_phone_system_prompt
+            full_rag, has_kb = await retrieve_phone_rag_context(user_message, agent, agent_id, user_id)
 
-            base_system = (agent.get("system_prompt") or "") + extra_system_context
+            base_system = build_phone_system_prompt(agent, extra_system_context)
             system_str = build_system_prompt(
                 base_system or None,
                 initial_memory,
                 full_rag,
                 agent.get("kb_instructions") or None,
+                has_kb=has_kb,
             )
             history = [{"role": m["role"], "content": m["content"]} for m in session_msgs]
 
@@ -807,7 +715,7 @@ async def twilio_stream_endpoint(websocket: WebSocket):
                 text, tool_name, tool_args, call_id = await detect_tool_call(conv_msgs, system_str, tools)
 
                 if tool_name:
-                    filler = random.choice(FILLER_PHRASES)
+                    filler = random.choice(get_filler_phrases(agent))
                     await _speak_covering_delay(filler)
                     full_reply_parts.append(filler)
                     fn = next((f for f in _tool_functions if f["name"] == tool_name), None)
@@ -846,7 +754,8 @@ async def twilio_stream_endpoint(websocket: WebSocket):
                 _retrieval_filler_task.cancel()
             if not _stuck_watchdog_task.done():
                 _stuck_watchdog_task.cancel()
-            is_processing = False
+            if gen == _speech_gen:
+                is_processing = False
 
     try:
         while True:
@@ -866,7 +775,8 @@ async def twilio_stream_endpoint(websocket: WebSocket):
                     agent.get("first_message") if agent.get("first_message_enabled") else None
                 )
                 if greeting:
-                    _active_task = asyncio.create_task(_speak(greeting))
+                    _speech_gen += 1
+                    _active_task = asyncio.create_task(_speak(greeting, _speech_gen))
 
             elif event == "media":
                 if not agent:
@@ -919,7 +829,7 @@ async def twilio_stream_endpoint(websocket: WebSocket):
                     _utterance_buffer = bytearray()
                     # fall through - treat this chunk as the start of new speech
 
-                has_speech = await detect_speech(vad_window)
+                has_speech = await detect_speech(vad_window, VAD_SENSITIVITY)
 
                 if has_speech:
                     speech_chunks += 1
@@ -973,7 +883,8 @@ async def twilio_stream_endpoint(websocket: WebSocket):
                             transcript = await transcribe_audio_smart(build_wav_bytes(raw_utterance))
                         if transcript and transcript.strip():
                             print(f"[Twilio] User said: {transcript.strip()}")
-                            _active_task = asyncio.create_task(run_pipeline(transcript.strip()))
+                            _speech_gen += 1
+                            _active_task = asyncio.create_task(run_pipeline(transcript.strip(), _speech_gen))
 
             elif event == "stop":
                 print(f"[Twilio] Call ended - stream {stream_sid}")
@@ -1034,6 +945,17 @@ async def twilio_stream_endpoint(websocket: WebSocket):
                 set_call_status, conversation_id,
                 "failed" if _call_failure_reason else "completed", _call_failure_reason,
             )
+            try:
+                from app.conversations.message_repo import get_conversation_history
+                from app.conversations.conversation_repo import set_call_summary
+                from app.voice.llm_service import generate_call_summary
+                history = await asyncio.to_thread(get_conversation_history, conversation_id)
+                if history:
+                    summary = await generate_call_summary(history)
+                    if summary:
+                        await asyncio.to_thread(set_call_summary, conversation_id, summary)
+            except Exception as e:
+                print(f"[Twilio] Call summary generation failed (non-fatal): {e}")
         try:
             await websocket.close()
         except Exception:

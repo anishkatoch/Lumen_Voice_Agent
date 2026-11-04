@@ -4,6 +4,7 @@ Tracks all active sessions, isolates state per user.
 """
 import asyncio
 import json
+import uuid
 from dataclasses import dataclass, field
 from enum import Enum
 from fastapi import WebSocket
@@ -21,6 +22,11 @@ class UserSession:
     user_id: str
     websocket: WebSocket
     conversation_id: str
+    # Unique per connection, not per user - a user can have more than one
+    # live session (two tabs, or the generic + per-agent WS at once). Used
+    # as ConnectionManager's dict key instead of user_id so a second session
+    # for the same user can't silently overwrite the first's entry.
+    session_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     state: AgentState = AgentState.LISTENING
     sensitivity: float = field(default_factory=lambda: VAD_SENSITIVITY)
     barge_in_sensitivity: float = field(default_factory=lambda: VAD_BARGE_IN_SENSITIVITY)
@@ -43,13 +49,10 @@ class ConnectionManager:
         return len(self._sessions) >= self._max_users
 
     def add_session(self, session: UserSession):
-        self._sessions[session.user_id] = session
+        self._sessions[session.session_id] = session
 
-    def remove_session(self, user_id: str) -> UserSession | None:
-        return self._sessions.pop(user_id, None)
-
-    def get_session(self, user_id: str) -> UserSession | None:
-        return self._sessions.get(user_id)
+    def remove_session(self, session: UserSession) -> UserSession | None:
+        return self._sessions.pop(session.session_id, None)
 
     def active_count(self) -> int:
         return len(self._sessions)

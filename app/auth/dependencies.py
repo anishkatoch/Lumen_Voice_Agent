@@ -15,14 +15,18 @@ security = HTTPBearer()
 
 _jwks_cache: Optional[dict] = None
 
-async def _get_jwks() -> dict:
+async def _get_jwks(force_refresh: bool = False) -> dict:
     global _jwks_cache
-    if _jwks_cache:
+    if _jwks_cache and not force_refresh:
         return _jwks_cache
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=10.0) as client:
         resp = await client.get(f"{SUPABASE_URL}/auth/v1/.well-known/jwks.json")
+        resp.raise_for_status()
         _jwks_cache = resp.json()
     return _jwks_cache
+
+def _find_jwk(jwks: dict, kid: str) -> dict | None:
+    return next((k for k in jwks.get("keys", []) if k.get("kid") == kid), None)
 
 async def decode_supabase_token(token: str) -> dict:
     header = jwt.get_unverified_header(token)
@@ -30,15 +34,31 @@ async def decode_supabase_token(token: str) -> dict:
     kid = header.get("kid")
 
     if alg != "HS256" and kid:
-        jwks = await _get_jwks()
-        for key_data in jwks.get("keys", []):
-            if key_data.get("kid") == kid:
-                if alg.startswith("ES"):
-                    public_key = ECAlgorithm.from_jwk(json.dumps(key_data))
-                else:
-                    public_key = RSAAlgorithm.from_jwk(json.dumps(key_data))
-                return jwt.decode(token, public_key, algorithms=[alg], options={"verify_aud": False})
-        raise jwt.InvalidTokenError("No matching key found in JWKS")
+        try:
+            jwks = await _get_jwks()
+            key_data = _find_jwk(jwks, kid)
+            if key_data is None:
+                # Cached JWKS may be stale after Supabase rotates its signing
+                # keys - force one re-fetch before giving up, rather than
+                # failing every request for every user until this process
+                # happens to restart.
+                jwks = await _get_jwks(force_refresh=True)
+                key_data = _find_jwk(jwks, kid)
+        except jwt.InvalidTokenError:
+            raise
+        except Exception as e:
+            # Network/parse errors from the JWKS fetch must surface as an
+            # InvalidTokenError like every other auth failure here - get_current_user
+            # only catches jwt.* exceptions, so anything else would otherwise
+            # become an uncaught 500 instead of a clean 401 during an outage.
+            raise jwt.InvalidTokenError(f"JWKS fetch failed: {e}")
+        if key_data is None:
+            raise jwt.InvalidTokenError("No matching key found in JWKS")
+        if alg.startswith("ES"):
+            public_key = ECAlgorithm.from_jwk(json.dumps(key_data))
+        else:
+            public_key = RSAAlgorithm.from_jwk(json.dumps(key_data))
+        return jwt.decode(token, public_key, algorithms=[alg], options={"verify_aud": False})
 
     if not SUPABASE_JWT_SECRET:
         raise jwt.InvalidTokenError("SUPABASE_JWT_SECRET not configured")

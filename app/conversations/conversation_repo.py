@@ -81,6 +81,17 @@ def get_conversation_by_id(conversation_id: str) -> dict | None:
     return result.data[0] if result.data else None
 
 
+def set_call_summary(conversation_id: str, summary: str) -> None:
+    """Best-effort, same as set_call_status above: never raises - a DB
+    hiccup saving the summary must never be allowed to surface as a call
+    failure during call-end cleanup."""
+    try:
+        db = get_supabase()
+        db.table("conversations").update({"summary": summary}).eq("id", conversation_id).execute()
+    except Exception as e:
+        print(f"[Call Analytics] Failed to save call summary for {conversation_id}: {e}")
+
+
 def update_conversation_sentiment(conversation_id: str, result: dict) -> None:
     """Save sentiment analysis result to the conversations row."""
     db = get_supabase()

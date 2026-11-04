@@ -345,12 +345,31 @@ FILLER_PHRASES = [
 ]
 
 
+def get_filler_phrases(agent: dict | None) -> list[str]:
+    """Agent's own filler_phrases (one per line) if configured, else the
+    generic FILLER_PHRASES list. Spoken while a slow RAG/LLM call is in
+    flight, so the caller doesn't hear dead air."""
+    if agent:
+        raw = (agent.get("filler_phrases") or "").strip()
+        if raw:
+            lines = [line.strip() for line in raw.splitlines() if line.strip()]
+            if lines:
+                return lines
+    return FILLER_PHRASES
+
+
 def build_system_prompt(
     system_prompt_override: str | None,
     long_term_memory: str | None,
     rag_context: str,
     kb_instructions: str | None,
+    has_kb: bool = True,
 ) -> str:
+    """has_kb: whether this agent/session has any knowledge base documents
+    configured at all. When False, the "no relevant documents found" filler
+    is skipped entirely - that line only makes sense as a guardrail when a
+    KB exists but this particular query didn't match anything in it, not as
+    boilerplate on every single turn of an agent with no KB configured."""
     base = system_prompt_override if system_prompt_override else _DEFAULT_SYSTEM
     if "{{current_time}}" in base:
         base = base.replace("{{current_time}}", datetime.now().strftime("%A, %B %d, %Y %I:%M %p"))
@@ -361,7 +380,7 @@ def build_system_prompt(
         parts.append(f"\n{rag_context}")
         if kb_instructions:
             parts.append(f"\nKnowledge base instructions: {kb_instructions}")
-    else:
+    elif has_kb:
         parts.append("\nNo relevant documents found in the knowledge base for this query.")
         if kb_instructions:
             parts.append(f"\nKnowledge base instructions: {kb_instructions}")
@@ -524,12 +543,55 @@ async def stream_text_as_sentences(text: str) -> AsyncGenerator[str, None]:
             yield s
 
 
+async def _summarize_with_fallback(prompt: str, max_tokens: int) -> str | None:
+    """Non-streaming chat completion using the same Azure-first fallback
+    chain normal conversation replies use (_augment_with_azure/_get_llm_chain)
+    - summaries must not silently depend on a plain OpenAI key being valid
+    when Azure is the account's actual configured provider. Returns None if
+    every attempt in the chain fails."""
+    client, provider, model = _get_llm_client()
+    chain = _augment_with_azure(client, provider, model)
+    if not chain:
+        chain = [(_get_openai(), "openai", MEMORY_MODEL)]
+    for try_client, try_provider, _try_model in chain:
+        use_model = AZURE_OPENAI_DEPLOYMENT if try_provider == "azure_openai" else MEMORY_MODEL
+        try:
+            response = await try_client.chat.completions.create(
+                model=use_model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=max_tokens,
+            )
+            return response.choices[0].message.content.strip()
+        except Exception as e:
+            print(f"[LLM] Summary error ({try_provider}): {e}")
+            continue
+    return None
+
+
+async def generate_call_summary(messages: list[dict]) -> str:
+    """One-paragraph summary of a single finished call, for Call Analytics.
+    Distinct from generate_memory_summary below, which is a rolling per-user
+    memory paragraph carried across calls - this is per-call and discarded
+    once written, never fed back into future prompts."""
+    if not messages:
+        return ""
+    history_text = "\n".join(
+        f"{m['role'].capitalize()}: {m['content']}" for m in messages
+    )
+    prompt = (
+        "Summarize this phone call in a concise paragraph (max 120 words): "
+        "what the caller wanted, what was discussed or resolved, and any "
+        "follow-up action needed. Write it for someone who wasn't on the "
+        "call and needs the gist quickly.\n\n"
+        f"Transcript:\n{history_text}"
+    )
+    return await _summarize_with_fallback(prompt, MEMORY_MAX_TOKENS) or ""
+
+
 async def generate_memory_summary(
     old_summary: str | None,
     new_messages: list[dict],
 ) -> str:
-    client = _get_openai()
-
     history_text = "\n".join(
         f"{m['role'].capitalize()}: {m['content']}" for m in new_messages
     )
@@ -543,13 +605,5 @@ async def generate_memory_summary(
         "preferences, and past issues. Merge old and new info - no repetition."
     )
 
-    try:
-        response = await client.chat.completions.create(
-            model=MEMORY_MODEL,
-            messages=[{"role": "user", "content": "\n\n".join(prompt_parts)}],
-            max_tokens=MEMORY_MAX_TOKENS,
-        )
-        return response.choices[0].message.content.strip()
-    except Exception as e:
-        print(f"[LLM] Memory summary error: {e}")
-        return old_summary or ""
+    result = await _summarize_with_fallback("\n\n".join(prompt_parts), MEMORY_MAX_TOKENS)
+    return result if result is not None else (old_summary or "")

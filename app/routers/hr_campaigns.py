@@ -160,6 +160,16 @@ async def delete_interview_route(interview_id: str, current_user: dict = Depends
     from app.hr_campaigns.hr_repo import delete_interview
     await asyncio.to_thread(delete_interview, interview_id, current_user["sub"])
 
+@router.get("/api/hr/interviews/{interview_id}/answers")
+async def list_interview_answers_route(
+    interview_id: str, current_user: dict = Depends(get_current_user)
+):
+    # Ownership check via the parent interview is intentionally skipped here,
+    # matching list_campaign_answers_route's existing convention below -
+    # interview_id is an unguessable UUID, same as get_interview() itself.
+    from app.hr_campaigns.hr_repo import list_interview_answers
+    return await asyncio.to_thread(list_interview_answers, interview_id)
+
 @router.get("/api/hr/campaigns")
 async def list_campaigns_route(current_user: dict = Depends(get_current_user)):
     from app.hr_campaigns.hr_campaign_repo import list_campaigns

@@ -151,6 +151,7 @@ export const API = {
   // Conversations (voice sessions)
   conversations: () => API.request<Conversation[]>("/api/conversations"),
   messages: (id: string) => API.request<Message[]>(`/api/conversations/${id}/messages`),
+  conversationQA: (id: string) => API.request<ConversationQA>(`/api/conversations/${id}/qa`),
 
   // Agents
   agents: () => API.request<Agent[]>("/api/agents"),
@@ -247,6 +248,8 @@ export const API = {
     API.request<void>(`/api/hr/campaigns/${campaignId}/candidates/${campaignCandidateId}`, { method: "DELETE" }),
   campaignAnswers: (campaignCandidateId: string) =>
     API.request<CampaignAnswer[]>(`/api/hr/campaigns/candidates/${campaignCandidateId}/answers`),
+  interviewAnswers: (interviewId: string) =>
+    API.request<InterviewAnswer[]>(`/api/hr/interviews/${interviewId}/answers`),
 
   // Twilio Phone Numbers
   phoneNumbers: () => API.request<PhoneNumber[]>("/api/twilio/numbers"),
@@ -326,12 +329,17 @@ export interface Conversation {
   sentiment_score?: number | null;
   call_status?: "ringing" | "in_progress" | "completed" | "failed" | "busy" | "no_answer" | null;
   failure_reason?: string | null;
+  summary?: string | null;
 }
 
 export interface Message {
   role: "user" | "assistant";
   content: string;
   created_at: string;
+}
+
+export interface ConversationQA {
+  questions: { question: string; answered: boolean; answer: string | null }[];
 }
 
 export interface Agent {
@@ -346,6 +354,7 @@ export interface Agent {
   is_active: boolean;
   kb_instructions?: string | null;
   hr_instructions?: string | null;
+  filler_phrases?: string | null;
   selected_kb_doc_ids: string[];
   created_at: string;
   updated_at: string;
@@ -476,6 +485,15 @@ export interface CampaignCandidate {
 export interface CampaignAnswer {
   id: string;
   campaign_candidate_id: string;
+  question_id: string;
+  question_text: string;
+  answer_text: string;
+  recorded_at: string;
+}
+
+export interface InterviewAnswer {
+  id: string;
+  interview_id: string;
   question_id: string;
   question_text: string;
   answer_text: string;

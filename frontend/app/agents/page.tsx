@@ -1028,6 +1028,7 @@ function AgentDetail({ agent, onBack, onUpdate, onDuplicate, onGoToKb }: {
   const [prompt, setPrompt] = useState(agent.system_prompt ?? DEFAULT_SYSTEM_PROMPT);
   const [kbInstructions, setKbInstructions] = useState(agent.kb_instructions ?? "");
   const [hrInstructions, setHrInstructions] = useState(agent.hr_instructions ?? "");
+  const [fillerPhrases, setFillerPhrases] = useState(agent.filler_phrases ?? "");
   const [firstMsgEnabled, setFirstMsgEnabled] = useState(agent.first_message_enabled);
   const [firstMsg, setFirstMsg] = useState(agent.first_message ?? "");
   const [saving, setSaving] = useState(false);
@@ -1050,6 +1051,7 @@ function AgentDetail({ agent, onBack, onUpdate, onDuplicate, onGoToKb }: {
     setName(agent.name); setPrompt(agent.system_prompt ?? DEFAULT_SYSTEM_PROMPT);
     setKbInstructions(agent.kb_instructions ?? "");
     setHrInstructions(agent.hr_instructions ?? "");
+    setFillerPhrases(agent.filler_phrases ?? "");
     setFirstMsgEnabled(agent.first_message_enabled); setFirstMsg(agent.first_message ?? "");
     setSelectedDocIds(agent.selected_kb_doc_ids ?? []);
     loadUserKb(); loadFuncs();
@@ -1083,6 +1085,7 @@ function AgentDetail({ agent, onBack, onUpdate, onDuplicate, onGoToKb }: {
         name: name.trim(), system_prompt: prompt,
         kb_instructions: kbInstructions || null,
         hr_instructions: hrInstructions || null,
+        filler_phrases: fillerPhrases || null,
         first_message_enabled: firstMsgEnabled,
         first_message: firstMsg || null,
         selected_kb_doc_ids: selectedDocIds,
@@ -1454,6 +1457,21 @@ Confident, not pushy
             </div>
           </Section>
 
+          <Section title="Filler phrases">
+            <div style={{ fontSize: 12, color: "var(--ink-muted)", marginBottom: 8 }}>
+              Spoken while the agent is looking something up, so the caller doesn&apos;t hear dead air.
+              One phrase per line. Leave blank to use the default generic phrases.
+            </div>
+            <textarea
+              className="textarea"
+              value={fillerPhrases}
+              onChange={e => setFillerPhrases(e.target.value)}
+              rows={4}
+              placeholder={"Let me check that for you.\nOne moment, I'll look that up.\nGive me just a second."}
+              style={{ fontFamily: "var(--font-mono)" }}
+            />
+          </Section>
+
           {agent.name === "HR Support Agent" && (
             <AgentHRSection agentId={agent.id} hrInstructions={hrInstructions} onHrInstructionsChange={setHrInstructions} />
           )}
@@ -1623,6 +1641,7 @@ interface ConvDetail {
   sentiment_score?: number | null;
   call_status?: "ringing" | "in_progress" | "completed" | "failed" | "busy" | "no_answer" | null;
   failure_reason?: string | null;
+  summary?: string | null;
 }
 
 function sentimentPill(s: string | null | undefined): { cls: string; label: string } {
@@ -1693,6 +1712,7 @@ function SessionDetail({ conv, agents, onBack }: {
 }) {
   const [msgs, setMsgs] = useState<import("@/lib/api").Message[]>([]);
   const [loading, setLoading] = useState(true);
+  const [qa, setQa] = useState<import("@/lib/api").ConversationQA | null>(null);
   const agentName = agents.find(a => a.id === conv.agent_id)?.name ?? "Voice Agent";
   const sPill = sentimentPill(conv.sentiment);
   const cPill = callStatusPill(conv.call_status);
@@ -1700,6 +1720,7 @@ function SessionDetail({ conv, agents, onBack }: {
 
   useEffect(() => {
     API.messages(conv.id).then(m => { setMsgs(m); setLoading(false); }).catch(() => setLoading(false));
+    API.conversationQA(conv.id).then(setQa).catch(() => setQa(null));
   }, [conv.id]);
 
   return (
@@ -1724,6 +1745,41 @@ function SessionDetail({ conv, agents, onBack }: {
 
       <div className="session-layout">
         <div className="session-main">
+          {conv.summary && (
+            <div className="conv-card">
+              <div className="conv-card-head"><h3>Call summary</h3></div>
+              <div className="conv-card-body">
+                <p style={{ fontSize: 14, lineHeight: 1.5 }}>{conv.summary}</p>
+              </div>
+            </div>
+          )}
+
+          {qa && qa.questions.length > 0 && (
+            <div className="conv-card">
+              <div className="conv-card-head">
+                <h3>Questions asked</h3>
+                <span className="conv-card-meta">
+                  {qa.questions.filter(q => q.answered).length}/{qa.questions.length} answered
+                </span>
+              </div>
+              <div className="conv-card-body">
+                <div className="detail-rows">
+                  {qa.questions.map((q, i) => (
+                    <div key={i} className="detail-row" style={{ alignItems: "flex-start" }}>
+                      <Icon name={q.answered ? "check-circle" : "x"} />
+                      <div>
+                        <div className="detail-label">{q.question}</div>
+                        <div className="detail-value">
+                          {q.answered ? q.answer : <em style={{ color: "var(--ink-faint)" }}>Not answered</em>}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+
           <div className="conv-card accent">
             <div className="conv-card-head">
               <h3>Conversation</h3>
