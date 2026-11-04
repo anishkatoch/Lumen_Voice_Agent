@@ -298,6 +298,7 @@ body {
 .lumenc .input, .lumenc .textarea, .lumenc select.select { width: 100%; max-width: 640px; border: 1px solid var(--border); background: var(--bg); border-radius: var(--r-md); padding: 10px 12px; font-size: 13.5px; color: var(--ink); outline: none; transition: border-color .15s, box-shadow .15s; }
 .lumenc .input:focus, .lumenc .textarea:focus, .lumenc select.select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-ring); }
 .lumenc .textarea { max-width: 74ch; resize: vertical; min-height: 120px; font-family: var(--font-body); line-height: 1.6; }
+.lumenc textarea.textarea[rows="6"], .lumenc textarea.textarea[rows="8"] { min-height: 280px; }
 .lumenc .char-count { max-width: 74ch; text-align: right; font-size: 11px; color: var(--ink-faint); margin-top: 4px; font-family: var(--font-mono); }
 .lumenc .kb-note { background: var(--accent-soft); border-radius: var(--r-md); padding: 12px 14px; display: flex; gap: 10px; align-items: flex-start; }
 .lumenc .kb-note .icon { color: var(--accent); width: 16px; height: 16px; margin-top: 1px; }
@@ -386,8 +387,11 @@ body {
 .lumenc .call-fail-reason { font-size: 11.5px; color: var(--danger); line-height: 1.4; margin-top: 8px; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 
 /* call detail / transcript: two separate panels, Conversation + Details */
-.lumenc .session-layout { display: flex; gap: 20px; align-items: flex-start; }
-.lumenc .session-main { flex: 1; min-width: 0; }
+.lumenc .session-layout { display: flex; gap: 20px; align-items: flex-start; min-height: calc(100vh - 230px); }
+.lumenc .session-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 14px; }
+.lumenc .session-main > .conv-card:last-child { flex: 1; display: flex; flex-direction: column; }
+.lumenc .session-main > .conv-card:last-child .conv-card-body { flex: 1; display: flex; flex-direction: column; }
+.lumenc .session-main > .conv-card:last-child .conv-card-body .empty { flex: 1; }
 .lumenc .session-sidebar { width: 280px; flex-shrink: 0; position: sticky; top: 20px; }
 
 .lumenc .conv-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg); box-shadow: var(--shadow-sm); overflow: hidden; }
