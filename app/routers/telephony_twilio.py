@@ -450,6 +450,7 @@ async def twilio_stream_endpoint(websocket: WebSocket):
     campaign_id: str = ""            # parent campaign, needed to release the dialer's claim
     campaign_data: dict | None = None  # holds questions, for context + record_answer validation
     call_questions: list = []  # trackable questions for interview or campaign calls
+    _answered_question_ids: set = set()  # guards against re-recording a question_id, see _record_answer_tool
     extra_system_context: str = ""  # injected for outbound HR calls
     greeting_override: str | None = None
     agent: dict | None = None
@@ -627,20 +628,20 @@ async def twilio_stream_endpoint(websocket: WebSocket):
 
     async def _record_answer_tool(args: dict) -> str:
         """Handler for the synthesized "internal_record_answer" tool (interview
-        and campaign calls). question_id is validated against this call's own
-        configured question list before insert - the LLM has no enum
-        constraint available (build_openai_tool doesn't support one), so a
-        hallucinated/paraphrased id must not silently corrupt the answers table."""
-        from app.telephony.shared import record_question_answer
+        and campaign calls). See validate_question_answer for what's rejected
+        and why."""
+        from app.telephony.shared import record_question_answer, validate_question_answer
         question_id = args.get("question_id", "")
         answer_text = args.get("answer", "")
         try:
+            error = validate_question_answer(question_id, call_questions, _answered_question_ids)
+            if error:
+                return json.dumps({"error": error})
             question_map = {q["id"]: q["text"] for q in call_questions}
-            if question_id not in question_map:
-                return json.dumps({"error": f"Unknown question_id {question_id!r}"})
             await record_question_answer(
                 interview_id, campaign_candidate_id, question_id, question_map[question_id], answer_text
             )
+            _answered_question_ids.add(question_id)
             return json.dumps({"recorded": True})
         except Exception as e:
             return json.dumps({"error": str(e)})
@@ -728,21 +729,23 @@ async def twilio_stream_endpoint(websocket: WebSocket):
                 text, tool_name, tool_args, call_id = await detect_tool_call(conv_msgs, system_str, tools)
 
                 if tool_name:
-                    # No filler spoken here unconditionally - the retrieval filler
-                    # task started at the top of run_pipeline is still live at this
-                    # point (nothing has called _speak_covering_delay yet) and will
-                    # fire on its own if detect_tool_call + the tool call + the
-                    # first streamed sentence below genuinely take too long. A
-                    # fast tool like record_answer (a quick DB write) usually
-                    # doesn't, so most answers get no filler at all instead of one
-                    # guaranteed every single time a tool is called (found
-                    # 2026-11-04: a plain "yes"/"no" answer was getting a filler
-                    # like "let me pull that up" stacked on top of the general
-                    # one, with nothing actually slow to justify either).
                     fn = next((f for f in _tool_functions if f["name"] == tool_name), None)
                     if fn and fn.get("kind") == "internal_record_answer":
+                        # record_answer is always fast (a DB write, no network call) -
+                        # there's never a real delay worth covering, so the filler is
+                        # cancelled outright rather than left to the timer. Left to the
+                        # timer, detect_tool_call + stream_tool_result_response's two
+                        # sequential LLM round-trips reliably exceed the filler delay
+                        # on their own even though nothing slow is actually happening,
+                        # so a filler like "let me pull that up" was speaking on nearly
+                        # every plain yes/no answer (found 2026-11-04).
+                        if _retrieval_filler_task and not _retrieval_filler_task.done():
+                            _retrieval_filler_task.cancel()
                         tool_result = await _record_answer_tool(tool_args)
                     elif fn:
+                        # A webhook call genuinely can be slow (an external HTTP
+                        # request) - leave the retrieval filler task running so it
+                        # can still cover that if needed.
                         tool_result = await _execute_webhook_twilio(fn, tool_args)
                     else:
                         tool_result = "{}"

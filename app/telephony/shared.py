@@ -190,6 +190,30 @@ def build_record_answer_tool(questions: list[dict]) -> dict:
     }
 
 
+def validate_question_answer(question_id: str, call_questions: list[dict], answered_question_ids: set) -> str | None:
+    """Returns an error message if a record_answer tool call should be
+    rejected, else None. Two cases: an unknown id (the LLM has no enum
+    constraint available to stop it hallucinating one - build_openai_tool
+    doesn't support one), or an id already recorded earlier in this same
+    call. The latter was found live (2026-11-04): the model occasionally
+    answers a later, different question but reuses an earlier question's
+    id, silently overwriting it with a mismatched answer while the real
+    question goes unrecorded. Pulled out as a pure function, separate from
+    the record_answer tool handlers in telephony_twilio.py/telephony_plivo.py,
+    so this has a direct unit test - driving it through two separate real
+    conversation turns over the full WS/VAD pipeline turned out to be too
+    racy to do reliably."""
+    question_map = {q["id"]: q["text"] for q in call_questions}
+    if question_id not in question_map:
+        return f"Unknown question_id {question_id!r}"
+    if question_id in answered_question_ids:
+        return (
+            f"question_id {question_id!r} was already recorded earlier in this call - "
+            f"if this is a different question, double check the mapping and use its own id."
+        )
+    return None
+
+
 async def record_question_answer(
     interview_id: str, campaign_candidate_id: str,
     question_id: str, question_text: str, answer_text: str,
