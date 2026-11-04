@@ -56,6 +56,22 @@ _DEFAULT_HR_INSTRUCTIONS = (
     "If they ask about next steps, let them know HR will follow up within a "
     "few business days."
 )
+# Same reasoning as above, for the filler-phrases box - without this, every
+# new agent's filler_phrases column stayed NULL and the person never saw
+# get_filler_phrases()'s generic app/voice/llm_service.FILLER_PHRASES list
+# at all (it's a server-side fallback, not something surfaced in the UI),
+# so there was nothing to edit or add to. One phrase per line, mirroring
+# how get_filler_phrases() reads this column back.
+_DEFAULT_FILLER_PHRASES = (
+    "Let me check that for you.\n"
+    "One moment, I'll look that up.\n"
+    "Sure, give me just a second.\n"
+    "Hold on, let me find that for you.\n"
+    "Great question - let me pull that up.\n"
+    "Just a moment while I check.\n"
+    "I'll look into that right now.\n"
+    "Hang tight, checking that for you."
+)
 
 _DEFAULT_AGENTS = [
     {
@@ -81,6 +97,7 @@ _DEFAULT_AGENTS = [
         "first_message_enabled": True,
         "first_message": "Hello! I'm your meeting assistant. How can I help you schedule something today?",
         "kb_instructions": _DEFAULT_KB_INSTRUCTIONS,
+        "filler_phrases": _DEFAULT_FILLER_PHRASES,
     },
     {
         "name": "HR Support Agent",
@@ -106,6 +123,7 @@ _DEFAULT_AGENTS = [
         "first_message": "Hi there! This is the HR support line. How can I assist you today?",
         "kb_instructions": _DEFAULT_KB_INSTRUCTIONS,
         "hr_instructions": _DEFAULT_HR_INSTRUCTIONS,
+        "filler_phrases": _DEFAULT_FILLER_PHRASES,
     },
 ]
 
@@ -162,6 +180,7 @@ def create_agent(user_id: str, name: str, description: str | None = None,
         "barge_in_sensitivity": barge_in_sensitivity,
         "kb_instructions": _DEFAULT_KB_INSTRUCTIONS,
         "hr_instructions": _DEFAULT_HR_INSTRUCTIONS,
+        "filler_phrases": _DEFAULT_FILLER_PHRASES,
         "first_message_enabled": True,
         "first_message": _DEFAULT_FIRST_MESSAGE,
     }).execute()
@@ -197,6 +216,7 @@ def duplicate_agent(agent_id: str, user_id: str) -> dict:
         "first_message": src.get("first_message"),
         "is_active": src.get("is_active", True),
         "kb_instructions": src.get("kb_instructions"),
+        "filler_phrases": src.get("filler_phrases"),
     }).execute()
     if not result.data:
         raise RuntimeError("Failed to duplicate agent")
