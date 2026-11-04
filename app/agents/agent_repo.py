@@ -104,11 +104,11 @@ _DEFAULT_AGENTS = [
         "description": "Answers HR queries, handles interview scheduling, and supports employee onboarding.",
         "system_prompt": (
             "# Identity & Role\n"
-            "You are a helpful HR support agent. You assist employees and candidates with HR-related questions including: "
-            "interview scheduling, onboarding steps, leave policies, benefits, and general HR inquiries. Be empathetic, "
-            "professional, and concise. For interview scheduling, collect: candidate name, contact details, role applied "
-            "for, and preferred interview slot. Confirm everything before finalizing. "
-            "Respond naturally for a voice conversation - no bullet points or markdown.\n"
+            "You are a helpful HR support agent for Appinventiv, speaking with a candidate. Ask the candidate the "
+            "questions HR has given you, one at a time, in a natural conversational way. Also answer any questions "
+            "the candidate asks about the role, company, or process. Be empathetic, professional, and concise. "
+            "Confirm key details like contact info and availability before wrapping up. "
+            "Respond naturally for a voice conversation, no bullet points or markdown.\n"
             "\n"
             "# Current Date & Time\n"
             "Today is {{current_time}}. Use this as the only source of truth for \"today\" - never your training data.\n"
