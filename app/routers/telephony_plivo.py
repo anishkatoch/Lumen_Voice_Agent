@@ -45,12 +45,14 @@ class PlivoAccountCreate(BaseModel):
     auth_token: Optional[str] = None
     webhook_base_url: Optional[str] = None
     is_default: Optional[bool] = False
+    webhook_base_urls: Optional[List[str]] = None
 
 class PlivoAccountUpdate(BaseModel):
     label: Optional[str] = None
     auth_id: Optional[str] = None
     auth_token: Optional[str] = None
     webhook_base_url: Optional[str] = None
+    webhook_base_urls: Optional[List[str]] = None
 
 @router.get("/api/plivo/numbers")
 async def list_plivo_phone_numbers(current_user: dict = Depends(get_current_user)):
@@ -189,7 +191,7 @@ async def create_plivo_account_route(
     account = await asyncio.to_thread(
         create_plivo_account,
         current_user["sub"], body.label, body.auth_id, body.auth_token,
-        body.webhook_base_url, bool(body.is_default),
+        body.webhook_base_url, bool(body.is_default), body.webhook_base_urls,
     )
     return _mask_plivo_account(account)
 
@@ -613,6 +615,14 @@ async def plivo_stream_endpoint(websocket: WebSocket):
             if gen == _speech_gen:
                 is_speaking = False
 
+    async def _speak_greeting(text: str, gen: int):
+        """Like _speak(), but also saves the line to Call Analytics - mirrors
+        app/routers/telephony_twilio.py's _speak_greeting (same bug, same fix:
+        the opening greeting is the one assistant turn that bypasses
+        run_pipeline, so it never got saved)."""
+        await _speak(text, gen)
+        await asyncio.to_thread(save_message, conversation_id, user_id, "assistant", text)
+
     async def _warn_if_stuck_processing(label: str):
         """While is_processing is True, the caller's mic is only checked against
         the strict barge-in VAD threshold, not normal listening - a slow webhook
@@ -667,9 +677,10 @@ async def plivo_stream_endpoint(websocket: WebSocket):
                 text, tool_name, tool_args, call_id = await detect_tool_call(conv_msgs, system_str, tools)
 
                 if tool_name:
-                    filler = random.choice(get_filler_phrases(agent))
-                    await _speak_covering_delay(filler)
-                    full_reply_parts.append(filler)
+                    # Mirrors app/routers/telephony_twilio.py's fix - no filler
+                    # spoken unconditionally here, the retrieval filler task from
+                    # the top of run_pipeline covers this gap on its own if it's
+                    # actually long enough to need covering.
                     fn = next((f for f in _tool_functions if f["name"] == tool_name), None)
                     if fn and fn.get("kind") == "internal_record_answer":
                         tool_result = await _record_answer_tool(tool_args)
@@ -737,7 +748,7 @@ async def plivo_stream_endpoint(websocket: WebSocket):
                 )
                 if greeting:
                     _speech_gen += 1
-                    _active_task = asyncio.create_task(_speak(greeting, _speech_gen))
+                    _active_task = asyncio.create_task(_speak_greeting(greeting, _speech_gen))
 
             elif event == "media":
                 if not agent:

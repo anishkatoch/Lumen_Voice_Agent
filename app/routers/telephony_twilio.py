@@ -48,12 +48,14 @@ class TwilioAccountCreate(BaseModel):
     auth_token: Optional[str] = None
     webhook_base_url: Optional[str] = None
     is_default: Optional[bool] = False
+    webhook_base_urls: Optional[List[str]] = None
 
 class TwilioAccountUpdate(BaseModel):
     label: Optional[str] = None
     account_sid: Optional[str] = None
     auth_token: Optional[str] = None
     webhook_base_url: Optional[str] = None
+    webhook_base_urls: Optional[List[str]] = None
 
 @router.get("/api/twilio/numbers")
 async def list_phone_numbers(current_user: dict = Depends(get_current_user)):
@@ -203,7 +205,7 @@ async def create_twilio_account_route(
     account = await asyncio.to_thread(
         create_twilio_account,
         current_user["sub"], body.label, body.account_sid, body.auth_token,
-        body.webhook_base_url, bool(body.is_default),
+        body.webhook_base_url, bool(body.is_default), body.webhook_base_urls,
     )
     return _mask_twilio_account(account)
 
@@ -654,6 +656,17 @@ async def twilio_stream_endpoint(websocket: WebSocket):
             if gen == _speech_gen:
                 is_speaking = False
 
+    async def _speak_greeting(text: str, gen: int):
+        """Like _speak(), but also saves the line to Call Analytics - the
+        opening greeting (the fixed greeting_override for interview/campaign
+        calls, or the agent's first_message for inbound calls) is the only
+        assistant turn in the whole call that bypasses run_pipeline, so
+        without this it was the one line in every transcript Call Analytics
+        never showed (found 2026-11-04, reported as "the first message is
+        not shown")."""
+        await _speak(text, gen)
+        await asyncio.to_thread(save_message, conversation_id, user_id, "assistant", text)
+
     async def _warn_if_stuck_processing(label: str):
         """While is_processing is True, the caller's mic is only checked against
         the strict barge-in VAD threshold, not normal listening - a slow webhook
@@ -715,9 +728,17 @@ async def twilio_stream_endpoint(websocket: WebSocket):
                 text, tool_name, tool_args, call_id = await detect_tool_call(conv_msgs, system_str, tools)
 
                 if tool_name:
-                    filler = random.choice(get_filler_phrases(agent))
-                    await _speak_covering_delay(filler)
-                    full_reply_parts.append(filler)
+                    # No filler spoken here unconditionally - the retrieval filler
+                    # task started at the top of run_pipeline is still live at this
+                    # point (nothing has called _speak_covering_delay yet) and will
+                    # fire on its own if detect_tool_call + the tool call + the
+                    # first streamed sentence below genuinely take too long. A
+                    # fast tool like record_answer (a quick DB write) usually
+                    # doesn't, so most answers get no filler at all instead of one
+                    # guaranteed every single time a tool is called (found
+                    # 2026-11-04: a plain "yes"/"no" answer was getting a filler
+                    # like "let me pull that up" stacked on top of the general
+                    # one, with nothing actually slow to justify either).
                     fn = next((f for f in _tool_functions if f["name"] == tool_name), None)
                     if fn and fn.get("kind") == "internal_record_answer":
                         tool_result = await _record_answer_tool(tool_args)
@@ -776,7 +797,7 @@ async def twilio_stream_endpoint(websocket: WebSocket):
                 )
                 if greeting:
                     _speech_gen += 1
-                    _active_task = asyncio.create_task(_speak(greeting, _speech_gen))
+                    _active_task = asyncio.create_task(_speak_greeting(greeting, _speech_gen))
 
             elif event == "media":
                 if not agent:

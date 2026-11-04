@@ -2040,9 +2040,71 @@ function AgentsGrid({ agents, query, onSelect, onToggle, onCreateClick }: {
    Phone Numbers view
 --------------------------------------------------------------------------- */
 
-interface TwilioAccountDraft { label: string; account_sid: string; auth_token: string; webhook_base_url: string; }
+interface TwilioAccountDraft { label: string; account_sid: string; auth_token: string; webhook_base_urls: string[]; }
 
-const emptyAccountDraft = (): TwilioAccountDraft => ({ label: "", account_sid: "", auth_token: "", webhook_base_url: "" });
+const emptyAccountDraft = (): TwilioAccountDraft => ({ label: "", account_sid: "", auth_token: "", webhook_base_urls: [""] });
+
+// First entry is the one every call-building code path on the backend
+// actually uses (sent as webhook_base_url) - the rest are just saved so
+// switching back to one you used before (e.g. a previous ngrok tunnel)
+// doesn't mean retyping it.
+const activeUrl = (urls: string[]): string => urls.find(u => u.trim()) ?? "";
+
+// Reusable "Server base URL" field, shared by the Twilio and Plivo account
+// forms below (new-account and edit-existing-account, 4 call sites total) -
+// renders one input per saved URL plus add/remove/make-active controls.
+function ServerBaseUrlField({
+  urls, onChange, hintLabel, hintPath,
+}: { urls: string[]; onChange: (next: string[]) => void; hintLabel: string; hintPath: string }) {
+  const list = urls.length ? urls : [""];
+  const setAt = (i: number, value: string) => {
+    const next = [...list]; next[i] = value; onChange(next);
+  };
+  const removeAt = (i: number) => onChange(list.filter((_, idx) => idx !== i));
+  const makeActive = (i: number) => {
+    const next = [...list];
+    const [picked] = next.splice(i, 1);
+    onChange([picked, ...next]);
+  };
+  const active = activeUrl(list);
+  return (
+    <div className="field">
+      <label>Server base URL <span style={{ fontWeight: 400, color: "var(--ink-faint)" }}>
+        (public URL of this server, use ngrok for local testing - add more than one if yours changes often; the top one is the active one used for calls)
+      </span></label>
+      {list.map((url, i) => (
+        <div key={i} style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 6 }}>
+          <input className="input" placeholder="https://your-server.com" value={url}
+            onChange={e => setAt(i, e.target.value)} />
+          {i > 0 && (
+            <button type="button" className="btn btn-ghost" style={{ fontSize: 11, padding: "4px 8px", whiteSpace: "nowrap" }}
+              onClick={() => makeActive(i)}>
+              Make active
+            </button>
+          )}
+          {list.length > 1 && (
+            <button type="button" className="btn btn-ghost" style={{ padding: 6 }} aria-label="Remove URL"
+              onClick={() => removeAt(i)}>
+              <Icon name="x" size={13} />
+            </button>
+          )}
+        </div>
+      ))}
+      <button type="button" className="btn btn-ghost" style={{ fontSize: 12, padding: "4px 8px", alignSelf: "flex-start" }}
+        onClick={() => onChange([...list, ""])}>
+        <Icon name="plus" size={12} />Add another URL
+      </button>
+      {active && (
+        <div style={{ marginTop: 6, fontSize: 11, color: "var(--ink-muted)" }}>
+          {hintLabel}&nbsp;
+          <code style={{ background: "var(--surface-2)", padding: "1px 5px", borderRadius: 4, fontFamily: "var(--font-mono)" }}>
+            {active}{hintPath}
+          </code>
+        </div>
+      )}
+    </div>
+  );
+}
 
 function PhoneNumbersView({ agents }: { agents: Agent[] }) {
   const [numbers, setNumbers] = useState<PhoneNumber[]>([]);
@@ -2083,10 +2145,12 @@ function PhoneNumbersView({ agents }: { agents: Agent[] }) {
   const [newPlivoAccount, setNewPlivoAccount] = useState<TwilioAccountDraft | null>(null);
 
   const draftFromAccount = (a: TwilioAccount): TwilioAccountDraft =>
-    ({ label: a.label, account_sid: a.account_sid, auth_token: a.auth_token, webhook_base_url: a.webhook_base_url });
+    ({ label: a.label, account_sid: a.account_sid, auth_token: a.auth_token,
+       webhook_base_urls: a.webhook_base_urls?.length ? a.webhook_base_urls : (a.webhook_base_url ? [a.webhook_base_url] : [""]) });
 
   const draftFromPlivoAccount = (a: PlivoAccount): TwilioAccountDraft =>
-    ({ label: a.label, account_sid: a.auth_id, auth_token: a.auth_token, webhook_base_url: a.webhook_base_url });
+    ({ label: a.label, account_sid: a.auth_id, auth_token: a.auth_token,
+       webhook_base_urls: a.webhook_base_urls?.length ? a.webhook_base_urls : (a.webhook_base_url ? [a.webhook_base_url] : [""]) });
 
   const load = async () => {
     setLoading(true);
@@ -2125,7 +2189,11 @@ function PhoneNumbersView({ agents }: { agents: Agent[] }) {
     if (!draft) return;
     setSavingAccountId(account.id);
     try {
-      const updated = await API.updateTwilioAccount(account.id, draft);
+      const cleanUrls = draft.webhook_base_urls.map(u => u.trim()).filter(Boolean);
+      const updated = await API.updateTwilioAccount(account.id, {
+        label: draft.label, account_sid: draft.account_sid, auth_token: draft.auth_token,
+        webhook_base_url: activeUrl(cleanUrls), webhook_base_urls: cleanUrls,
+      });
       setAccounts(prev => prev.map(a => a.id === account.id ? updated : a));
       setDrafts(d => ({ ...d, [account.id]: draftFromAccount(updated) }));
       setSavedAccountId(account.id); pushToast("Twilio account saved");
@@ -2138,7 +2206,11 @@ function PhoneNumbersView({ agents }: { agents: Agent[] }) {
     if (!newAccount) return;
     setSavingAccountId("new");
     try {
-      const created = await API.addTwilioAccount(newAccount);
+      const cleanUrls = newAccount.webhook_base_urls.map(u => u.trim()).filter(Boolean);
+      const created = await API.addTwilioAccount({
+        label: newAccount.label, account_sid: newAccount.account_sid, auth_token: newAccount.auth_token,
+        webhook_base_url: activeUrl(cleanUrls), webhook_base_urls: cleanUrls,
+      });
       setAccounts(prev => [...prev, created]);
       setDrafts(d => ({ ...d, [created.id]: draftFromAccount(created) }));
       setNewAccount(null);
@@ -2224,8 +2296,10 @@ function PhoneNumbersView({ agents }: { agents: Agent[] }) {
     if (!draft) return;
     setSavingPlivoAccountId(account.id);
     try {
+      const cleanUrls = draft.webhook_base_urls.map(u => u.trim()).filter(Boolean);
       const updated = await API.updatePlivoAccount(account.id, {
-        label: draft.label, auth_id: draft.account_sid, auth_token: draft.auth_token, webhook_base_url: draft.webhook_base_url,
+        label: draft.label, auth_id: draft.account_sid, auth_token: draft.auth_token,
+        webhook_base_url: activeUrl(cleanUrls), webhook_base_urls: cleanUrls,
       });
       setPlivoAccounts(prev => prev.map(a => a.id === account.id ? updated : a));
       setPlivoDrafts(d => ({ ...d, [account.id]: draftFromPlivoAccount(updated) }));
@@ -2239,9 +2313,11 @@ function PhoneNumbersView({ agents }: { agents: Agent[] }) {
     if (!newPlivoAccount) return;
     setSavingPlivoAccountId("new");
     try {
+      const cleanUrls = newPlivoAccount.webhook_base_urls.map(u => u.trim()).filter(Boolean);
       const created = await API.addPlivoAccount({
         label: newPlivoAccount.label, auth_id: newPlivoAccount.account_sid,
-        auth_token: newPlivoAccount.auth_token, webhook_base_url: newPlivoAccount.webhook_base_url,
+        auth_token: newPlivoAccount.auth_token,
+        webhook_base_url: activeUrl(cleanUrls), webhook_base_urls: cleanUrls,
       });
       setPlivoAccounts(prev => [...prev, created]);
       setPlivoDrafts(d => ({ ...d, [created.id]: draftFromPlivoAccount(created) }));
@@ -2369,19 +2445,12 @@ function PhoneNumbersView({ agents }: { agents: Agent[] }) {
                       value={draft.auth_token} onChange={e => updateDraft(account.id, { auth_token: e.target.value })} />
                   </div>
                 </div>
-                <div className="field">
-                  <label>Server base URL <span style={{ fontWeight: 400, color: "var(--ink-faint)" }}>(public URL of this server, use ngrok for local testing)</span></label>
-                  <input className="input" placeholder="https://your-server.com" value={draft.webhook_base_url}
-                    onChange={e => updateDraft(account.id, { webhook_base_url: e.target.value })} />
-                  {draft.webhook_base_url && (
-                    <div style={{ marginTop: 6, fontSize: 11, color: "var(--ink-muted)" }}>
-                      Set this as the Voice webhook in the Twilio console (HTTP POST):&nbsp;
-                      <code style={{ background: "var(--surface-2)", padding: "1px 5px", borderRadius: 4, fontFamily: "var(--font-mono)" }}>
-                        {draft.webhook_base_url}/twilio/voice
-                      </code>
-                    </div>
-                  )}
-                </div>
+                <ServerBaseUrlField
+                  urls={draft.webhook_base_urls}
+                  onChange={urls => updateDraft(account.id, { webhook_base_urls: urls })}
+                  hintLabel="Set this as the Voice webhook in the Twilio console (HTTP POST):"
+                  hintPath="/twilio/voice"
+                />
                 <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
                   <button className="btn btn-primary" onClick={() => handleSaveAccount(account)} disabled={savingAccountId === account.id}>
                     {savingAccountId === account.id ? "Saving..." : savedAccountId === account.id ? "Saved" : "Save"}
@@ -2422,11 +2491,12 @@ function PhoneNumbersView({ agents }: { agents: Agent[] }) {
                     onChange={e => setNewAccount(d => d && ({ ...d, auth_token: e.target.value }))} />
                 </div>
               </div>
-              <div className="field">
-                <label>Server base URL <span style={{ fontWeight: 400, color: "var(--ink-faint)" }}>(public URL of this server, use ngrok for local testing)</span></label>
-                <input className="input" placeholder="https://your-server.com" value={newAccount.webhook_base_url}
-                  onChange={e => setNewAccount(d => d && ({ ...d, webhook_base_url: e.target.value }))} />
-              </div>
+              <ServerBaseUrlField
+                urls={newAccount.webhook_base_urls}
+                onChange={urls => setNewAccount(d => d && ({ ...d, webhook_base_urls: urls }))}
+                hintLabel="Set this as the Voice webhook in the Twilio console (HTTP POST):"
+                hintPath="/twilio/voice"
+              />
               <div style={{ display: "flex", gap: 10 }}>
                 <button className="btn btn-primary" onClick={handleCreateAccount} disabled={savingAccountId === "new"}>
                   {savingAccountId === "new" ? "Adding..." : "Add account"}
@@ -2439,7 +2509,11 @@ function PhoneNumbersView({ agents }: { agents: Agent[] }) {
           </div>
         ) : (
           <button className="btn btn-ghost" style={{ alignSelf: "flex-start" }}
-            onClick={() => setNewAccount({ ...emptyAccountDraft(), webhook_base_url: accounts.find(a => a.is_default)?.webhook_base_url ?? "" })}>
+            onClick={() => {
+              const def = accounts.find(a => a.is_default);
+              const urls = def ? (def.webhook_base_urls?.length ? def.webhook_base_urls : (def.webhook_base_url ? [def.webhook_base_url] : [""])) : [""];
+              setNewAccount({ ...emptyAccountDraft(), webhook_base_urls: urls });
+            }}>
             <Icon name="plus" />Add Twilio account
           </button>
         )}
@@ -2569,19 +2643,12 @@ function PhoneNumbersView({ agents }: { agents: Agent[] }) {
                       value={draft.auth_token} onChange={e => updatePlivoDraft(account.id, { auth_token: e.target.value })} />
                   </div>
                 </div>
-                <div className="field">
-                  <label>Server base URL <span style={{ fontWeight: 400, color: "var(--ink-faint)" }}>(public URL of this server, use ngrok for local testing)</span></label>
-                  <input className="input" placeholder="https://your-server.com" value={draft.webhook_base_url}
-                    onChange={e => updatePlivoDraft(account.id, { webhook_base_url: e.target.value })} />
-                  {draft.webhook_base_url && (
-                    <div style={{ marginTop: 6, fontSize: 11, color: "var(--ink-muted)" }}>
-                      We auto-configure the Plivo Application&apos;s answer URL for you:&nbsp;
-                      <code style={{ background: "var(--surface-2)", padding: "1px 5px", borderRadius: 4, fontFamily: "var(--font-mono)" }}>
-                        {draft.webhook_base_url}/plivo/voice
-                      </code>
-                    </div>
-                  )}
-                </div>
+                <ServerBaseUrlField
+                  urls={draft.webhook_base_urls}
+                  onChange={urls => updatePlivoDraft(account.id, { webhook_base_urls: urls })}
+                  hintLabel="We auto-configure the Plivo Application's answer URL for you:"
+                  hintPath="/plivo/voice"
+                />
                 <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
                   <button className="btn btn-primary" onClick={() => handleSavePlivoAccount(account)} disabled={savingPlivoAccountId === account.id}>
                     {savingPlivoAccountId === account.id ? "Saving..." : savedPlivoAccountId === account.id ? "Saved" : "Save"}
@@ -2622,11 +2689,12 @@ function PhoneNumbersView({ agents }: { agents: Agent[] }) {
                     onChange={e => setNewPlivoAccount(d => d && ({ ...d, auth_token: e.target.value }))} />
                 </div>
               </div>
-              <div className="field">
-                <label>Server base URL <span style={{ fontWeight: 400, color: "var(--ink-faint)" }}>(public URL of this server, use ngrok for local testing)</span></label>
-                <input className="input" placeholder="https://your-server.com" value={newPlivoAccount.webhook_base_url}
-                  onChange={e => setNewPlivoAccount(d => d && ({ ...d, webhook_base_url: e.target.value }))} />
-              </div>
+              <ServerBaseUrlField
+                urls={newPlivoAccount.webhook_base_urls}
+                onChange={urls => setNewPlivoAccount(d => d && ({ ...d, webhook_base_urls: urls }))}
+                hintLabel="We auto-configure the Plivo Application's answer URL for you:"
+                hintPath="/plivo/voice"
+              />
               <div style={{ display: "flex", gap: 10 }}>
                 <button className="btn btn-primary" onClick={handleCreatePlivoAccount} disabled={savingPlivoAccountId === "new"}>
                   {savingPlivoAccountId === "new" ? "Adding..." : "Add account"}
@@ -2639,7 +2707,11 @@ function PhoneNumbersView({ agents }: { agents: Agent[] }) {
           </div>
         ) : (
           <button className="btn btn-ghost" style={{ alignSelf: "flex-start" }}
-            onClick={() => setNewPlivoAccount({ ...emptyAccountDraft(), webhook_base_url: plivoAccounts.find(a => a.is_default)?.webhook_base_url ?? "" })}>
+            onClick={() => {
+              const def = plivoAccounts.find(a => a.is_default);
+              const urls = def ? (def.webhook_base_urls?.length ? def.webhook_base_urls : (def.webhook_base_url ? [def.webhook_base_url] : [""])) : [""];
+              setNewPlivoAccount({ ...emptyAccountDraft(), webhook_base_urls: urls });
+            }}>
             <Icon name="plus" />Add Plivo account
           </button>
         )}

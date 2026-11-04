@@ -95,7 +95,14 @@ async def resolve_call_context(
             f"\nYou are calling {c_name} for a{'n' if c_role and c_role[0].lower() in 'aeiou' else ''} {c_role or 'interview'} interview."
             + (f"\nThe interview is scheduled for: {sched_formatted}." if sched_formatted else "")
             + f"\nYou are calling {call_lead} minutes before the interview time as a pre-interview reminder."
-            + (f"\n\nCandidate resume:\n{c_resume}" if c_resume else "")
+            + (
+                f"\n\nCandidate resume:\n{c_resume}"
+                f"\n\nIf the candidate asks about their own background, experience, skills, or anything else "
+                f"on their resume, check the resume text above first and answer from what's actually written "
+                f"there - don't guess or make something up, and don't ask them to repeat information that's "
+                f"already in it."
+                if c_resume else ""
+            )
             + (f"\n\nHR notes about this candidate:\n{c_notes}" if c_notes else "")
             + (
                 f"\n\nAsk this candidate the following specific questions, one at a time:\n{questions_to_ask}"
@@ -106,8 +113,17 @@ async def resolve_call_context(
                 f"mapping is for your internal use only, never say a question_id out loud to the caller:\n{id_mapping}"
                 if ctx.questions else ""
             )
-            + "\n\nStart by greeting them by name and confirming you're calling from HR."
-            + "\nMention the interview time when greeting them. Ask the specific questions listed. Be professional and friendly."
+            + (
+                f"\n\nYou already asked to speak with {c_name} by name - that line is the first message in "
+                f"this conversation. Listen to how they respond before saying anything else: if they confirm "
+                f"it's them (e.g. \"yes\", \"this is him/her\", \"speaking\"), go ahead and mention the "
+                f"interview time, then ask the specific questions listed, one at a time. If their reply "
+                f"suggests it's the wrong person, they ask who's calling, or they sound unsure, clarify who "
+                f"you're trying to reach before saying anything about the interview or the questions - never "
+                f"launch straight into that content on their very first reply without first being reasonably "
+                f"sure you're actually speaking with {c_name}."
+            )
+            + "\nBe professional, friendly, and concise."
         )
         ctx.greeting_override = f"Hello, may I speak with {c_name}? This is an automated call from HR regarding your upcoming interview."
         return ctx
@@ -145,7 +161,14 @@ async def resolve_call_context(
         ctx.extra_system_context = (
             f"\n\n--- CURRENT CALL CONTEXT ---"
             f"\nYou are calling {c_name} for a brief screening call."
-            + (f"\n\nCandidate resume:\n{c_resume}" if c_resume else "")
+            + (
+                f"\n\nCandidate resume:\n{c_resume}"
+                f"\n\nIf the candidate asks about their own background, experience, skills, or anything else "
+                f"on their resume, check the resume text above first and answer from what's actually written "
+                f"there - don't guess or make something up, and don't ask them to repeat information that's "
+                f"already in it."
+                if c_resume else ""
+            )
             + (f"\n\nHR notes about this candidate:\n{c_notes}" if c_notes else "")
             + (
                 f"\n\nThese are the ONLY questions to ask, in this exact order. Do not ask "
@@ -156,8 +179,16 @@ async def resolve_call_context(
                 f"'mapping' out loud to the caller:\n{id_mapping}"
                 if questions_to_ask else ""
             )
-            + "\n\nStart by greeting them by name and confirming you're calling regarding their application."
-            + "\nBe professional and friendly. Ask one question at a time and wait for their answer."
+            + (
+                f"\n\nYou already asked to speak with {c_name} by name - that line is the first message in "
+                f"this conversation. Listen to how they respond before saying anything else: if they confirm "
+                f"it's them, go ahead and ask the screening questions, one at a time, waiting for their "
+                f"answer each time. If their reply suggests it's the wrong person or they ask who's calling, "
+                f"clarify who you're trying to reach before asking any question - never launch straight into "
+                f"the questions on their very first reply without first being reasonably sure you're "
+                f"actually speaking with {c_name}."
+            )
+            + "\nBe professional and friendly."
             + "\nOnce every question above has been asked and answered, thank them and end the call politely."
         )
         ctx.greeting_override = f"Hello, may I speak with {c_name}? This is a quick screening call regarding your application."

@@ -1,6 +1,13 @@
 from app.core.database import get_supabase
 
 
+def _clean_urls(urls: list[str] | None) -> list[str]:
+    """Mirrors app/telephony/twilio/user_twilio_settings_repo.py's helper."""
+    if not urls:
+        return []
+    return [u.strip().rstrip("/") for u in urls if u and u.strip()]
+
+
 def get_plivo_settings(user_id: str) -> dict:
     """Returns the user's default Plivo account. Mirrors
     app/user_twilio_settings_repo.py's get_twilio_settings."""
@@ -96,18 +103,21 @@ def create_plivo_account(
     auth_token: str | None = None,
     webhook_base_url: str | None = None,
     is_default: bool = False,
+    webhook_base_urls: list[str] | None = None,
 ) -> dict:
     db = get_supabase()
     existing = db.table("user_plivo_settings").select("id").eq("user_id", user_id).execute()
     make_default = is_default or not existing.data
     if make_default:
         db.table("user_plivo_settings").update({"is_default": False}).eq("user_id", user_id).execute()
+    saved_urls = _clean_urls(webhook_base_urls) or ([webhook_base_url.rstrip("/")] if webhook_base_url else [])
     payload = {
         "user_id": user_id,
         "label": label or "Plivo account",
         "auth_id": auth_id or "",
         "auth_token": auth_token or "",
         "webhook_base_url": (webhook_base_url or "").rstrip("/"),
+        "webhook_base_urls": saved_urls,
         "is_default": make_default,
     }
     result = db.table("user_plivo_settings").insert(payload).execute()
@@ -117,10 +127,12 @@ def create_plivo_account(
 
 
 def update_plivo_account(account_id: str, user_id: str, **fields) -> dict:
-    allowed = {"label", "auth_id", "auth_token", "webhook_base_url"}
+    allowed = {"label", "auth_id", "auth_token", "webhook_base_url", "webhook_base_urls"}
     update = {k: v for k, v in fields.items() if k in allowed}
     if "webhook_base_url" in update:
         update["webhook_base_url"] = (update["webhook_base_url"] or "").rstrip("/")
+    if "webhook_base_urls" in update:
+        update["webhook_base_urls"] = _clean_urls(update["webhook_base_urls"])
     db = get_supabase()
     result = (
         db.table("user_plivo_settings")

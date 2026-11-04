@@ -216,14 +216,18 @@ class TestPipelineFunctionSignatures:
             ws.send_text(json.dumps({"event": "stop", "streamSid": STREAM_SID}))
 
         calls = mock_pipeline["save_message_calls"]
-        assert len(calls) == 2, f"expected user+assistant save_message calls, got {calls}"
-        # First call: the user's transcribed utterance
-        user_args = calls[0][0]
+        assert len(calls) == 3, f"expected greeting+user+assistant save_message calls, got {calls}"
+        # First call: the agent's opening greeting (first_message), spoken before any user turn
+        greeting_args = calls[0][0]
+        assert greeting_args[2] == "assistant"
+        assert greeting_args[3] == "Hi there, how can I help?"
+        # Second call: the user's transcribed utterance
+        user_args = calls[1][0]
         assert user_args[1] == TEST_USER_ID  # (conversation_id, user_id, role, content)
         assert user_args[2] == "user"
         assert "what can you help me with" in user_args[3]
-        # Second call: the assistant's reply
-        assistant_args = calls[1][0]
+        # Third call: the assistant's reply
+        assistant_args = calls[2][0]
         assert assistant_args[2] == "assistant"
 
 
@@ -421,7 +425,7 @@ class TestCampaignCallLiveToolRecording:
 
         mock_get_campaign_candidate.assert_not_called()
         calls = mock_pipeline["save_message_calls"]
-        assert len(calls) == 2  # unchanged from TestPipelineFunctionSignatures - plain text path, no tool call
+        assert len(calls) == 3  # greeting + user + assistant, same shape as TestPipelineFunctionSignatures
 
 
 def _apply_barge_in_debounce(vad_results: list[bool], needed_streak: int = 4) -> list[bool]:
@@ -524,8 +528,8 @@ class TestDeepgramFallback:
 
         assert len(fallback_calls) == 1, "prerecorded fallback should have been invoked exactly once"
         calls = mock_pipeline["save_message_calls"]
-        assert len(calls) == 2
-        assert "recovered via prerecorded fallback" in calls[0][0][3]
+        assert len(calls) == 3  # greeting + user (recovered via fallback) + assistant reply
+        assert "recovered via prerecorded fallback" in calls[1][0][3]
 
 
 class TestMuLawDecodeCorrectness:
@@ -875,7 +879,9 @@ class TestRetrievalFiller:
         calls = mock_pipeline["save_message_calls"]
         assistant_calls = [c for c in calls if c[0][2] == "assistant"]
         assert assistant_calls, f"expected an assistant save_message call, got {calls}"
-        full_reply = assistant_calls[0][0][3]
+        # Last, not first - the opening greeting is also an "assistant" save_message
+        # call now, and it's always the first one, well before this turn's reply.
+        full_reply = assistant_calls[-1][0][3]
 
         assert any(phrase in full_reply for phrase in FILLER_PHRASES), (
             f"expected a filler phrase to cover the slow LLM response, got: {full_reply!r}"

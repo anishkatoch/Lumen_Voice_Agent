@@ -266,9 +266,9 @@ export const API = {
 
   // Twilio Accounts (multiple connections per user)
   twilioAccounts: () => API.request<TwilioAccount[]>("/api/twilio/accounts"),
-  addTwilioAccount: (data: { label?: string; account_sid?: string; auth_token?: string; webhook_base_url?: string; is_default?: boolean }) =>
+  addTwilioAccount: (data: { label?: string; account_sid?: string; auth_token?: string; webhook_base_url?: string; webhook_base_urls?: string[]; is_default?: boolean }) =>
     API.request<TwilioAccount>("/api/twilio/accounts", { method: "POST", body: JSON.stringify(data) }),
-  updateTwilioAccount: (accountId: string, data: { label?: string; account_sid?: string; auth_token?: string; webhook_base_url?: string }) =>
+  updateTwilioAccount: (accountId: string, data: { label?: string; account_sid?: string; auth_token?: string; webhook_base_url?: string; webhook_base_urls?: string[] }) =>
     API.request<TwilioAccount>(`/api/twilio/accounts/${accountId}`, { method: "PUT", body: JSON.stringify(data) }),
   deleteTwilioAccount: (accountId: string) =>
     API.request<void>(`/api/twilio/accounts/${accountId}`, { method: "DELETE" }),
@@ -290,9 +290,9 @@ export const API = {
 
   // Plivo Accounts (multiple connections per user)
   plivoAccounts: () => API.request<PlivoAccount[]>("/api/plivo/accounts"),
-  addPlivoAccount: (data: { label?: string; auth_id?: string; auth_token?: string; webhook_base_url?: string; is_default?: boolean }) =>
+  addPlivoAccount: (data: { label?: string; auth_id?: string; auth_token?: string; webhook_base_url?: string; webhook_base_urls?: string[]; is_default?: boolean }) =>
     API.request<PlivoAccount>("/api/plivo/accounts", { method: "POST", body: JSON.stringify(data) }),
-  updatePlivoAccount: (accountId: string, data: { label?: string; auth_id?: string; auth_token?: string; webhook_base_url?: string }) =>
+  updatePlivoAccount: (accountId: string, data: { label?: string; auth_id?: string; auth_token?: string; webhook_base_url?: string; webhook_base_urls?: string[] }) =>
     API.request<PlivoAccount>(`/api/plivo/accounts/${accountId}`, { method: "PUT", body: JSON.stringify(data) }),
   deletePlivoAccount: (accountId: string) =>
     API.request<void>(`/api/plivo/accounts/${accountId}`, { method: "DELETE" }),
@@ -519,6 +519,7 @@ export interface TwilioAccount {
   auth_token: string;
   auth_token_set?: boolean;
   webhook_base_url: string;
+  webhook_base_urls?: string[];
   is_default: boolean;
   created_at?: string;
   updated_at?: string;
@@ -543,6 +544,7 @@ export interface PlivoAccount {
   auth_token: string;
   auth_token_set?: boolean;
   webhook_base_url: string;
+  webhook_base_urls?: string[];
   is_default: boolean;
   created_at?: string;
   updated_at?: string;
