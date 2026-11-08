@@ -180,7 +180,7 @@ if os.path.isdir(_FRONTEND):
     @app.get("/admin/", include_in_schema=False)
     @app.get("/admin", include_in_schema=False)
     async def _admin_page():
-        return FileResponse(os.path.join(_FRONTEND, "agents", "index.html"))
+        return FileResponse(os.path.join(_FRONTEND, "admin", "index.html"))
 
     @app.get("/", include_in_schema=False)
     async def _root_page():
