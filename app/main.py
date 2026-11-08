@@ -22,6 +22,23 @@ app = FastAPI(title="Voice Agent API")
 async def _prewarm():
     """Pre-warm OpenAI and ElevenLabs TCP connections so first user call is fast."""
     async def _warm_openai():
+        from app.core.config import AZURE_OPENAI_API_KEY, AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_VERSION, AZURE_OPENAI_DEPLOYMENT
+        if AZURE_OPENAI_API_KEY and AZURE_OPENAI_ENDPOINT:
+            try:
+                from openai import AsyncAzureOpenAI
+                c = AsyncAzureOpenAI(
+                    api_key=AZURE_OPENAI_API_KEY,
+                    azure_endpoint=AZURE_OPENAI_ENDPOINT,
+                    api_version=AZURE_OPENAI_API_VERSION,
+                )
+                await c.chat.completions.create(
+                    model=AZURE_OPENAI_DEPLOYMENT, messages=[{"role": "user", "content": "hi"}], max_tokens=1
+                )
+                print("[Prewarm] Azure OpenAI ✓")
+                return
+            except Exception as e:
+                print(f"[Prewarm] Azure OpenAI failed: {e}")
+
         try:
             from openai import AsyncOpenAI
             from app.core.config import OPENAI_API_KEY
