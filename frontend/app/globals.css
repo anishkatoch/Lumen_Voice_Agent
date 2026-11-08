@@ -297,9 +297,9 @@ body {
 .lumenc .field label { display: block; font-size: 12.5px; font-weight: 600; color: var(--ink-2); margin-bottom: 6px; }
 .lumenc .input, .lumenc .textarea, .lumenc select.select { width: 100%; max-width: 640px; border: 1px solid var(--border); background: var(--bg); border-radius: var(--r-md); padding: 10px 12px; font-size: 13.5px; color: var(--ink); outline: none; transition: border-color .15s, box-shadow .15s; }
 .lumenc .input:focus, .lumenc .textarea:focus, .lumenc select.select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-ring); }
-.lumenc .textarea { max-width: 74ch; resize: vertical; min-height: 120px; font-family: var(--font-body); line-height: 1.6; }
+.lumenc .textarea { max-width: 100%; resize: vertical; min-height: 120px; font-family: var(--font-body); line-height: 1.6; }
 .lumenc textarea.textarea[rows="6"], .lumenc textarea.textarea[rows="8"] { min-height: 280px; }
-.lumenc .char-count { max-width: 74ch; text-align: right; font-size: 11px; color: var(--ink-faint); margin-top: 4px; font-family: var(--font-mono); }
+.lumenc .char-count { max-width: 100%; text-align: right; font-size: 11px; color: var(--ink-faint); margin-top: 4px; font-family: var(--font-mono); }
 .lumenc .kb-note { background: var(--accent-soft); border-radius: var(--r-md); padding: 12px 14px; display: flex; gap: 10px; align-items: flex-start; }
 .lumenc .kb-note .icon { color: var(--accent); width: 16px; height: 16px; margin-top: 1px; }
 .lumenc .kb-note b { color: var(--accent-strong); font-size: 13px; display: block; margin-bottom: 2px; }
