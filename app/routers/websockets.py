@@ -13,6 +13,10 @@ from app.core.config import (
 
 router = APIRouter(tags=["voice:websocket"])
 
+# Speak a filler if RAG/KB lookup + LLM round-trip hasn't produced anything by
+# then. Matches telephony_twilio.py / telephony_plivo.py.
+RETRIEVAL_FILLER_DELAY_SECONDS = 1.2
+
 
 @router.websocket("/ws/{token}")
 async def websocket_endpoint(websocket: WebSocket, token: str):
@@ -527,6 +531,7 @@ async def agent_websocket_endpoint(websocket: WebSocket, agent_id: str, token: s
 
     async def run_agent_pipeline(pcm_bytes: bytes, sr: int = 16000,
                                  transcript_override: str | None = None, dg_stream=None):
+        _retrieval_filler_task: asyncio.Task | None = None
         try:
             t0 = time.time()
             if transcript_override:
@@ -545,6 +550,45 @@ async def agent_websocket_endpoint(websocket: WebSocket, agent_id: str, token: s
 
             if not transcript_override:
                 await manager.send_json(websocket, {"type": "transcript", "text": transcript})
+
+            from app.voice.llm_service import (
+                build_system_prompt, build_openai_tool,
+                detect_tool_call, stream_tool_result_response,
+                stream_text_as_sentences, get_filler_phrases,
+            )
+
+            full_reply_parts: list[str] = []
+
+            async def _speak_filler_audio(text: str):
+                session.state = AgentState.SPEAKING
+                session.speaking_started_at = time.time()
+                session.barge_in_armed = False
+                await manager.send_json(websocket, {"type": "state", "state": "SPEAKING"})
+                async for chunk in text_to_speech_stream(text):
+                    if session.state != AgentState.SPEAKING:
+                        break
+                    await manager.send_bytes(websocket, chunk)
+                if session.state == AgentState.SPEAKING:
+                    await manager.send_json(websocket, {"type": "sentence_end"})
+
+            async def _cover_retrieval_delay():
+                # RAG/KB lookups and LLM round-trips can occasionally run long
+                # before anything is said. If nothing real has been spoken
+                # within this window, say a filler phrase so the user doesn't
+                # hear dead air, mirroring the phone-call pipelines
+                # (telephony_twilio.py / telephony_plivo.py). On anything
+                # fast this never fires, so it no longer speaks on every
+                # turn the way the old unconditional pre-tool-call filler did.
+                await asyncio.sleep(RETRIEVAL_FILLER_DELAY_SECONDS)
+                filler = random.choice(get_filler_phrases(agent))
+                full_reply_parts.append(filler)
+                await _speak_filler_audio(filler)
+
+            def _cancel_retrieval_filler():
+                if _retrieval_filler_task and not _retrieval_filler_task.done():
+                    _retrieval_filler_task.cancel()
+
+            _retrieval_filler_task = asyncio.create_task(_cover_retrieval_delay())
 
             t1 = time.time()
             gather_tasks = [
@@ -570,12 +614,6 @@ async def agent_websocket_endpoint(websocket: WebSocket, agent_id: str, token: s
             session.barge_in_armed = False
             await manager.send_json(websocket, {"type": "state", "state": "SPEAKING"})
 
-            from app.voice.llm_service import (
-                build_system_prompt, build_openai_tool,
-                detect_tool_call, stream_tool_result_response,
-                stream_text_as_sentences, get_filler_phrases,
-            )
-
             system_str = build_system_prompt(
                 agent_system_prompt, long_term_memory, rag_context, agent_kb_instructions,
                 has_kb=bool(doc_ids),
@@ -583,8 +621,7 @@ async def agent_websocket_endpoint(websocket: WebSocket, agent_id: str, token: s
             conv_messages = list(session_history) + [{"role": "user", "content": transcript}]
 
             async def _tts_stream_sentences(sentence_gen):
-                """Stream sentences through TTS, returning the full reply text."""
-                parts: list[str] = []
+                """Stream sentences through TTS, appending to full_reply_parts."""
                 first = True
                 t2 = time.time()
                 try:
@@ -593,8 +630,9 @@ async def agent_websocket_endpoint(websocket: WebSocket, agent_id: str, token: s
                             break
                         if first:
                             print(f"[Agent Pipeline] LLM first sentence: {time.time()-t2:.2f}s")
+                            _cancel_retrieval_filler()
                             first = False
-                        parts.append(sentence)
+                        full_reply_parts.append(sentence)
                         t_tts = time.time()
                         n = 0
                         async for chunk in text_to_speech_stream(sentence):
@@ -608,9 +646,7 @@ async def agent_websocket_endpoint(websocket: WebSocket, agent_id: str, token: s
                             await manager.send_json(websocket, {"type": "sentence_end"})
                 except asyncio.CancelledError:
                     session.state = AgentState.LISTENING
-                return " ".join(parts)
 
-            full_reply = ""
             try:
                 if _tool_functions:
                     # ── Tool-call path ──────────────────────────────────────────
@@ -620,15 +656,10 @@ async def agent_websocket_endpoint(websocket: WebSocket, agent_id: str, token: s
                     )
                     if tool_name and call_id:
                         print(f"[Agent Pipeline] Tool call: {tool_name}({tool_args})")
-                        # Speak a filler phrase immediately so the user doesn't hear silence
-                        filler = random.choice(get_filler_phrases(agent))
-                        async for chunk in text_to_speech_stream(filler):
-                            if session.state != AgentState.SPEAKING:
-                                break
-                            await manager.send_bytes(websocket, chunk)
-                        await manager.send_json(websocket, {"type": "sentence_end"})
 
-                        # Execute the webhook
+                        # Execute the webhook - the retrieval filler (already
+                        # running) covers this if it's slow; nothing extra
+                        # to speak here.
                         fn = next((f for f in _tool_functions if f["name"] == tool_name), None)
                         tool_result = json.dumps({"error": "function not found"})
                         if fn:
@@ -636,19 +667,19 @@ async def agent_websocket_endpoint(websocket: WebSocket, agent_id: str, token: s
                             print(f"[Agent Pipeline] Webhook result: {tool_result[:120]}")
 
                         # Second LLM call streams the actual answer using the tool result
-                        full_reply = await _tts_stream_sentences(
+                        await _tts_stream_sentences(
                             stream_tool_result_response(
                                 conv_messages, system_str, tool_name, call_id, tool_args, tool_result
                             )
                         )
                     else:
                         # LLM chose to answer directly without calling any tool
-                        full_reply = await _tts_stream_sentences(
+                        await _tts_stream_sentences(
                             stream_text_as_sentences(text or "")
                         )
                 else:
                     # ── Normal streaming path (no tools configured) ─────────────
-                    full_reply = await _tts_stream_sentences(
+                    await _tts_stream_sentences(
                         generate_response_stream(
                             user_message=transcript,
                             session_history=session_history,
@@ -660,7 +691,10 @@ async def agent_websocket_endpoint(websocket: WebSocket, agent_id: str, token: s
                     )
             except asyncio.CancelledError:
                 session.state = AgentState.LISTENING
+            finally:
+                _cancel_retrieval_filler()
 
+            full_reply = " ".join(full_reply_parts).strip()
             if full_reply:
                 await manager.send_json(websocket, {"type": "reply", "text": full_reply})
                 asyncio.create_task(asyncio.to_thread(save_message, conversation_id, user_id, "assistant", full_reply))
@@ -675,6 +709,8 @@ async def agent_websocket_endpoint(websocket: WebSocket, agent_id: str, token: s
                 asyncio.create_task(_update_agent_memory(user_id, conversation_id))
 
         except Exception as e:
+            if _retrieval_filler_task and not _retrieval_filler_task.done():
+                _retrieval_filler_task.cancel()
             print(f"[Agent WS] Pipeline error: {e}")
             import traceback; traceback.print_exc()
             session.state = AgentState.LISTENING
