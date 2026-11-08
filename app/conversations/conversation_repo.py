@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+from app.core.config import CALL_COST_PER_MINUTE_USD
 from app.core.database import get_supabase
 
 
@@ -67,6 +68,37 @@ def set_call_status_by_sid_if_unconnected(call_sid: str, status: str, failure_re
         }).eq("call_sid", call_sid).eq("call_status", "ringing").execute()
     except Exception as e:
         print(f"[Call Analytics] Failed to record call outcome for call_sid {call_sid}: {e}")
+
+
+def set_call_duration_and_cost(conversation_id: str) -> None:
+    """Best-effort, same pattern as set_call_status above: never raises.
+    Computes duration_seconds as now() - created_at and a cost_usd estimate
+    (duration * CALL_COST_PER_MINUTE_USD, not a real provider-billed amount),
+    and saves both. Called once per call, at call-end."""
+    try:
+        db = get_supabase()
+        result = (
+            db.table("conversations")
+            .select("created_at")
+            .eq("id", conversation_id)
+            .limit(1)
+            .execute()
+        )
+        if not result.data:
+            return
+        created_at = result.data[0]["created_at"]
+        if isinstance(created_at, str):
+            created_at = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+        duration_seconds = max(0, round((datetime.now(timezone.utc) - created_at).total_seconds()))
+        cost_usd = round((duration_seconds / 60) * CALL_COST_PER_MINUTE_USD, 4)
+        db.table("conversations").update({
+            "duration_seconds": duration_seconds,
+            "cost_usd": cost_usd,
+        }).eq("id", conversation_id).execute()
+    except Exception as e:
+        print(f"[Call Analytics] Failed to record call duration/cost for {conversation_id}: {e}")
 
 
 def get_conversation_by_id(conversation_id: str) -> dict | None:

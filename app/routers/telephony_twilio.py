@@ -969,6 +969,8 @@ async def twilio_stream_endpoint(websocket: WebSocket):
                 set_call_status, conversation_id,
                 "failed" if _call_failure_reason else "completed", _call_failure_reason,
             )
+            from app.conversations.conversation_repo import set_call_duration_and_cost
+            await asyncio.to_thread(set_call_duration_and_cost, conversation_id)
             try:
                 from app.conversations.message_repo import get_conversation_history
                 from app.conversations.conversation_repo import set_call_summary

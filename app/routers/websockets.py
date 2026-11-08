@@ -17,7 +17,7 @@ router = APIRouter(tags=["voice:websocket"])
 @router.websocket("/ws/{token}")
 async def websocket_endpoint(websocket: WebSocket, token: str):
     from app.core.websocket_manager import manager, UserSession, AgentState
-    from app.conversations.conversation_repo import create_conversation, enforce_session_cap, cleanup_expired_sessions, set_call_status
+    from app.conversations.conversation_repo import create_conversation, enforce_session_cap, cleanup_expired_sessions, set_call_status, set_call_duration_and_cost
     from app.conversations.message_repo import save_message, get_session_messages
     from app.voice.deepgram_service import StreamingTranscriber, get_streaming_transcriber, transcribe_audio_smart
     from app.conversations.memory_repo import get_user_memory, upsert_user_memory
@@ -372,12 +372,13 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
                 set_call_status, conversation_id,
                 "failed" if _ws_failure_reason else "completed", _ws_failure_reason,
             ))
+            loop.create_task(asyncio.to_thread(set_call_duration_and_cost, conversation_id))
 
 @router.websocket("/ws/agent/{agent_id}/{token}")
 async def agent_websocket_endpoint(websocket: WebSocket, agent_id: str, token: str, docs: str = ""):
     """Voice session tied to a specific agent - uses agent system prompt + RAG over agent docs."""
     from app.core.websocket_manager import manager, UserSession, AgentState
-    from app.conversations.conversation_repo import create_conversation, enforce_session_cap, cleanup_expired_sessions, set_call_status
+    from app.conversations.conversation_repo import create_conversation, enforce_session_cap, cleanup_expired_sessions, set_call_status, set_call_duration_and_cost
     from app.conversations.message_repo import save_message, get_session_messages
     from app.voice.deepgram_service import StreamingTranscriber, get_streaming_transcriber, transcribe_audio_smart
     from app.conversations.memory_repo import get_user_memory, upsert_user_memory
@@ -831,3 +832,4 @@ async def agent_websocket_endpoint(websocket: WebSocket, agent_id: str, token: s
                 set_call_status, conversation_id,
                 "failed" if _ws_failure_reason else "completed", _ws_failure_reason,
             ))
+            loop.create_task(asyncio.to_thread(set_call_duration_and_cost, conversation_id))

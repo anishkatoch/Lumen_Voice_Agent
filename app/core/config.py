@@ -119,3 +119,7 @@ RAG_EMBEDDING_MODEL     = cfg("rag", "embedding_model", default="text-embedding-
 
 SESSION_MAX_PER_USER    = int(cfg("sessions", "max_per_user",  default=5))
 SESSION_EXPIRY_DAYS     = int(cfg("sessions", "expiry_days",   default=5))
+
+# Flat per-minute estimate used to compute Call Analytics' cost_usd - not a
+# real billed amount from Twilio/OpenAI/ElevenLabs, just a configurable rate.
+CALL_COST_PER_MINUTE_USD = float(cfg("call_analytics", "cost_per_minute_usd", default=0.0))

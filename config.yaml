@@ -126,6 +126,10 @@ sessions:
   max_per_user:    5   # keep only the latest N sessions; oldest auto-deleted when exceeded
   expiry_days:     5   # delete sessions whose last message is older than N days
 
+# ─── Call Analytics ─────────────────────────────────────────────────
+call_analytics:
+  cost_per_minute_usd: 0.0   # flat rate used to estimate cost_usd on each call; not a real provider bill
+
 # ─── RAG ─────────────────────────────────────────────────────────────
 rag:
   top_k: 3
