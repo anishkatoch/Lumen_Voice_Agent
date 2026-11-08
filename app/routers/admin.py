@@ -75,3 +75,54 @@ async def update_admin_config(request: Request, current_user: dict = Depends(get
     from app.admin.admin_config_service import save, get_all
     save(updates)
     return get_all()
+
+@router.get("/api/admin/status")
+async def admin_system_status(current_user: dict = Depends(get_current_user)):
+    """Live view of which providers are actually configured via env vars, and
+    which one will really handle the next call given the current admin config
+    (e.g. Azure OpenAI silently taking over as primary when llm_provider is
+    "openai" - this is otherwise invisible from the Providers tab)."""
+    _require_admin(current_user)
+    import os
+    from app.admin.admin_config_service import get_all
+    from app.core.config import (
+        AZURE_OPENAI_API_KEY, AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_DEPLOYMENT,
+        OPENAI_API_KEY, DEEPGRAM_API_KEY, ELEVENLABS_API_KEY,
+    )
+
+    cfg = get_all()
+    azure_configured = bool(AZURE_OPENAI_API_KEY and AZURE_OPENAI_ENDPOINT)
+    llm_provider = cfg.get("llm_provider", "openai")
+
+    if llm_provider == "openai" and azure_configured:
+        effective_llm = {"provider": "azure_openai", "model": AZURE_OPENAI_DEPLOYMENT,
+                          "note": "Azure OpenAI is used first; plain OpenAI is only the fallback if Azure errors."}
+    else:
+        effective_llm = {"provider": llm_provider, "model": cfg.get("llm_model"), "note": None}
+
+    return {
+        "providers": {
+            "azure_openai": {"configured": azure_configured, "endpoint": AZURE_OPENAI_ENDPOINT or None,
+                              "deployment": AZURE_OPENAI_DEPLOYMENT if azure_configured else None},
+            "openai":       {"configured": bool(OPENAI_API_KEY)},
+            "groq":         {"configured": bool(os.environ.get("GROQ_API_KEY"))},
+            "anthropic":    {"configured": bool(os.environ.get("ANTHROPIC_API_KEY") or cfg.get("llm_api_key"))},
+            "deepgram":     {"configured": bool(DEEPGRAM_API_KEY)},
+            "elevenlabs":   {"configured": bool(ELEVENLABS_API_KEY)},
+        },
+        "active_pipeline": {
+            "stt": cfg.get("stt_provider"),
+            "tts": cfg.get("tts_provider"),
+            "llm": effective_llm,
+        },
+    }
+
+@router.post("/api/admin/test-llm")
+async def admin_test_llm(current_user: dict = Depends(get_current_user)):
+    """Fires one real, minimal completion through the currently configured LLM
+    chain (same resolution order a live call would use) and reports whether it
+    actually works - this is what answers "I can't tell if my model is set up
+    right" without needing to place a real voice call."""
+    _require_admin(current_user)
+    from app.voice.llm_service import test_llm_connection
+    return await test_llm_connection()

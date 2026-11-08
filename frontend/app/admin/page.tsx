@@ -2,7 +2,8 @@
 import { useState, useEffect, useCallback } from "react";
 import {
   Settings, Plug, HardDrive, KeyRound, LogOut, Check, X, RefreshCw,
-  Eye, EyeOff, Loader2,
+  Eye, EyeOff, Loader2, Zap, Mic, Cpu, ChevronRight, CheckCircle2,
+  XCircle, Activity, PlayCircle,
 } from "lucide-react";
 
 const BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8004";
@@ -51,12 +52,39 @@ interface KbRequest {
 }
 interface KbUser { user_id: string; granted_at?: string | null; }
 
-type Tab = "providers" | "storage" | "kb";
+interface ProviderStatus { configured: boolean; endpoint?: string | null; deployment?: string | null; }
+interface SystemStatus {
+  providers: {
+    azure_openai: ProviderStatus; openai: ProviderStatus; groq: ProviderStatus;
+    anthropic: ProviderStatus; deepgram: ProviderStatus; elevenlabs: ProviderStatus;
+  };
+  active_pipeline: {
+    stt: string; tts: string;
+    llm: { provider: string; model: string; note: string | null };
+  };
+}
+
+interface LlmTestResult {
+  ok: boolean; provider: string; model: string; latency_ms?: number;
+  error?: string; attempts?: { provider: string; model: string; latency_ms: number; error: string }[];
+}
+
+type Tab = "providers" | "storage" | "kb" | "status";
 const NAV_ITEMS: { id: Tab; label: string; icon: typeof Plug }[] = [
   { id: "providers", label: "Providers", icon: Plug },
+  { id: "status",    label: "System status", icon: Activity },
   { id: "storage",   label: "Storage",   icon: HardDrive },
   { id: "kb",        label: "KB Access", icon: KeyRound },
 ];
+
+// Curated model lists so the admin picks from models that actually exist,
+// instead of guessing a free-text string - "Custom..." still escapes to a
+// text field for anything not listed (new releases, fine-tunes, etc).
+const MODEL_OPTIONS: Record<string, string[]> = {
+  openai: ["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini", "gpt-4.1", "gpt-4.1-nano", "gpt-5-mini", "gpt-5", "o3-mini", "o3"],
+  groq: ["llama-3.1-8b-instant", "llama-3.3-70b-versatile", "mixtral-8x7b-32768", "gemma2-9b-it"],
+  anthropic: ["claude-haiku-4-5", "claude-sonnet-4-5", "claude-opus-4-5"],
+};
 
 // ── Sub-components ────────────────────────────────────────────────────────────
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
@@ -143,14 +171,138 @@ function SaveButton({ saving, saved, onClick, label }: { saving: boolean; saved:
   );
 }
 
+function ModelSelect({ label, value, onChange, options, hint, customPlaceholder }: {
+  label: string; value: string; onChange: (v: string) => void; options: string[];
+  hint?: string; customPlaceholder: string;
+}) {
+  const isKnown = options.includes(value);
+  const [custom, setCustom] = useState(!isKnown);
+  useEffect(() => { setCustom(!options.includes(value)); }, [value, options]);
+
+  return (
+    <div className="field">
+      <label>{label}</label>
+      {!custom ? (
+        <select className="select" value={value}
+          onChange={e => e.target.value === "__custom__" ? setCustom(true) : onChange(e.target.value)}>
+          {options.map(m => <option key={m} value={m}>{m}</option>)}
+          <option value="__custom__">Custom…</option>
+        </select>
+      ) : (
+        <div style={{ display: "flex", gap: 8 }}>
+          <input className="input" value={value} onChange={e => onChange(e.target.value)} placeholder={customPlaceholder} autoFocus />
+          {options.length > 0 && (
+            <button type="button" className="btn btn-ghost btn-sm" onClick={() => { setCustom(false); onChange(options[0]); }}>
+              Use list
+            </button>
+          )}
+        </div>
+      )}
+      {hint && <p style={{ fontSize: 12, color: "var(--ink-muted)", marginTop: 5, lineHeight: 1.5 }}>{hint}</p>}
+    </div>
+  );
+}
+
+const PIPELINE_PRESETS = [
+  {
+    id: "deepgram_elevenlabs", icon: Mic, title: "Deepgram + ElevenLabs",
+    desc: "Streaming speech recognition with low latency, and premium natural-sounding voices. Default, best for live calls.",
+    stt: "deepgram", tts: "elevenlabs",
+  },
+  {
+    id: "openai", icon: Cpu, title: "OpenAI (Whisper + TTS)",
+    desc: "Single-vendor pipeline using your OpenAI key for both transcription and speech. Batch transcription (not streaming).",
+    stt: "openai_whisper", tts: "openai_tts",
+  },
+] as const;
+
+function PipelinePresetPicker({ stt, tts, onPick }: { stt: string; tts: string; onPick: (stt: string, tts: string) => void }) {
+  const activeId = PIPELINE_PRESETS.find(p => p.stt === stt && p.tts === tts)?.id;
+  return (
+    <div>
+      <div className="preset-grid">
+        {PIPELINE_PRESETS.map(p => (
+          <button key={p.id} type="button" className={`preset-card${activeId === p.id ? " active" : ""}`}
+            onClick={() => onPick(p.stt, p.tts)}>
+            <div className="preset-card-top">
+              <div className="preset-card-icon"><p.icon size={17} /></div>
+              {activeId === p.id && <CheckCircle2 size={18} style={{ color: "var(--accent)" }} />}
+            </div>
+            <div className="preset-card-title">{p.title}</div>
+            <div className="preset-card-desc">{p.desc}</div>
+          </button>
+        ))}
+      </div>
+      {!activeId && (
+        <Notice>Custom mix in use (STT and TTS don&apos;t match a preset) — see the sections below to fine-tune each one.</Notice>
+      )}
+    </div>
+  );
+}
+
+function LlmTestButton({ provider, model, unsaved }: { provider: string; model: string; unsaved: boolean }) {
+  const [state, setState] = useState<"idle" | "testing" | "done">("idle");
+  const [result, setResult] = useState<LlmTestResult | null>(null);
+
+  async function run() {
+    setState("testing"); setResult(null);
+    try {
+      const r = await api<LlmTestResult>("/api/admin/test-llm", { method: "POST" });
+      setResult(r);
+    } catch (e: unknown) {
+      setResult({ ok: false, provider, model, error: e instanceof Error ? e.message : "Test failed" });
+    }
+    setState("done");
+  }
+
+  return (
+    <div style={{ marginTop: 4, marginBottom: 14 }}>
+      <button type="button" className="btn btn-ghost btn-sm" onClick={run} disabled={state === "testing"}>
+        {state === "testing" ? <Loader2 size={14} style={{ animation: "lc-spin .7s linear infinite" }} /> : <PlayCircle size={14} />}
+        {state === "testing" ? "Testing connection…" : "Test connection"}
+      </button>
+      {unsaved && (
+        <p style={{ fontSize: 11.5, color: "var(--warning)", marginTop: 6 }}>
+          You have unsaved changes — this tests the last <i>saved</i> settings, not what&apos;s in the fields above yet.
+        </p>
+      )}
+      {result && (
+        <div style={{
+          marginTop: 10, padding: "10px 12px", borderRadius: "var(--r-md)", fontSize: 12.5, lineHeight: 1.55,
+          background: result.ok ? "var(--success-soft)" : "var(--danger-soft)",
+          color: result.ok ? "var(--success)" : "var(--danger)",
+          display: "flex", gap: 8, alignItems: "flex-start",
+        }}>
+          {result.ok ? <CheckCircle2 size={15} style={{ flex: "none", marginTop: 1 }} /> : <XCircle size={15} style={{ flex: "none", marginTop: 1 }} />}
+          <div>
+            {result.ok
+              ? <>Connected via <b>{result.provider}</b> ({result.model}) in {result.latency_ms}ms.</>
+              : <>Failed via <b>{result.provider}</b> ({result.model}): {result.error}</>}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Providers Tab ─────────────────────────────────────────────────────────────
-function ProvidersTab({ config, onSave }: { config: AdminConfig; onSave: (updates: Partial<AdminConfig>) => Promise<void> }) {
+function ProvidersTab({ config, status, onSave }: {
+  config: AdminConfig; status: SystemStatus | null; onSave: (updates: Partial<AdminConfig>) => Promise<void>;
+}) {
   const [local, setLocal] = useState<AdminConfig>(config);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [err, setErr] = useState("");
+  const [advancedOpen, setAdvancedOpen] = useState(false);
 
   useEffect(() => { setLocal(config); }, [config]);
+  useEffect(() => {
+    // Auto-expand the per-component overrides when the current mix doesn't match a preset,
+    // so the admin can immediately see what's actually set instead of hunting for it.
+    const matchesPreset = PIPELINE_PRESETS.some(p => p.stt === config.stt_provider && p.tts === config.tts_provider);
+    setAdvancedOpen(!matchesPreset);
+  }, [config.stt_provider, config.tts_provider]);
+
   const set = (k: keyof AdminConfig) => (v: string) => setLocal(p => ({ ...p, [k]: v }));
 
   async function handleSave() {
@@ -160,40 +312,56 @@ function ProvidersTab({ config, onSave }: { config: AdminConfig; onSave: (update
     finally { setSaving(false); }
   }
 
-  return (
-    <div style={{ maxWidth: 640 }}>
-      <Section title="Speech-to-Text (STT)">
-        <RadioGroup label="STT provider" value={local.stt_provider} onChange={set("stt_provider")}
-          options={[
-            { value: "deepgram",       label: "Deepgram (default)" },
-            { value: "openai_whisper", label: "OpenAI Whisper" },
-          ]} />
-        {local.stt_provider === "openai_whisper" && (
-          <Notice>
-            Whisper is batch-only (no streaming). Each utterance is sent to OpenAI after silence is detected.
-            Uses the OpenAI API key configured under LLM.
-          </Notice>
-        )}
-      </Section>
+  const azure = status?.providers.azure_openai;
+  const azureWillRunInstead = local.llm_provider === "openai" && azure?.configured;
 
-      <Section title="Text-to-Speech (TTS)">
-        <RadioGroup label="TTS provider" value={local.tts_provider} onChange={set("tts_provider")}
-          options={[
-            { value: "elevenlabs", label: "ElevenLabs (default)" },
-            { value: "openai_tts", label: "OpenAI TTS" },
-          ]} />
-        {local.tts_provider === "openai_tts" && (
-          <div style={{ marginTop: 14, display: "flex", flexDirection: "column", gap: 4 }}>
-            <RadioGroup label="Voice" value={local.tts_openai_voice} onChange={set("tts_openai_voice")}
-              options={["alloy","echo","fable","onyx","nova","shimmer"].map(v => ({ value: v, label: v }))} />
-            <RadioGroup label="Model" value={local.tts_openai_model} onChange={set("tts_openai_model")}
-              options={[{ value: "tts-1", label: "tts-1 (fast)" }, { value: "tts-1-hd", label: "tts-1-hd (quality)" }]} />
-            <Notice>OpenAI TTS outputs 24 kHz PCM; it is automatically resampled to 16 kHz.</Notice>
+  return (
+    <div style={{ maxWidth: 680 }}>
+      <Section title="Voice pipeline">
+        <PipelinePresetPicker stt={local.stt_provider} tts={local.tts_provider}
+          onPick={(stt, tts) => setLocal(p => ({ ...p, stt_provider: stt, tts_provider: tts }))} />
+
+        <button type="button" className={`collapse-toggle${advancedOpen ? " open" : ""}`} style={{ marginTop: 14 }}
+          onClick={() => setAdvancedOpen(v => !v)}>
+          <ChevronRight size={14} className="chev" /> Override STT / TTS individually
+        </button>
+
+        {advancedOpen && (
+          <div style={{ marginTop: 10, paddingTop: 14, borderTop: "1px solid var(--border)", display: "flex", flexDirection: "column", gap: 16 }}>
+            <div>
+              <RadioGroup label="STT provider" value={local.stt_provider} onChange={set("stt_provider")}
+                options={[
+                  { value: "deepgram",       label: "Deepgram" },
+                  { value: "openai_whisper", label: "OpenAI Whisper" },
+                ]} />
+              {local.stt_provider === "openai_whisper" && (
+                <Notice>
+                  Whisper is batch-only (no streaming). Each utterance is sent to OpenAI after silence is detected.
+                  Uses the OpenAI API key configured below under LLM.
+                </Notice>
+              )}
+            </div>
+            <div>
+              <RadioGroup label="TTS provider" value={local.tts_provider} onChange={set("tts_provider")}
+                options={[
+                  { value: "elevenlabs", label: "ElevenLabs" },
+                  { value: "openai_tts", label: "OpenAI TTS" },
+                ]} />
+              {local.tts_provider === "openai_tts" && (
+                <div style={{ marginTop: 14, display: "flex", flexDirection: "column", gap: 4 }}>
+                  <RadioGroup label="Voice" value={local.tts_openai_voice} onChange={set("tts_openai_voice")}
+                    options={["alloy","echo","fable","onyx","nova","shimmer"].map(v => ({ value: v, label: v }))} />
+                  <RadioGroup label="Model" value={local.tts_openai_model} onChange={set("tts_openai_model")}
+                    options={[{ value: "tts-1", label: "tts-1 (fast)" }, { value: "tts-1-hd", label: "tts-1-hd (quality)" }]} />
+                  <Notice>OpenAI TTS outputs 24 kHz PCM; it is automatically resampled to 16 kHz.</Notice>
+                </div>
+              )}
+            </div>
           </div>
         )}
       </Section>
 
-      <Section title="Language Model (LLM)">
+      <Section title="Language model (LLM)">
         <RadioGroup label="LLM provider" value={local.llm_provider} onChange={set("llm_provider")}
           options={[
             { value: "openai",    label: "OpenAI (default)" },
@@ -202,20 +370,31 @@ function ProvidersTab({ config, onSave }: { config: AdminConfig; onSave: (update
             { value: "ollama",    label: "Ollama (local)" },
           ]} />
 
-        <Field label="Model name" value={local.llm_model} onChange={set("llm_model")}
-          placeholder={
-            local.llm_provider === "groq"      ? "llama-3.1-8b-instant" :
-            local.llm_provider === "anthropic"  ? "claude-haiku-4-5" :
-            local.llm_provider === "ollama"     ? "llama3.2" :
-                                                  "gpt-4o-mini"
-          }
-          hint={
-            local.llm_provider === "groq"      ? "e.g. llama-3.1-8b-instant, mixtral-8x7b-32768" :
-            local.llm_provider === "anthropic"  ? "e.g. claude-haiku-4-5, claude-sonnet-4-5" :
-            local.llm_provider === "ollama"     ? "Any model pulled in Ollama (ollama list)" :
-                                                  "e.g. gpt-4o-mini, gpt-4o"
-          }
-        />
+        {azureWillRunInstead && (
+          <div style={{
+            margin: "14px 0", padding: "10px 12px", borderRadius: "var(--r-md)",
+            background: "var(--accent-soft)", color: "var(--accent-strong)",
+            fontSize: 12.5, lineHeight: 1.55, display: "flex", gap: 8, alignItems: "flex-start",
+          }}>
+            <Zap size={15} style={{ flex: "none", marginTop: 1 }} />
+            <div>
+              <b>Azure OpenAI is configured and runs first.</b> Every call actually goes to your Azure
+              deployment (<code style={{ fontFamily: "var(--font-mono)" }}>{azure?.deployment}</code>) — the model/key below
+              are only used as a fallback if Azure errors. This happens automatically whenever the provider
+              is &quot;OpenAI&quot; and Azure env vars are set; there&apos;s nothing to configure here for it.
+            </div>
+          </div>
+        )}
+
+        {local.llm_provider === "ollama" ? (
+          <Field label="Model name" value={local.llm_model} onChange={set("llm_model")}
+            placeholder="llama3.2" hint="Any model pulled in Ollama (ollama list)." />
+        ) : (
+          <ModelSelect label="Model" value={local.llm_model} onChange={set("llm_model")}
+            options={MODEL_OPTIONS[local.llm_provider] ?? []}
+            customPlaceholder="Model name"
+            hint={azureWillRunInstead ? "Used only if the Azure OpenAI call above fails." : undefined} />
+        )}
 
         {local.llm_provider !== "openai" && (
           <Field label="API key" value={local.llm_api_key} onChange={set("llm_api_key")}
@@ -240,6 +419,10 @@ function ProvidersTab({ config, onSave }: { config: AdminConfig; onSave: (update
             placeholder="http://localhost:11434"
             hint="Default: http://localhost:11434. Change if Ollama runs on another host/port." />
         )}
+
+        <LlmTestButton provider={azureWillRunInstead ? "azure_openai" : local.llm_provider} model={local.llm_model}
+          unsaved={local.llm_provider !== config.llm_provider || local.llm_model !== config.llm_model ||
+                   local.llm_api_key !== config.llm_api_key || local.llm_base_url !== config.llm_base_url} />
       </Section>
 
       {err && <p style={{ color: "var(--danger)", fontSize: 13, marginBottom: 12 }}>{err}</p>}
@@ -399,6 +582,91 @@ function KbAccessTab() {
   );
 }
 
+// ── System Status Tab ─────────────────────────────────────────────────────────
+function ProviderStatusRow({ label, sub, configured }: { label: string; sub: string; configured: boolean }) {
+  return (
+    <div className="status-row">
+      <span className={`conn-dot${configured ? " on" : ""}`} style={!configured ? { background: "var(--border-strong)" } : undefined} />
+      <div className="meta">
+        <div className="name">{label}</div>
+        <div className="sub">{sub}</div>
+      </div>
+      <span className={`pill ${configured ? "pill-success" : "pill-neutral"}`}>
+        {configured ? "Configured" : "Not set"}
+      </span>
+    </div>
+  );
+}
+
+function StatusTab() {
+  const [status, setStatus] = useState<SystemStatus | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try { setStatus(await api<SystemStatus>("/api/admin/status")); } catch { /* ignore */ }
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  if (loading && !status) {
+    return <p style={{ fontSize: 13.5, textAlign: "center", padding: "32px 0", color: "var(--ink-muted)" }}>Loading…</p>;
+  }
+  if (!status) return <div className="empty"><p>Could not load system status.</p></div>;
+
+  const p = status.providers;
+  const ap = status.active_pipeline;
+
+  return (
+    <div style={{ maxWidth: 760 }}>
+      <Section title="Right now, a new call would use">
+        <div className="status-grid">
+          <div className="status-row">
+            <span className="conn-dot on" />
+            <div className="meta">
+              <div className="name">Speech-to-text</div>
+              <div className="sub">{ap.stt === "deepgram" ? "Deepgram (streaming)" : "OpenAI Whisper (batch)"}</div>
+            </div>
+          </div>
+          <div className="status-row">
+            <span className="conn-dot on" />
+            <div className="meta">
+              <div className="name">Text-to-speech</div>
+              <div className="sub">{ap.tts === "elevenlabs" ? "ElevenLabs" : "OpenAI TTS"}</div>
+            </div>
+          </div>
+          <div className="status-row">
+            <span className="conn-dot on" />
+            <div className="meta">
+              <div className="name">Language model</div>
+              <div className="sub">{ap.llm.provider} · {ap.llm.model}</div>
+            </div>
+          </div>
+        </div>
+        {ap.llm.note && (
+          <p style={{ fontSize: 12, color: "var(--ink-muted)", marginTop: 12, lineHeight: 1.55 }}>{ap.llm.note}</p>
+        )}
+        <button type="button" className="btn btn-ghost btn-sm" style={{ marginTop: 14 }} onClick={load}>
+          <RefreshCw size={13} /> Refresh
+        </button>
+      </Section>
+
+      <Section title="Configured credentials">
+        <div className="status-grid">
+          <ProviderStatusRow label="Azure OpenAI" configured={p.azure_openai.configured}
+            sub={p.azure_openai.configured ? (p.azure_openai.deployment ?? "") : "AZURE_OPENAI_* env vars"} />
+          <ProviderStatusRow label="OpenAI" configured={p.openai.configured} sub="OPENAI_API_KEY env var" />
+          <ProviderStatusRow label="Groq" configured={p.groq.configured} sub="GROQ_API_KEY env var" />
+          <ProviderStatusRow label="Anthropic" configured={p.anthropic.configured} sub="ANTHROPIC_API_KEY env var or Providers tab" />
+          <ProviderStatusRow label="Deepgram" configured={p.deepgram.configured} sub="DEEPGRAM_API_KEY env var" />
+          <ProviderStatusRow label="ElevenLabs" configured={p.elevenlabs.configured} sub="ELEVENLABS_API_KEY env var" />
+        </div>
+      </Section>
+    </div>
+  );
+}
+
 // ── Main Admin Page ───────────────────────────────────────────────────────────
 export default function AdminPage() {
   const [loggedIn,  setLoggedIn]  = useState(false);
@@ -409,6 +677,7 @@ export default function AdminPage() {
   const [loginErr,  setLoginErr]  = useState("");
   const [loggingIn, setLoggingIn] = useState(false);
   const [config,    setConfig]    = useState<AdminConfig | null>(null);
+  const [status,    setStatus]    = useState<SystemStatus | null>(null);
   const [tab, setTab] = useState<Tab>("providers");
 
   // Check existing token on mount
@@ -416,7 +685,7 @@ export default function AdminPage() {
     const token = getToken();
     if (!token) { setCheckDone(true); return; }
     api<AdminConfig>("/api/admin/config")
-      .then(cfg => { setConfig(cfg); setLoggedIn(true); })
+      .then(cfg => { setConfig(cfg); setLoggedIn(true); api<SystemStatus>("/api/admin/status").then(setStatus).catch(() => {}); })
       .catch(() => { /* not admin or expired */ })
       .finally(() => setCheckDone(true));
   }, []);
@@ -438,6 +707,7 @@ export default function AdminPage() {
       const cfg = await api<AdminConfig>("/api/admin/config");
       setConfig(cfg);
       setLoggedIn(true);
+      api<SystemStatus>("/api/admin/status").then(setStatus).catch(() => {});
     } catch (e: unknown) {
       setLoginErr(e instanceof Error ? e.message : "Login failed");
     } finally {
@@ -449,6 +719,7 @@ export default function AdminPage() {
     localStorage.removeItem("access_token");
     setLoggedIn(false);
     setConfig(null);
+    setStatus(null);
   }
 
   async function saveConfig(updates: Partial<AdminConfig>) {
@@ -457,6 +728,7 @@ export default function AdminPage() {
       body: JSON.stringify(updates),
     });
     setConfig(updated);
+    api<SystemStatus>("/api/admin/status").then(setStatus).catch(() => {});
   }
 
   if (!checkDone) return null;
@@ -504,6 +776,7 @@ export default function AdminPage() {
 
   const tabMeta: Record<Tab, { title: string; sub: string }> = {
     providers: { title: "Provider settings", sub: "Choose which speech and language providers power every agent." },
+    status:    { title: "System status",      sub: "What's actually configured and what the next call will use." },
     storage:   { title: "Storage limits",     sub: "Set how much document storage users and agents can use." },
     kb:        { title: "Knowledge base access", sub: "Review requests and manage who can use the global Knowledge Base." },
   };
@@ -564,8 +837,9 @@ export default function AdminPage() {
               </div>
             </div>
 
-            {config && tab === "providers" && <ProvidersTab config={config} onSave={saveConfig} />}
+            {config && tab === "providers" && <ProvidersTab config={config} status={status} onSave={saveConfig} />}
             {config && tab === "storage"   && <StorageTab   config={config} onSave={saveConfig} />}
+            {tab === "status" && <StatusTab />}
             {tab === "kb" && <KbAccessTab />}
           </div>
         </div>

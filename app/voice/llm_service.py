@@ -109,6 +109,66 @@ def _get_llm_client() -> tuple[AsyncOpenAI | None, str, str]:
     return AsyncOpenAI(api_key=key), provider, model
 
 
+async def test_llm_connection() -> dict:
+    """Admin-panel "Test connection" check: sends one minimal completion through
+    the exact same resolution chain a real call would use (including the
+    Azure-primary-when-"openai" rule), and reports which provider actually
+    answered, the model, latency, and the raw error from each attempt that
+    failed before a working one was found (or before giving up)."""
+    import time
+    client, provider, model = _get_llm_client()
+    attempts: list[dict] = []
+
+    if provider == "anthropic":
+        from app.admin.admin_config_service import get as get_config
+        import httpx
+        import os
+        api_key = get_config("llm_api_key") or os.environ.get("ANTHROPIC_API_KEY", "")
+        if not api_key:
+            return {"ok": False, "provider": provider, "model": model,
+                    "error": "No Anthropic API key configured (set it in Providers, or ANTHROPIC_API_KEY env var).",
+                    "attempts": []}
+        t0 = time.monotonic()
+        try:
+            async with httpx.AsyncClient(timeout=LLM_TIMEOUT + 10) as hc:
+                resp = await hc.post(
+                    "https://api.anthropic.com/v1/messages",
+                    headers={"x-api-key": api_key, "anthropic-version": "2023-06-01", "content-type": "application/json"},
+                    json={"model": model, "max_tokens": 5, "messages": [{"role": "user", "content": "ping"}]},
+                )
+            latency_ms = round((time.monotonic() - t0) * 1000)
+            if resp.status_code == 200:
+                return {"ok": True, "provider": provider, "model": model, "latency_ms": latency_ms, "attempts": []}
+            return {"ok": False, "provider": provider, "model": model, "latency_ms": latency_ms,
+                    "error": f"HTTP {resp.status_code}: {resp.text[:300]}", "attempts": []}
+        except Exception as e:
+            return {"ok": False, "provider": provider, "model": model,
+                    "error": str(e), "attempts": []}
+
+    chain = _augment_with_azure(client, provider, model)
+    if not chain:
+        return {"ok": False, "provider": provider, "model": model, "error": "No client configured for this provider.", "attempts": []}
+
+    for try_client, try_provider, try_model in chain:
+        t0 = time.monotonic()
+        try:
+            await try_client.chat.completions.create(
+                model=try_model,
+                messages=[{"role": "user", "content": "ping"}],
+                **_max_tokens_kwarg(try_model),
+                timeout=LLM_TIMEOUT,
+            )
+            latency_ms = round((time.monotonic() - t0) * 1000)
+            return {"ok": True, "provider": try_provider, "model": try_model, "latency_ms": latency_ms, "attempts": attempts}
+        except Exception as e:
+            latency_ms = round((time.monotonic() - t0) * 1000)
+            attempts.append({"provider": try_provider, "model": try_model, "latency_ms": latency_ms, "error": str(e)})
+
+    last = attempts[-1] if attempts else {}
+    return {"ok": False, "provider": last.get("provider", provider), "model": last.get("model", model),
+            "error": last.get("error", "Unknown error"), "attempts": attempts}
+
+
 async def _anthropic_token_stream(
     system: str, messages: list[dict], model: str, api_key: str
 ) -> AsyncGenerator[str, None]:
