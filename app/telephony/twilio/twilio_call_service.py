@@ -111,6 +111,17 @@ async def _openai_tts_twilio(text: str, voice: str = "alloy", model: str = "tts-
             yield mulaw_encode(pcm8k)
 
 
+async def _openai_classic_tts_twilio(text: str, openai_voice: str = "alloy", openai_model: str = "tts-1"):
+    """"openai_classic" pipeline TTS path: Azure AI Speech first (falling
+    back to OpenAI TTS internally if unconfigured/fails), PCM 16 kHz either
+    way, downsampled + encoded to μ-law 8 kHz for Twilio/Plivo."""
+    from app.voice.azure_speech_tts_service import text_to_speech_openai_classic
+    async for pcm16k_chunk in text_to_speech_openai_classic(text, openai_voice=openai_voice, openai_model=openai_model):
+        if pcm16k_chunk:
+            pcm8k = resample_16k_to_8k(pcm16k_chunk)
+            yield mulaw_encode(pcm8k)
+
+
 async def text_to_speech_twilio(text: str):
     """
     Yields raw μ-law 8 kHz bytes ready to send to Twilio Media Streams.
@@ -124,10 +135,11 @@ async def text_to_speech_twilio(text: str):
     """
     import asyncio
     from app.admin.admin_config_service import get as get_config
-    from app.core.config import OPENAI_PIPELINE_ENABLED, OPENAI_PIPELINE_TTS_VOICE, OPENAI_PIPELINE_TTS_MODEL
 
-    if OPENAI_PIPELINE_ENABLED:
-        async for chunk in _openai_tts_twilio(text, voice=OPENAI_PIPELINE_TTS_VOICE, model=OPENAI_PIPELINE_TTS_MODEL):
+    if get_config("voice_pipeline") == "openai_classic":
+        voice = get_config("tts_openai_voice") or "alloy"
+        model = get_config("tts_openai_model") or "tts-1"
+        async for chunk in _openai_classic_tts_twilio(text, openai_voice=voice, openai_model=model):
             yield chunk
         return
 

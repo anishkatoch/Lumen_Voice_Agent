@@ -89,31 +89,17 @@ tts:
   style: 0.0
   use_speaker_boost: true
 
-# ─── OpenAI-Only Pipeline ────────────────────────────────────────────
+# ─── Voice pipelines ─────────────────────────────────────────────────
 #
-#  Separate from the stt_provider/tts_provider admin-panel toggles above.
-#  When enabled, every call (browser + Twilio) uses OpenAI exclusively for
-#  both STT (Whisper) and TTS, bypassing Deepgram and ElevenLabs entirely -
-#  including the Deepgram-to-OpenAI and ElevenLabs-to-OpenAI fallback paths,
-#  since there is nothing left to fall back from.
-#
-openai_pipeline:
-  enabled: false        # set true to activate this pipeline
-  tts_voice: "alloy"     # alloy | echo | fable | onyx | nova | shimmer
-  tts_model: "tts-1"     # tts-1 | tts-1-hd
-
-# ─── OpenAI Realtime Pipeline ────────────────────────────────────────
-#
-#  A third, independent pipeline, separate from both the toggles above.
-#  Speech-to-speech via OpenAI's Realtime API - when active, calls bypass
-#  Deepgram, llm_service, and ElevenLabs/OpenAI TTS entirely; audio is
-#  bridged directly to/from the Realtime model over its own websocket.
-#  Always uses the plain OPENAI_API_KEY (never Azure), regardless of the
-#  Azure OpenAI setup used by the other two pipelines' LLM step.
-#
-#  Whether this pipeline is active, and which voice it uses, are live
-#  admin-panel settings instead (Admin > Providers > Voice pipeline) -
-#  only the model id lives here, since that's not exposed in the UI.
+#  There are three voice pipelines, selected live from Admin > Providers >
+#  Voice pipeline (admin_config table, key "voice_pipeline") - not here:
+#    cascade        - stt_provider/tts_provider above -> LLM provider -> TTS
+#    openai_classic - OpenAI STT (gpt-4o-transcribe/Whisper) -> LLM -> OpenAI TTS, always
+#    realtime       - OpenAI Realtime API, speech-to-speech, no separate STT/LLM/TTS steps
+#  openai_classic's voice/model reuse tts_openai_voice/tts_openai_model
+#  (also admin-panel settings). realtime always uses the plain
+#  OPENAI_API_KEY (never Azure) - only its model id is set here, since
+#  that isn't exposed in the UI.
 #
 realtime_pipeline:
   model: "gpt-realtime"   # OpenAI Realtime model id

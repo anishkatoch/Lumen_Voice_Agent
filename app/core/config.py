@@ -60,6 +60,15 @@ AZURE_OPENAI_ENDPOINT    = os.environ.get("AZURE_OPENAI_ENDPOINT", "")
 AZURE_OPENAI_API_VERSION = os.environ.get("AZURE_OPENAI_API_VERSION", "2024-10-21")
 AZURE_OPENAI_DEPLOYMENT  = os.environ.get("AZURE_OPENAI_DEPLOYMENT", "gpt-4.1-mini")
 AZURE_OPENAI_EMBEDDING_DEPLOYMENT = os.environ.get("AZURE_OPENAI_EMBEDDING_DEPLOYMENT", "text-embedding-3-small")
+AZURE_OPENAI_TRANSCRIBE_DEPLOYMENT = os.environ.get("AZURE_OPENAI_TRANSCRIBE_DEPLOYMENT", "gpt-4o-transcribe")
+
+# Azure AI Speech (Cognitive Services neural TTS) - a DIFFERENT resource from
+# Azure OpenAI above (own key/region, not an OpenAI-compatible endpoint).
+# Primary TTS source for the "openai_classic" voice pipeline; optional -
+# falls back to plain OpenAI TTS if unset or if a call fails.
+AZURE_SPEECH_KEY    = os.environ.get("AZURE_SPEECH_KEY", "")
+AZURE_SPEECH_REGION = os.environ.get("AZURE_SPEECH_REGION", "")
+AZURE_SPEECH_VOICE  = os.environ.get("AZURE_SPEECH_VOICE", "en-US-AndrewNeural")
 
 DEEPGRAM_API_KEY        = os.environ["DEEPGRAM_API_KEY"]
 if not DEEPGRAM_API_KEY:
@@ -102,10 +111,6 @@ TTS_STABILITY           = float(cfg("tts", "stability", default=0.5))
 TTS_SIMILARITY_BOOST    = float(cfg("tts", "similarity_boost", default=0.75))
 TTS_STYLE               = float(cfg("tts", "style", default=0.0))
 TTS_SPEAKER_BOOST       = bool(cfg("tts", "use_speaker_boost", default=True))
-
-OPENAI_PIPELINE_ENABLED  = bool(cfg("openai_pipeline", "enabled", default=False))
-OPENAI_PIPELINE_TTS_VOICE = cfg("openai_pipeline", "tts_voice", default="alloy")
-OPENAI_PIPELINE_TTS_MODEL = cfg("openai_pipeline", "tts_model", default="tts-1")
 
 # ─── OpenAI Realtime Pipeline ────────────────────────────────────────
 # A third, independent pipeline - speech-to-speech via OpenAI's Realtime

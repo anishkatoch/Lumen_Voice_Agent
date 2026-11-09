@@ -10,12 +10,13 @@ from app.core.config import (
 async def text_to_speech_stream(text: str):
     """Async generator that yields PCM audio chunks from the configured TTS provider.
     Falls back to OpenAI TTS if ElevenLabs fails or returns no audio."""
-    from app.core.config import OPENAI_PIPELINE_ENABLED, OPENAI_PIPELINE_TTS_VOICE, OPENAI_PIPELINE_TTS_MODEL
     from app.admin.admin_config_service import get as get_config
 
-    if OPENAI_PIPELINE_ENABLED:
-        from app.voice.openai_tts_service import text_to_speech_openai
-        async for chunk in text_to_speech_openai(text, voice=OPENAI_PIPELINE_TTS_VOICE, model=OPENAI_PIPELINE_TTS_MODEL):
+    if get_config("voice_pipeline") == "openai_classic":
+        from app.voice.azure_speech_tts_service import text_to_speech_openai_classic
+        voice = get_config("tts_openai_voice") or "alloy"
+        model = get_config("tts_openai_model") or "tts-1"
+        async for chunk in text_to_speech_openai_classic(text, openai_voice=voice, openai_model=model):
             yield chunk
         return
 

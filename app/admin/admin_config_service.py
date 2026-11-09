@@ -24,7 +24,11 @@ DEFAULTS: dict[str, str] = {
     "llm_base_url":      "",            # used for ollama or custom openai-compat endpoints
     "user_kb_max_mb":    "5",
     "agent_kb_max_mb":   "5",
-    "voice_pipeline":    "cascade",     # cascade (STT/LLM/TTS above) | realtime (OpenAI Realtime, speech-to-speech)
+    # The three voice pipelines:
+    #   cascade        - Deepgram/Whisper STT -> LLM provider above -> ElevenLabs/OpenAI TTS (per stt_provider/tts_provider)
+    #   openai_classic - single-vendor cascade: OpenAI STT (gpt-4o-transcribe/Whisper) -> LLM -> OpenAI TTS, always, regardless of stt_provider/tts_provider
+    #   realtime       - OpenAI Realtime API, speech-to-speech, no separate STT/LLM/TTS steps
+    "voice_pipeline":    "cascade",
     "realtime_voice":    "marin",       # marin | cedar | alloy | ash | ballad | coral | echo | sage | shimmer | verse
 }
 

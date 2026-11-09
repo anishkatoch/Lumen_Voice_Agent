@@ -104,14 +104,13 @@ class StreamingTranscriber:
 
 def get_streaming_transcriber():
     """Return a streaming transcriber for the configured STT provider."""
-    from app.core.config import OPENAI_PIPELINE_ENABLED
-    if OPENAI_PIPELINE_ENABLED:
-        print("[STT] OPENAI_PIPELINE_ENABLED is set - using OpenAI Whisper, not Deepgram")
+    from app.admin.admin_config_service import get as get_config
+    if get_config("voice_pipeline") == "openai_classic":
+        print("[STT] voice_pipeline=openai_classic - using OpenAI STT, not Deepgram")
         from app.voice.openai_whisper_service import StreamingWhisperTranscriber
         return StreamingWhisperTranscriber()
-    from app.admin.admin_config_service import get as get_config
     if get_config("stt_provider") == "openai_whisper":
-        print("[STT] admin config stt_provider=openai_whisper - using OpenAI Whisper, not Deepgram")
+        print("[STT] admin config stt_provider=openai_whisper - using OpenAI STT, not Deepgram")
         from app.voice.openai_whisper_service import StreamingWhisperTranscriber
         return StreamingWhisperTranscriber()
     return StreamingTranscriber()
@@ -120,11 +119,10 @@ def get_streaming_transcriber():
 async def transcribe_audio_smart(audio_bytes: bytes) -> str | None:
     """Transcribe audio using the configured STT provider. Falls back to
     OpenAI Whisper if Deepgram fails or returns nothing."""
-    from app.core.config import OPENAI_PIPELINE_ENABLED
-    if OPENAI_PIPELINE_ENABLED:
+    from app.admin.admin_config_service import get as get_config
+    if get_config("voice_pipeline") == "openai_classic":
         from app.voice.openai_whisper_service import transcribe_wav_whisper
         return await transcribe_wav_whisper(audio_bytes)
-    from app.admin.admin_config_service import get as get_config
     if get_config("stt_provider") == "openai_whisper":
         from app.voice.openai_whisper_service import transcribe_wav_whisper
         return await transcribe_wav_whisper(audio_bytes)

@@ -400,8 +400,9 @@ function ProvidersTab({ config, status, onSave }: {
       <Section title="Voice pipeline">
         <RadioGroup label="Pipeline" value={local.voice_pipeline} onChange={set("voice_pipeline")}
           options={[
-            { value: "cascade",  label: "Cascade (STT → LLM → TTS)" },
-            { value: "realtime", label: "OpenAI Realtime (speech-to-speech)" },
+            { value: "cascade",        label: "Cascade (STT → LLM → TTS)" },
+            { value: "openai_classic", label: "OpenAI Classic (Whisper + LLM + OpenAI TTS)" },
+            { value: "realtime",       label: "OpenAI Realtime (speech-to-speech)" },
           ]} />
 
         {local.voice_pipeline === "realtime" ? (
@@ -414,6 +415,20 @@ function ProvidersTab({ config, status, onSave }: {
             <div style={{ marginTop: 14 }}>
               <RadioGroup label="Voice" value={local.realtime_voice} onChange={set("realtime_voice")}
                 options={["marin","cedar","alloy","ash","ballad","coral","echo","sage","shimmer","verse"].map(v => ({ value: v, label: v }))} />
+            </div>
+          </div>
+        ) : local.voice_pipeline === "openai_classic" ? (
+          <div style={{ marginTop: 14 }}>
+            <Notice>
+              Single-vendor cascade: OpenAI handles both transcription (gpt-4o-transcribe/Whisper - Azure OpenAI
+              first if configured, else your OPENAI_API_KEY) and speech. Bypasses Deepgram and ElevenLabs entirely;
+              the STT/TTS provider settings below are ignored while this is active. The LLM provider below still applies.
+            </Notice>
+            <div style={{ marginTop: 14, display: "flex", flexDirection: "column", gap: 4 }}>
+              <RadioGroup label="Voice" value={local.tts_openai_voice} onChange={set("tts_openai_voice")}
+                options={["alloy","echo","fable","onyx","nova","shimmer"].map(v => ({ value: v, label: v }))} />
+              <RadioGroup label="Model" value={local.tts_openai_model} onChange={set("tts_openai_model")}
+                options={[{ value: "tts-1", label: "tts-1 (fast)" }, { value: "tts-1-hd", label: "tts-1-hd (quality)" }]} />
             </div>
           </div>
         ) : (

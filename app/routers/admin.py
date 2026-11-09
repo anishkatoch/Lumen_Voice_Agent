@@ -113,8 +113,11 @@ async def admin_system_status(current_user: dict = Depends(get_current_user)):
         },
         "active_pipeline": {
             "voice_pipeline": cfg.get("voice_pipeline", "cascade"),
-            "stt": cfg.get("stt_provider"),
-            "tts": cfg.get("tts_provider"),
+            # stt/tts only describe the "cascade" pipeline - openai_classic
+            # always uses OpenAI for both regardless of these, and realtime
+            # has neither a separate STT nor TTS step at all.
+            "stt": "openai_whisper" if cfg.get("voice_pipeline") == "openai_classic" else cfg.get("stt_provider"),
+            "tts": "openai_tts" if cfg.get("voice_pipeline") == "openai_classic" else cfg.get("tts_provider"),
             "llm": effective_llm,
             "realtime_voice": cfg.get("realtime_voice"),
         },

@@ -4,13 +4,8 @@ Queries user_document_chunks filtered by document_id IN (selected_doc_ids).
 """
 import psycopg2
 
-from app.core.config import (
-    OPENAI_API_KEY, RAG_EMBEDDING_MODEL, RAG_TOP_K,
-    DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME,
-)
-from openai import OpenAI
-
-_openai = OpenAI(api_key=OPENAI_API_KEY)
+from app.core.config import RAG_TOP_K, DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME
+from app.core.embeddings import embed
 
 
 def _get_conn():
@@ -21,8 +16,7 @@ def _get_conn():
 
 
 def _embed_query(query: str) -> list[float]:
-    response = _openai.embeddings.create(model=RAG_EMBEDDING_MODEL, input=[query])
-    return response.data[0].embedding
+    return embed([query])[0]
 
 
 def retrieve_user_kb_context(

@@ -5,12 +5,8 @@ Extracts text from PDF/DOCX/TXT → chunks → embeds → stores in document_chu
 import io
 import re
 
-from openai import OpenAI
-
-from app.core.config import OPENAI_API_KEY, RAG_EMBEDDING_MODEL
 from app.core.database import get_supabase
-
-_openai = OpenAI(api_key=OPENAI_API_KEY)
+from app.core.embeddings import embed
 
 CHUNK_SIZE = 400        # target tokens per chunk (rough word-based split)
 CHUNK_OVERLAP = 40      # overlap words between consecutive chunks
@@ -102,14 +98,11 @@ def chunk_text(text: str, chunk_words: int = CHUNK_SIZE, overlap: int = CHUNK_OV
 # ── Embedding ─────────────────────────────────────────────────────────────────
 
 def embed_chunks(chunks: list[str]) -> list[list[float]]:
-    """Get embeddings for a list of text chunks via OpenAI in one batched call."""
+    """Get embeddings for a list of text chunks in one batched call - Azure
+    OpenAI first, plain OpenAI fallback (see app/core/embeddings.py)."""
     if not chunks:
         return []
-    response = _openai.embeddings.create(
-        model=RAG_EMBEDDING_MODEL,
-        input=chunks,
-    )
-    return [item.embedding for item in response.data]
+    return embed(chunks)
 
 
 # ── Storage ───────────────────────────────────────────────────────────────────

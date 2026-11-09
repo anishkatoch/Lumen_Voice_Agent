@@ -1,24 +1,11 @@
 import asyncio
-from openai import AsyncOpenAI
 from app.agents.document_repo import vector_search
-from app.core.config import OPENAI_API_KEY, RAG_TOP_K, RAG_EMBEDDING_MODEL
-
-_openai: AsyncOpenAI | None = None
-
-
-def _get_openai() -> AsyncOpenAI:
-    global _openai
-    if _openai is None:
-        _openai = AsyncOpenAI(api_key=OPENAI_API_KEY)
-    return _openai
+from app.core.config import RAG_TOP_K
+from app.core.embeddings import embed
 
 
 async def embed_text(text: str) -> list[float]:
-    response = await _get_openai().embeddings.create(
-        model=RAG_EMBEDDING_MODEL,
-        input=text,
-    )
-    return response.data[0].embedding
+    return (await asyncio.to_thread(embed, [text]))[0]
 
 
 async def retrieve_context(query: str, top_k: int = RAG_TOP_K) -> list[dict]:
