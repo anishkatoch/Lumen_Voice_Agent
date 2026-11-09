@@ -105,16 +105,18 @@ openai_pipeline:
 # ─── OpenAI Realtime Pipeline ────────────────────────────────────────
 #
 #  A third, independent pipeline, separate from both the toggles above.
-#  Speech-to-speech via OpenAI's Realtime API - when enabled, calls bypass
+#  Speech-to-speech via OpenAI's Realtime API - when active, calls bypass
 #  Deepgram, llm_service, and ElevenLabs/OpenAI TTS entirely; audio is
 #  bridged directly to/from the Realtime model over its own websocket.
 #  Always uses the plain OPENAI_API_KEY (never Azure), regardless of the
 #  Azure OpenAI setup used by the other two pipelines' LLM step.
 #
+#  Whether this pipeline is active, and which voice it uses, are live
+#  admin-panel settings instead (Admin > Providers > Voice pipeline) -
+#  only the model id lives here, since that's not exposed in the UI.
+#
 realtime_pipeline:
-  enabled: false          # set true to activate this pipeline
   model: "gpt-realtime"   # OpenAI Realtime model id
-  voice: "marin"          # marin | cedar | alloy | ash | ballad | coral | echo | sage | shimmer | verse
 
 # ─── WebSocket ───────────────────────────────────────────────────────
 websocket:

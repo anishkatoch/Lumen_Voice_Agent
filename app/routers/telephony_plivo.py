@@ -18,7 +18,7 @@ from app.telephony.shared import PHONE_WEBHOOK_MAX_TIMEOUT_S, _CALL_STATUS_REASO
 from app.routers.telephony_twilio import PhoneNumberAttach
 from app.core.config import (
     VAD_SENSITIVITY, VAD_BARGE_IN_SENSITIVITY, VAD_SILENCE_LIMIT, VAD_MIN_SPEECH,
-    MEMORY_UPDATE_EVERY, REALTIME_PIPELINE_ENABLED,
+    MEMORY_UPDATE_EVERY,
 )
 
 router = APIRouter(tags=["telephony:plivo"])
@@ -751,7 +751,8 @@ async def plivo_stream_endpoint(websocket: WebSocket):
                     break
                 print(f"[Plivo] Call started - stream {stream_id}, agent {agent['name']}")
 
-                if REALTIME_PIPELINE_ENABLED:
+                from app.admin.admin_config_service import get as get_admin_config
+                if await asyncio.to_thread(get_admin_config, "voice_pipeline") == "realtime":
                     from app.telephony.shared import run_realtime_telephony_bridge
 
                     def _parse_media_payload(data: dict) -> str | None:

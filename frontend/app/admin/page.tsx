@@ -45,6 +45,8 @@ interface AdminConfig {
   llm_base_url:     string;
   user_kb_max_mb:   string;
   agent_kb_max_mb:  string;
+  voice_pipeline:   string;
+  realtime_voice:   string;
 }
 
 interface KbRequest {
@@ -60,8 +62,10 @@ interface SystemStatus {
     anthropic: ProviderStatus; deepgram: ProviderStatus; elevenlabs: ProviderStatus;
   };
   active_pipeline: {
+    voice_pipeline: string;
     stt: string; tts: string;
     llm: { provider: string; model: string; note: string | null };
+    realtime_voice: string;
   };
 }
 
@@ -394,51 +398,75 @@ function ProvidersTab({ config, status, onSave }: {
   return (
     <div style={{ maxWidth: 980 }}>
       <Section title="Voice pipeline">
-        <PipelinePresetPicker stt={local.stt_provider} tts={local.tts_provider}
-          onPick={(stt, tts) => setLocal(p => ({ ...p, stt_provider: stt, tts_provider: tts }))} />
+        <RadioGroup label="Pipeline" value={local.voice_pipeline} onChange={set("voice_pipeline")}
+          options={[
+            { value: "cascade",  label: "Cascade (STT → LLM → TTS)" },
+            { value: "realtime", label: "OpenAI Realtime (speech-to-speech)" },
+          ]} />
 
-        <button type="button" className={`collapse-toggle${advancedOpen ? " open" : ""}`} style={{ marginTop: 14 }}
-          onClick={() => setAdvancedOpen(v => !v)}>
-          <ChevronRight size={14} className="chev" /> Override STT / TTS individually
-        </button>
-
-        {advancedOpen && (
-          <div style={{ marginTop: 10, paddingTop: 14, borderTop: "1px solid var(--border)", display: "flex", flexDirection: "column", gap: 16 }}>
-            <div>
-              <RadioGroup label="STT provider" value={local.stt_provider} onChange={set("stt_provider")}
-                options={[
-                  { value: "deepgram",       label: "Deepgram" },
-                  { value: "openai_whisper", label: "OpenAI Whisper" },
-                ]} />
-              {local.stt_provider === "openai_whisper" && (
-                <Notice>
-                  Whisper is batch-only (no streaming). Each utterance is sent to OpenAI after silence is detected.
-                  Uses the OpenAI API key configured below under LLM.
-                </Notice>
-              )}
-            </div>
-            <div>
-              <RadioGroup label="TTS provider" value={local.tts_provider} onChange={set("tts_provider")}
-                options={[
-                  { value: "elevenlabs", label: "ElevenLabs" },
-                  { value: "openai_tts", label: "OpenAI TTS" },
-                ]} />
-              {local.tts_provider === "elevenlabs" && (
-                <div style={{ marginTop: 14 }}>
-                  <ElevenLabsVoicePicker value={local.tts_elevenlabs_voice_id} onChange={set("tts_elevenlabs_voice_id")} />
-                </div>
-              )}
-              {local.tts_provider === "openai_tts" && (
-                <div style={{ marginTop: 14, display: "flex", flexDirection: "column", gap: 4 }}>
-                  <RadioGroup label="Voice" value={local.tts_openai_voice} onChange={set("tts_openai_voice")}
-                    options={["alloy","echo","fable","onyx","nova","shimmer"].map(v => ({ value: v, label: v }))} />
-                  <RadioGroup label="Model" value={local.tts_openai_model} onChange={set("tts_openai_model")}
-                    options={[{ value: "tts-1", label: "tts-1 (fast)" }, { value: "tts-1-hd", label: "tts-1-hd (quality)" }]} />
-                  <Notice>OpenAI TTS outputs 24 kHz PCM; it is automatically resampled to 16 kHz.</Notice>
-                </div>
-              )}
+        {local.voice_pipeline === "realtime" ? (
+          <div style={{ marginTop: 14 }}>
+            <Notice>
+              Speech-to-speech via OpenAI&apos;s Realtime API - always uses the plain OPENAI_API_KEY (never Azure).
+              Calls bypass Deepgram, the LLM provider below, and ElevenLabs/OpenAI TTS entirely; everything below
+              this card (STT/TTS/LLM provider) is ignored while this is active.
+            </Notice>
+            <div style={{ marginTop: 14 }}>
+              <RadioGroup label="Voice" value={local.realtime_voice} onChange={set("realtime_voice")}
+                options={["marin","cedar","alloy","ash","ballad","coral","echo","sage","shimmer","verse"].map(v => ({ value: v, label: v }))} />
             </div>
           </div>
+        ) : (
+          <>
+            <div style={{ marginTop: 14 }}>
+              <PipelinePresetPicker stt={local.stt_provider} tts={local.tts_provider}
+                onPick={(stt, tts) => setLocal(p => ({ ...p, stt_provider: stt, tts_provider: tts }))} />
+            </div>
+
+            <button type="button" className={`collapse-toggle${advancedOpen ? " open" : ""}`} style={{ marginTop: 14 }}
+              onClick={() => setAdvancedOpen(v => !v)}>
+              <ChevronRight size={14} className="chev" /> Override STT / TTS individually
+            </button>
+
+            {advancedOpen && (
+              <div style={{ marginTop: 10, paddingTop: 14, borderTop: "1px solid var(--border)", display: "flex", flexDirection: "column", gap: 16 }}>
+                <div>
+                  <RadioGroup label="STT provider" value={local.stt_provider} onChange={set("stt_provider")}
+                    options={[
+                      { value: "deepgram",       label: "Deepgram" },
+                      { value: "openai_whisper", label: "OpenAI Whisper" },
+                    ]} />
+                  {local.stt_provider === "openai_whisper" && (
+                    <Notice>
+                      Whisper is batch-only (no streaming). Each utterance is sent to OpenAI after silence is detected.
+                      Uses the OpenAI API key configured below under LLM.
+                    </Notice>
+                  )}
+                </div>
+                <div>
+                  <RadioGroup label="TTS provider" value={local.tts_provider} onChange={set("tts_provider")}
+                    options={[
+                      { value: "elevenlabs", label: "ElevenLabs" },
+                      { value: "openai_tts", label: "OpenAI TTS" },
+                    ]} />
+                  {local.tts_provider === "elevenlabs" && (
+                    <div style={{ marginTop: 14 }}>
+                      <ElevenLabsVoicePicker value={local.tts_elevenlabs_voice_id} onChange={set("tts_elevenlabs_voice_id")} />
+                    </div>
+                  )}
+                  {local.tts_provider === "openai_tts" && (
+                    <div style={{ marginTop: 14, display: "flex", flexDirection: "column", gap: 4 }}>
+                      <RadioGroup label="Voice" value={local.tts_openai_voice} onChange={set("tts_openai_voice")}
+                        options={["alloy","echo","fable","onyx","nova","shimmer"].map(v => ({ value: v, label: v }))} />
+                      <RadioGroup label="Model" value={local.tts_openai_model} onChange={set("tts_openai_model")}
+                        options={[{ value: "tts-1", label: "tts-1 (fast)" }, { value: "tts-1-hd", label: "tts-1-hd (quality)" }]} />
+                      <Notice>OpenAI TTS outputs 24 kHz PCM; it is automatically resampled to 16 kHz.</Notice>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+          </>
         )}
       </Section>
 
@@ -702,30 +730,42 @@ function StatusTab() {
   return (
     <div style={{ maxWidth: 1100 }}>
       <Section title="Right now, a new call would use">
-        <div className="status-grid">
-          <div className="status-row">
-            <span className="conn-dot on" />
-            <div className="meta">
-              <div className="name">Speech-to-text</div>
-              <div className="sub">{ap.stt === "deepgram" ? "Deepgram (streaming)" : "OpenAI Whisper (batch)"}</div>
+        {ap.voice_pipeline === "realtime" ? (
+          <div className="status-grid">
+            <div className="status-row">
+              <span className="conn-dot on" />
+              <div className="meta">
+                <div className="name">Voice pipeline</div>
+                <div className="sub">OpenAI Realtime (speech-to-speech) · voice: {ap.realtime_voice}</div>
+              </div>
             </div>
           </div>
-          <div className="status-row">
-            <span className="conn-dot on" />
-            <div className="meta">
-              <div className="name">Text-to-speech</div>
-              <div className="sub">{ap.tts === "elevenlabs" ? "ElevenLabs" : "OpenAI TTS"}</div>
+        ) : (
+          <div className="status-grid">
+            <div className="status-row">
+              <span className="conn-dot on" />
+              <div className="meta">
+                <div className="name">Speech-to-text</div>
+                <div className="sub">{ap.stt === "deepgram" ? "Deepgram (streaming)" : "OpenAI Whisper (batch)"}</div>
+              </div>
+            </div>
+            <div className="status-row">
+              <span className="conn-dot on" />
+              <div className="meta">
+                <div className="name">Text-to-speech</div>
+                <div className="sub">{ap.tts === "elevenlabs" ? "ElevenLabs" : "OpenAI TTS"}</div>
+              </div>
+            </div>
+            <div className="status-row">
+              <span className="conn-dot on" />
+              <div className="meta">
+                <div className="name">Language model</div>
+                <div className="sub">{ap.llm.provider} · {ap.llm.model}</div>
+              </div>
             </div>
           </div>
-          <div className="status-row">
-            <span className="conn-dot on" />
-            <div className="meta">
-              <div className="name">Language model</div>
-              <div className="sub">{ap.llm.provider} · {ap.llm.model}</div>
-            </div>
-          </div>
-        </div>
-        {ap.llm.note && (
+        )}
+        {ap.voice_pipeline !== "realtime" && ap.llm.note && (
           <p style={{ fontSize: 12, color: "var(--ink-muted)", marginTop: 12, lineHeight: 1.55 }}>{ap.llm.note}</p>
         )}
         <button type="button" className="btn btn-ghost btn-sm" style={{ marginTop: 14 }} onClick={load}>

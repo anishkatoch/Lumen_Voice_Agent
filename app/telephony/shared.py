@@ -282,14 +282,16 @@ async def run_realtime_telephony_bridge(
     from fastapi import WebSocketDisconnect
     from app.voice.realtime_service import RealtimeSession, build_realtime_tool, KB_SEARCH_TOOL
     from app.conversations.message_repo import save_message
+    from app.admin.admin_config_service import get as get_admin_config
 
     doc_ids = agent.get("selected_kb_doc_ids") or []
     tools = [build_realtime_tool(f) for f in tool_functions]
     if doc_ids:
         tools = tools + [KB_SEARCH_TOOL]
 
+    voice = await asyncio.to_thread(get_admin_config, "realtime_voice")
     instructions = build_phone_system_prompt(agent, extra_system_context)
-    session = RealtimeSession(instructions=instructions, tools=tools, audio_format="g711_ulaw")
+    session = RealtimeSession(instructions=instructions, tools=tools, audio_format="g711_ulaw", voice=voice)
     await session.connect()
 
     _answered_question_ids: set = set()

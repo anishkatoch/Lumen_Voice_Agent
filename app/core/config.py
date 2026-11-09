@@ -109,12 +109,13 @@ OPENAI_PIPELINE_TTS_MODEL = cfg("openai_pipeline", "tts_model", default="tts-1")
 
 # ─── OpenAI Realtime Pipeline ────────────────────────────────────────
 # A third, independent pipeline - speech-to-speech via OpenAI's Realtime
-# API. Always uses plain OPENAI_API_KEY (never Azure). When enabled, calls
+# API. Always uses plain OPENAI_API_KEY (never Azure). When active, calls
 # bypass Deepgram, llm_service, and ElevenLabs/OpenAI TTS entirely - audio
-# is bridged directly to/from the Realtime model.
-REALTIME_PIPELINE_ENABLED = bool(cfg("realtime_pipeline", "enabled", default=False))
-REALTIME_MODEL           = cfg("realtime_pipeline", "model", default="gpt-realtime")
-REALTIME_VOICE            = cfg("realtime_pipeline", "voice", default="marin")
+# is bridged directly to/from the Realtime model. Whether it's active and
+# which voice it uses are live admin-panel settings (admin_config table:
+# "voice_pipeline"/"realtime_voice", Providers tab), not set here - this is
+# only the model id, which is not exposed in the UI.
+REALTIME_MODEL = cfg("realtime_pipeline", "model", default="gpt-realtime")
 
 WS_MAX_USERS            = int(cfg("websocket", "max_concurrent_users", default=50))
 

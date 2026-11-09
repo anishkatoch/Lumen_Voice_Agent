@@ -8,7 +8,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from app.auth.dependencies import decode_supabase_token
 from app.core.config import (
     VAD_SENSITIVITY, VAD_BARGE_IN_SENSITIVITY, VAD_SILENCE_LIMIT, VAD_MIN_SPEECH,
-    MEMORY_UPDATE_EVERY, REALTIME_PIPELINE_ENABLED,
+    MEMORY_UPDATE_EVERY,
 )
 
 router = APIRouter(tags=["voice:websocket"])
@@ -401,7 +401,9 @@ async def _run_realtime_agent_session(
     from app.conversations.message_repo import save_message
     from app.agents.agent_rag_service import retrieve_agent_context, format_agent_context
     from app.kb.user_kb_rag import retrieve_user_kb_context, format_user_kb_context
+    from app.admin.admin_config_service import get as get_admin_config
 
+    voice = await asyncio.to_thread(get_admin_config, "realtime_voice")
     hr = (agent.get("hr_instructions") or "").strip()
     name = (agent.get("name") or "").strip()
     instructions = (
@@ -412,7 +414,7 @@ async def _run_realtime_agent_session(
 
     tools = [build_realtime_tool(f) for f in tool_functions] + [KB_SEARCH_TOOL]
 
-    rt_session = RealtimeSession(instructions=instructions, tools=tools, audio_format="pcm16")
+    rt_session = RealtimeSession(instructions=instructions, tools=tools, audio_format="pcm16", voice=voice)
     await rt_session.connect()
 
     sample_rate = 16000
@@ -597,6 +599,9 @@ async def agent_websocket_endpoint(websocket: WebSocket, agent_id: str, token: s
     _all_fns = await asyncio.to_thread(get_agent_functions, agent_id)
     _tool_functions = [f for f in _all_fns if f.get("url") and f.get("trigger_type") == "llm_tool_call"]
 
+    from app.admin.admin_config_service import get as get_admin_config
+    _realtime_active = await asyncio.to_thread(get_admin_config, "voice_pipeline") == "realtime"
+
     async def _execute_webhook(fn: dict, args: dict) -> str:
         """Call the configured webhook and return its response as a JSON string."""
         import httpx
@@ -695,7 +700,7 @@ async def agent_websocket_endpoint(websocket: WebSocket, agent_id: str, token: s
     # of first_message_enabled or whatever text was configured in first_message.
     # Skipped when the Realtime pipeline is active - it speaks its own
     # greeting (see _run_realtime_agent_session below).
-    if agent.get("first_message_enabled", True) and not REALTIME_PIPELINE_ENABLED:
+    if agent.get("first_message_enabled", True) and not _realtime_active:
         _agent_greetings = [
             f"Hey! I'm {agent['name']}. How can I help you today?",
             f"Hi there! {agent['name']} here. What can I do for you?",
@@ -917,7 +922,7 @@ async def agent_websocket_endpoint(websocket: WebSocket, agent_id: str, token: s
         except Exception as e:
             print(f"[Agent Sentiment] Failed for {conv_id}: {e}")
 
-    if REALTIME_PIPELINE_ENABLED:
+    if _realtime_active:
         _ws_failure_reason = await _run_realtime_agent_session(
             websocket, manager, session, agent, agent_id, user_id,
             conversation_id, doc_ids, _tool_functions,

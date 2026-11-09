@@ -24,6 +24,8 @@ DEFAULTS: dict[str, str] = {
     "llm_base_url":      "",            # used for ollama or custom openai-compat endpoints
     "user_kb_max_mb":    "5",
     "agent_kb_max_mb":   "5",
+    "voice_pipeline":    "cascade",     # cascade (STT/LLM/TTS above) | realtime (OpenAI Realtime, speech-to-speech)
+    "realtime_voice":    "marin",       # marin | cedar | alloy | ash | ballad | coral | echo | sage | shimmer | verse
 }
 
 

@@ -18,7 +18,7 @@ from app.auth.dependencies import get_current_user
 from app.telephony.shared import PHONE_WEBHOOK_MAX_TIMEOUT_S, _CALL_STATUS_REASONS
 from app.core.config import (
     VAD_SENSITIVITY, VAD_BARGE_IN_SENSITIVITY, VAD_SILENCE_LIMIT, VAD_MIN_SPEECH,
-    MEMORY_UPDATE_EVERY, REALTIME_PIPELINE_ENABLED,
+    MEMORY_UPDATE_EVERY,
 )
 
 router = APIRouter(tags=["telephony:twilio"])
@@ -796,7 +796,8 @@ async def twilio_stream_endpoint(websocket: WebSocket):
                     break
                 print(f"[Twilio] Call started - stream {stream_sid}, agent {agent['name']}")
 
-                if REALTIME_PIPELINE_ENABLED:
+                from app.admin.admin_config_service import get as get_admin_config
+                if await asyncio.to_thread(get_admin_config, "voice_pipeline") == "realtime":
                     from app.telephony.shared import run_realtime_telephony_bridge
 
                     def _parse_media_payload(data: dict) -> str | None:

@@ -68,6 +68,7 @@ async def update_admin_config(request: Request, current_user: dict = Depends(get
         "stt_provider", "tts_provider", "tts_elevenlabs_voice_id", "tts_openai_voice", "tts_openai_model",
         "llm_provider", "llm_model", "llm_api_key", "llm_base_url",
         "user_kb_max_mb", "agent_kb_max_mb",
+        "voice_pipeline", "realtime_voice",
     }
     updates = {k: str(v) for k, v in body.items() if k in ALLOWED}
     if not updates:
@@ -111,9 +112,11 @@ async def admin_system_status(current_user: dict = Depends(get_current_user)):
             "elevenlabs":   {"configured": bool(ELEVENLABS_API_KEY)},
         },
         "active_pipeline": {
+            "voice_pipeline": cfg.get("voice_pipeline", "cascade"),
             "stt": cfg.get("stt_provider"),
             "tts": cfg.get("tts_provider"),
             "llm": effective_llm,
+            "realtime_voice": cfg.get("realtime_voice"),
         },
     }
 

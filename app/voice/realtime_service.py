@@ -8,8 +8,10 @@ transcription and response generation server-side. There is no local VAD,
 no Deepgram, no separate TTS call - none of that runs when this pipeline is
 active.
 
-Always uses the plain OPENAI_API_KEY (never Azure) - set via REALTIME_MODEL/
-REALTIME_VOICE in config.yaml, gated by REALTIME_PIPELINE_ENABLED.
+Always uses the plain OPENAI_API_KEY (never Azure) - model id comes from
+REALTIME_MODEL in config.yaml; whether this pipeline is active and which
+voice it uses are live admin-panel settings (admin_config table, Providers
+tab) that callers read themselves and pass into RealtimeSession.
 """
 import asyncio
 import base64
@@ -18,7 +20,9 @@ from typing import AsyncGenerator
 
 import websockets
 
-from app.core.config import OPENAI_API_KEY, REALTIME_MODEL, REALTIME_VOICE
+from app.core.config import OPENAI_API_KEY, REALTIME_MODEL
+
+DEFAULT_VOICE = "marin"
 
 REALTIME_WS_URL = "wss://api.openai.com/v1/realtime"
 
@@ -44,7 +48,7 @@ class RealtimeSession:
         self.instructions = instructions
         self.tools = tools or []
         self.audio_format = audio_format
-        self.voice = voice or REALTIME_VOICE
+        self.voice = voice or DEFAULT_VOICE
         self.model = model or REALTIME_MODEL
         self.bytes_per_ms = BYTES_PER_MS.get(audio_format, 48.0)
         self._ws = None
