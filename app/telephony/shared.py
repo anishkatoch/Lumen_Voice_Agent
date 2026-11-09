@@ -3,6 +3,7 @@ pipelines. Pulled out here so that a fix to call-context resolution, prompt
 assembly, or KB retrieval lands once instead of needing to be hand-copied
 into both app/routers/telephony_plivo.py and app/routers/telephony_twilio.py."""
 import asyncio
+import re
 
 # Phone calls can't tolerate a long silent wait on a webhook/tool call - while
 # one is in flight, is_processing stays True and the caller's mic is only
@@ -12,6 +13,22 @@ import asyncio
 
 
 PHONE_WEBHOOK_MAX_TIMEOUT_S = 15
+
+
+def log_task_exception(task: "asyncio.Task", label: str) -> None:
+    """Done-callback for the fire-and-forget greeting/run_pipeline task.
+    Without this, any exception inside it (a failed DB write, a bug in the
+    LLM/tool pipeline) disappears except for Python's generic 'Task
+    exception was never retrieved' warning at some later, unrelated point -
+    no indication of what failed or where. A barge-in replacing the task
+    with a new one is an expected cancellation, not an error, so it's not
+    logged."""
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        print(f"[{label}] Unhandled exception in background task: {exc!r}")
+
 
 _CALL_STATUS_REASONS = {
     "busy": "The line was busy.",
@@ -69,6 +86,7 @@ async def resolve_call_context(
         c_role = candidate.get("role", "")
         c_resume = candidate.get("resume_text", "")
         c_notes = candidate.get("notes", "")
+        c_phone = candidate.get("phone", "")
         questions_raw = interview.get("specific_questions", "") or ""
         # One question per line - each non-empty line is tracked separately
         # (answered/not answered + the actual answer) via the record_answer
@@ -96,6 +114,13 @@ async def resolve_call_context(
             + (f"\nThe interview is scheduled for: {sched_formatted}." if sched_formatted else "")
             + f"\nYou are calling {call_lead} minutes before the interview time as a pre-interview reminder."
             + f"\nThe first message in this conversation is the greeting you already spoke, asking to speak with {c_name} by name."
+            + (
+                f"\nYou are calling {c_name} at {c_phone}, their number on file - you already have it. "
+                f"Never ask for their phone number or contact number; if they ask how you called them "
+                f"or question whether you have their number, confirm you're already calling the number "
+                f"on file ({c_phone}) and that you'll use it to follow up."
+                if c_phone else ""
+            )
             + (f"\n\nCandidate resume:\n{c_resume}" if c_resume else "")
             + (f"\n\nHR notes about this candidate:\n{c_notes}" if c_notes else "")
             + (
@@ -125,6 +150,7 @@ async def resolve_call_context(
         c_name = candidate.get("name", "the candidate")
         c_resume = candidate.get("resume_text", "")
         c_notes = candidate.get("notes", "")
+        c_phone = candidate.get("phone", "")
         questions_list = ctx.campaign_data.get("questions") or []
         ctx.questions = [
             {"id": q.get("id"), "text": q.get("text", "")}
@@ -145,6 +171,13 @@ async def resolve_call_context(
             f"\n\n--- CURRENT CALL CONTEXT ---"
             f"\nYou are calling {c_name} for a brief screening call."
             + f"\nThe first message in this conversation is the greeting you already spoke, asking to speak with {c_name} by name."
+            + (
+                f"\nYou are calling {c_name} at {c_phone}, their number on file - you already have it. "
+                f"Never ask for their phone number or contact number; if they ask how you called them "
+                f"or question whether you have their number, confirm you're already calling the number "
+                f"on file ({c_phone}) and that you'll use it to follow up."
+                if c_phone else ""
+            )
             + (f"\n\nCandidate resume:\n{c_resume}" if c_resume else "")
             + (f"\n\nHR notes about this candidate:\n{c_notes}" if c_notes else "")
             + (
@@ -188,6 +221,111 @@ def build_record_answer_tool(questions: list[dict]) -> dict:
              "description": "The candidate's answer, summarized concisely."},
         ],
     }
+
+
+def _normalize_doc_ref(text: str) -> str:
+    """Collapse case/punctuation/extension differences so a document's
+    display_name can be matched against free-form kb_instructions text -
+    "Employee_Referral Policy.pdf" needs to match instructions written as
+    "...employee referral policy questions..."."""
+    return re.sub(r"[^a-z0-9]+", " ", text.lower()).strip()
+
+
+def filter_kb_documents_by_instructions(kb_instructions: str, documents: list[dict]) -> list[dict]:
+    """Keep only the documents (each {"id", "display_name"}) kb_instructions
+    actually permits.
+
+    With zero or one document selected there's nothing to disambiguate - any
+    non-empty kb_instructions ("use the attached documents...") unambiguously
+    refers to the one document there is, so it's eligible without needing to
+    be named. With two or more selected, a generic instruction like that
+    can't tell them apart, so only the documents actually named in
+    kb_instructions are eligible: if an agent has two documents selected but
+    kb_instructions only talks about one of them by name, the other must
+    never be searched just because *some* KB instructions exist - same
+    principle as build_phone_system_prompt's "no kb_instructions at all means
+    no KB tool at all", one level more specific."""
+    normalized_instructions = _normalize_doc_ref(kb_instructions or "")
+    if not normalized_instructions:
+        return []
+    if len(documents) <= 1:
+        return list(documents)
+    eligible = []
+    for doc in documents:
+        name = doc.get("display_name") or ""
+        stem = name.rsplit(".", 1)[0] if "." in name else name
+        normalized_name = _normalize_doc_ref(stem)
+        if normalized_name and normalized_name in normalized_instructions:
+            eligible.append(doc)
+    return eligible
+
+
+async def get_eligible_kb_documents(agent: dict, user_id: str) -> list[dict]:
+    """Resolve this agent's selected_kb_doc_ids to the {"id", "display_name"}
+    rows this user actually owns, then filter to the ones kb_instructions
+    actually references (filter_kb_documents_by_instructions). This is the
+    full set of documents this call's search_knowledge_base tool is allowed
+    to touch - empty if there's no kb_instructions, no selected docs, or none
+    of the selected docs are actually named in kb_instructions."""
+    doc_ids = set(agent.get("selected_kb_doc_ids") or [])
+    kb_instructions = agent.get("kb_instructions") or ""
+    if not doc_ids or not kb_instructions.strip():
+        return []
+    from app.kb.user_kb_repo import get_user_documents
+    owned = await asyncio.to_thread(get_user_documents, user_id)
+    selected_owned = [d for d in owned if d["id"] in doc_ids]
+    return filter_kb_documents_by_instructions(kb_instructions, selected_owned)
+
+
+def build_kb_search_tool(documents: list[dict]) -> dict:
+    """Synthetic tool (same shape as build_record_answer_tool - never stored
+    in agent_functions) that lets the model pull knowledge-base content only
+    when it decides a turn actually needs it, instead of every turn paying
+    for an embedding call + pgvector query against docs that are usually
+    irrelevant to what the caller just said.
+
+    `documents` is the eligible set from get_eligible_kb_documents - already
+    filtered down to the documents kb_instructions actually names. Only
+    called (and only added to a call's tools) when that list is non-empty.
+    When there's more than one eligible document, a `document` parameter is
+    added so the model picks which one to search per-turn instead of pooling
+    every eligible document's chunks into one search; its valid values are
+    spelled out in the description rather than enforced as a JSON-schema
+    enum (build_openai_tool/build_realtime_tool don't support one - see
+    validate_question_answer's docstring for the same tradeoff on
+    record_answer's question_id), so the caller must still validate the
+    returned value instead of trusting it."""
+    params = [{"name": "query", "type": "string", "description": "What to search for"}]
+    if len(documents) > 1:
+        names = ", ".join(f'"{d["display_name"]}"' for d in documents)
+        params.append({
+            "name": "document",
+            "type": "string",
+            "description": f"Which document to search. Must be exactly one of: {names}",
+        })
+    return {
+        "name": "search_knowledge_base",
+        "kind": "internal_kb_search",
+        "description": (
+            "Search the knowledge base for information relevant to the caller's "
+            "question. Call this before answering anything you are not already "
+            "certain about from the conversation so far."
+        ),
+        "parameters": params,
+    }
+
+
+def resolve_kb_search_doc_ids(args: dict, documents: list[dict]) -> list[str]:
+    """Map a search_knowledge_base tool call's `document` argument back to a
+    doc id to restrict the search to. Falls back to every eligible document
+    (never to anything outside `documents` - that set is already the full
+    extent of what's allowed) if the model omitted the argument or named
+    something that doesn't match, e.g. a hallucinated name."""
+    requested = (args.get("document") or "").strip().lower()
+    matched = [d for d in documents if (d.get("display_name") or "").strip().lower() == requested]
+    if matched:
+        return [matched[0]["id"]]
+    return [d["id"] for d in documents]
 
 
 def validate_question_answer(question_id: str, call_questions: list[dict], answered_question_ids: set) -> str | None:
@@ -236,13 +374,22 @@ def build_phone_system_prompt(agent: dict, extra_system_context: str) -> str:
     name" mid-call even though phone calls (unlike the browser WS path)
     never speak a templated greeting that states it out loud. Also mirrors
     what app/routers/websockets.py does for hr_instructions on browser
-    sessions - phone calls were missing that entirely until this was added."""
+    sessions - phone calls were missing that entirely until this was added.
+
+    kb_instructions is folded in here too, unconditionally, rather than left
+    to build_system_prompt's rag_context/has_kb gating - the phone pipelines
+    fetch KB content on demand via a search_knowledge_base tool rather than
+    an eager per-turn retrieval, so this is the only place left where the
+    agent's own KB guidance (e.g. "use them as your source of truth") still
+    reaches the model."""
     hr = (agent.get("hr_instructions") or "").strip()
+    kb = (agent.get("kb_instructions") or "").strip()
     name = (agent.get("name") or "").strip()
     return (
         (f"Your name is {name}. If asked your name, say {name}.\n\n" if name else "")
         + (agent.get("system_prompt") or "")
         + (f"\n\n--- HR INSTRUCTIONS ---\n{hr}" if hr else "")
+        + (f"\n\n--- KNOWLEDGE BASE INSTRUCTIONS ---\n{kb}" if kb else "")
         + extra_system_context
     )
 
@@ -280,14 +427,18 @@ async def run_realtime_telephony_bridge(
     import base64
     import json
     from fastapi import WebSocketDisconnect
-    from app.voice.realtime_service import RealtimeSession, build_realtime_tool, KB_SEARCH_TOOL
+    from app.voice.realtime_service import RealtimeSession, build_realtime_tool
     from app.conversations.message_repo import save_message
     from app.admin.admin_config_service import get as get_admin_config
 
-    doc_ids = agent.get("selected_kb_doc_ids") or []
     tools = [build_realtime_tool(f) for f in tool_functions]
-    if doc_ids:
-        tools = tools + [KB_SEARCH_TOOL]
+    # Only offer the tool for documents kb_instructions actually names - a
+    # doc merely being selected isn't an instruction to use it (see
+    # get_eligible_kb_documents). An agent with docs attached but nothing
+    # written about them there should behave as if it has no KB at all.
+    _kb_documents = await get_eligible_kb_documents(agent, user_id)
+    if _kb_documents:
+        tools = tools + [build_realtime_tool(build_kb_search_tool(_kb_documents))]
 
     voice = await asyncio.to_thread(get_admin_config, "realtime_voice")
     instructions = build_phone_system_prompt(agent, extra_system_context)
@@ -301,7 +452,10 @@ async def run_realtime_telephony_bridge(
 
     async def _execute_tool(name: str, args: dict) -> str:
         if name == "search_knowledge_base":
-            full_rag, _ = await retrieve_phone_rag_context(args.get("query", ""), agent, agent_id, user_id)
+            restrict_ids = resolve_kb_search_doc_ids(args, _kb_documents)
+            full_rag, _ = await retrieve_phone_rag_context(
+                args.get("query", ""), agent, agent_id, user_id, restrict_doc_ids=restrict_ids,
+            )
             return full_rag or "No relevant information found."
         fn = next((f for f in tool_functions if f["name"] == name), None)
         if fn and fn.get("kind") == "internal_record_answer":
@@ -421,10 +575,21 @@ async def run_realtime_telephony_bridge(
     return _failure_reason
 
 
-async def retrieve_phone_rag_context(user_message: str, agent: dict, agent_id: str, user_id: str) -> tuple[str, bool]:
+async def retrieve_phone_rag_context(
+    user_message: str, agent: dict, agent_id: str, user_id: str,
+    restrict_doc_ids: list[str] | None = None,
+) -> tuple[str, bool]:
     """Fetch RAG context for a phone call turn: agent-level KB (document_chunks,
     scoped by agent_id) plus account-level KB docs (user_document_chunks),
     restricted to the documents this agent actually has selected.
+
+    restrict_doc_ids, when given, further narrows the account-level KB
+    lookup to exactly those ids instead of every selected+owned document -
+    used by the Plivo/Twilio/Realtime pipelines' search_knowledge_base tool
+    to scope a turn's search to the one document the model picked (via
+    resolve_kb_search_doc_ids) rather than pooling every eligible document's
+    chunks together. Does not affect the agent-level lookup above, which has
+    no per-document identity to restrict by.
 
     Returns (full_rag_text, has_kb) - has_kb is True only if this agent has
     at least one KB document selected, so build_system_prompt can skip the
@@ -448,8 +613,11 @@ async def retrieve_phone_rag_context(user_message: str, agent: dict, agent_id: s
     # per-agent KB selector cosmetic.
     kb_ctx = ""
     if doc_ids:
-        owned_ids = {d["id"] for d in await asyncio.to_thread(get_user_documents, user_id)}
-        selected_owned_ids = [d for d in doc_ids if d in owned_ids]
+        if restrict_doc_ids is not None:
+            selected_owned_ids = restrict_doc_ids
+        else:
+            owned_ids = {d["id"] for d in await asyncio.to_thread(get_user_documents, user_id)}
+            selected_owned_ids = [d for d in doc_ids if d in owned_ids]
         if selected_owned_ids:
             kb_rag = await asyncio.to_thread(retrieve_user_kb_context, user_message, selected_owned_ids)
             kb_ctx = format_user_kb_context(kb_rag) if kb_rag else ""

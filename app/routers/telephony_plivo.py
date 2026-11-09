@@ -14,7 +14,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel
 
 from app.auth.dependencies import get_current_user
-from app.telephony.shared import PHONE_WEBHOOK_MAX_TIMEOUT_S, _CALL_STATUS_REASONS
+from app.telephony.shared import PHONE_WEBHOOK_MAX_TIMEOUT_S, _CALL_STATUS_REASONS, log_task_exception
 from app.routers.telephony_twilio import PhoneNumberAttach
 from app.core.config import (
     VAD_SENSITIVITY, VAD_BARGE_IN_SENSITIVITY, VAD_SILENCE_LIMIT, VAD_MIN_SPEECH,
@@ -432,6 +432,7 @@ async def plivo_stream_endpoint(websocket: WebSocket):
     agent: dict | None = None
     conversation_id: str | None = None
     _tool_functions: list = []
+    _kb_documents: list = []  # docs search_knowledge_base may touch - see get_eligible_kb_documents
     initial_memory = None
 
     stream_id: str | None = None
@@ -469,7 +470,7 @@ async def plivo_stream_endpoint(websocket: WebSocket):
         / campaign_candidate_id) is read straight from it rather than from a
         'start' event payload field."""
         nonlocal agent_id, user_id, interview_id, extra_system_context, greeting_override
-        nonlocal agent, conversation_id, _tool_functions, initial_memory
+        nonlocal agent, conversation_id, _tool_functions, _kb_documents, initial_memory
         nonlocal campaign_candidate_id, campaign_id, campaign_data, call_questions
 
         interview_id = query_params.get("interview_id", "")
@@ -538,6 +539,17 @@ async def plivo_stream_endpoint(websocket: WebSocket):
         if call_questions:
             from app.telephony.shared import build_record_answer_tool
             _tool_functions = _tool_functions + [build_record_answer_tool(call_questions)]
+
+        # Only offer the tool for documents kb_instructions actually names -
+        # a doc merely being selected isn't an instruction to use it. An
+        # agent with docs attached but nothing written about them there
+        # should behave as if it has no KB at all, and a second selected
+        # document kb_instructions never mentions should never be searched
+        # just because the first one is (see get_eligible_kb_documents).
+        from app.telephony.shared import get_eligible_kb_documents, build_kb_search_tool
+        _kb_documents = await get_eligible_kb_documents(agent, user_id)
+        if _kb_documents:
+            _tool_functions = _tool_functions + [build_kb_search_tool(_kb_documents)]
 
         # Never inject the agent OWNER's long_term_memory into a phone call -
         # the caller on a phone call is never the account owner (unlike the
@@ -609,6 +621,22 @@ async def plivo_stream_endpoint(websocket: WebSocket):
         except Exception as e:
             return json.dumps({"error": str(e)})
 
+    async def _execute_kb_search(args: dict, fallback_query: str) -> str:
+        """Backs the search_knowledge_base tool (built by
+        app.telephony.shared.build_kb_search_tool) - the model calls this only
+        on turns it decides actually need the knowledge base, instead of every
+        turn paying for an embedding call + pgvector query regardless of
+        relevance. Scoped to whichever eligible document the model named
+        (resolve_kb_search_doc_ids) so a second selected-but-unmentioned
+        document never gets searched just because this tool exists. Mirrors
+        app/routers/telephony_twilio.py's _execute_kb_search."""
+        from app.telephony.shared import retrieve_phone_rag_context, resolve_kb_search_doc_ids
+        restrict_ids = resolve_kb_search_doc_ids(args, _kb_documents)
+        full_rag, _ = await retrieve_phone_rag_context(
+            args.get("query") or fallback_query, agent, agent_id, user_id, restrict_doc_ids=restrict_ids,
+        )
+        return full_rag or "No relevant information found in the knowledge base."
+
     async def _speak(text: str, gen: int):
         nonlocal is_speaking
         is_speaking = True
@@ -662,16 +690,21 @@ async def plivo_stream_endpoint(websocket: WebSocket):
             session_msgs = await asyncio.to_thread(get_session_messages, conversation_id)
             await asyncio.to_thread(save_message, conversation_id, user_id, "user", user_message)
 
-            from app.telephony.shared import retrieve_phone_rag_context, build_phone_system_prompt
-            full_rag, has_kb = await retrieve_phone_rag_context(user_message, agent, agent_id, user_id)
+            from app.telephony.shared import build_phone_system_prompt
 
             base_system = build_phone_system_prompt(agent, extra_system_context)
+            # No eager RAG fetch here - when the agent has a KB selected,
+            # _tool_functions (built in _setup_call) includes a
+            # search_knowledge_base tool so the model can pull doc content
+            # only on turns it decides actually need it, instead of every
+            # turn paying for an embedding call + pgvector query against docs
+            # that are usually irrelevant to what the caller just said.
             system_str = build_system_prompt(
                 base_system or None,
                 initial_memory,
-                full_rag,
-                agent.get("kb_instructions") or None,
-                has_kb=has_kb,
+                "",
+                None,
+                has_kb=False,
             )
             history = [{"role": m["role"], "content": m["content"]} for m in session_msgs]
 
@@ -691,6 +724,8 @@ async def plivo_stream_endpoint(websocket: WebSocket):
                         if _retrieval_filler_task and not _retrieval_filler_task.done():
                             _retrieval_filler_task.cancel()
                         tool_result = await _record_answer_tool(tool_args)
+                    elif fn and fn.get("kind") == "internal_kb_search":
+                        tool_result = await _execute_kb_search(tool_args, user_message)
                     elif fn:
                         tool_result = await _execute_webhook_plivo(fn, tool_args)
                     else:
@@ -708,7 +743,7 @@ async def plivo_stream_endpoint(websocket: WebSocket):
                 async for sentence in generate_response_stream(
                     user_message=user_message,
                     session_history=history,
-                    rag_context=full_rag,
+                    rag_context="",
                     long_term_memory=initial_memory,
                     system_prompt_override=agent.get("system_prompt") or None,
                     kb_instructions=agent.get("kb_instructions") or None,
@@ -789,6 +824,7 @@ async def plivo_stream_endpoint(websocket: WebSocket):
                 if greeting:
                     _speech_gen += 1
                     _active_task = asyncio.create_task(_speak_greeting(greeting, _speech_gen))
+                    _active_task.add_done_callback(lambda t: log_task_exception(t, "Plivo"))
 
             elif event == "media":
                 if not agent:
@@ -885,6 +921,7 @@ async def plivo_stream_endpoint(websocket: WebSocket):
                             print(f"[Plivo] User said: {transcript.strip()}")
                             _speech_gen += 1
                             _active_task = asyncio.create_task(run_pipeline(transcript.strip(), _speech_gen))
+                            _active_task.add_done_callback(lambda t: log_task_exception(t, "Plivo"))
 
             elif event == "stop":
                 # Defensive only - per Plivo's protocol reference, call-end is
