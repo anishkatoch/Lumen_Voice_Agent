@@ -15,6 +15,7 @@ CACHE_TTL = 5.0
 DEFAULTS: dict[str, str] = {
     "stt_provider":      "deepgram",    # deepgram | openai_whisper
     "tts_provider":      "elevenlabs",  # elevenlabs | openai_tts
+    "tts_elevenlabs_voice_id": "",      # empty = use ELEVENLABS_VOICE_ID env default
     "tts_openai_voice":  "alloy",       # alloy | echo | fable | onyx | nova | shimmer
     "tts_openai_model":  "tts-1",       # tts-1 | tts-1-hd
     "llm_provider":      "openai",      # openai | groq | anthropic | ollama

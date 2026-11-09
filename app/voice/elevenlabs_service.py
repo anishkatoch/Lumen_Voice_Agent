@@ -39,9 +39,10 @@ async def text_to_speech_stream(text: str):
             style=TTS_STYLE,
             use_speaker_boost=TTS_SPEAKER_BOOST,
         )
+        voice_id = get_config("tts_elevenlabs_voice_id") or TTS_VOICE_ID
         audio_stream = await asyncio.to_thread(
             client.text_to_speech.convert_as_stream,
-            voice_id=TTS_VOICE_ID,
+            voice_id=voice_id,
             text=text,
             model_id=TTS_MODEL_ID,
             voice_settings=settings,

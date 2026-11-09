@@ -65,7 +65,7 @@ async def update_admin_config(request: Request, current_user: dict = Depends(get
     _require_admin(current_user)
     body = await request.json()
     ALLOWED = {
-        "stt_provider", "tts_provider", "tts_openai_voice", "tts_openai_model",
+        "stt_provider", "tts_provider", "tts_elevenlabs_voice_id", "tts_openai_voice", "tts_openai_model",
         "llm_provider", "llm_model", "llm_api_key", "llm_base_url",
         "user_kb_max_mb", "agent_kb_max_mb",
     }
@@ -116,6 +116,40 @@ async def admin_system_status(current_user: dict = Depends(get_current_user)):
             "llm": effective_llm,
         },
     }
+
+@router.get("/api/admin/elevenlabs-voices")
+async def admin_list_elevenlabs_voices(current_user: dict = Depends(get_current_user)):
+    """Voices this ElevenLabs account can actually use right now - premade
+    voices plus anything added to the account's Voice Library - so the admin
+    can only ever pick a voice that won't fail mid-call for being outside the
+    current plan."""
+    _require_admin(current_user)
+    from app.core.config import ELEVENLABS_API_KEY
+    if not ELEVENLABS_API_KEY:
+        raise HTTPException(status_code=400, detail="ELEVENLABS_API_KEY is not configured")
+
+    def _fetch():
+        from elevenlabs.client import ElevenLabs
+        client = ElevenLabs(api_key=ELEVENLABS_API_KEY)
+        resp = client.voices.get_all()
+        voices = []
+        for v in resp.voices:
+            # available_for_tiers empty/None means no subscription-tier
+            # restriction - usable on any plan including free.
+            free = not v.available_for_tiers
+            voices.append({
+                "voice_id": v.voice_id,
+                "name": v.name,
+                "category": v.category,
+                "preview_url": v.preview_url,
+                "free": free,
+            })
+        return voices
+
+    try:
+        return await asyncio.to_thread(_fetch)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"ElevenLabs error: {e}")
 
 @router.post("/api/admin/test-llm")
 async def admin_test_llm(current_user: dict = Depends(get_current_user)):
