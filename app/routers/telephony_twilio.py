@@ -18,7 +18,7 @@ from app.auth.dependencies import get_current_user
 from app.telephony.shared import PHONE_WEBHOOK_MAX_TIMEOUT_S, _CALL_STATUS_REASONS
 from app.core.config import (
     VAD_SENSITIVITY, VAD_BARGE_IN_SENSITIVITY, VAD_SILENCE_LIMIT, VAD_MIN_SPEECH,
-    MEMORY_UPDATE_EVERY,
+    MEMORY_UPDATE_EVERY, REALTIME_PIPELINE_ENABLED,
 )
 
 router = APIRouter(tags=["telephony:twilio"])
@@ -795,6 +795,35 @@ async def twilio_stream_endpoint(websocket: WebSocket):
                 if not await _setup_call(custom_params, twilio_call_sid):
                     break
                 print(f"[Twilio] Call started - stream {stream_sid}, agent {agent['name']}")
+
+                if REALTIME_PIPELINE_ENABLED:
+                    from app.telephony.shared import run_realtime_telephony_bridge
+
+                    def _parse_media_payload(data: dict) -> str | None:
+                        return (data.get("media") or {}).get("payload")
+
+                    async def _send_audio_frame(b64_payload: str):
+                        await websocket.send_text(json.dumps({
+                            "event": "media",
+                            "streamSid": stream_sid,
+                            "media": {"payload": b64_payload},
+                        }))
+
+                    async def _send_clear():
+                        await websocket.send_text(json.dumps({"event": "clear", "streamSid": stream_sid}))
+
+                    _call_failure_reason = await run_realtime_telephony_bridge(
+                        websocket, log_label="Twilio", agent=agent, agent_id=agent_id, user_id=user_id,
+                        conversation_id=conversation_id, extra_system_context=extra_system_context,
+                        greeting_override=greeting_override, call_questions=call_questions,
+                        interview_id=interview_id, campaign_candidate_id=campaign_candidate_id,
+                        tool_functions=_tool_functions, parse_media_payload=_parse_media_payload,
+                        send_audio_frame=_send_audio_frame, send_clear=_send_clear,
+                    )
+                    # Not _call_ended = True - no mark_interview/campaign_completed
+                    # call happened above, so leave that to the finally block below.
+                    break
+
                 greeting = greeting_override or (
                     agent.get("first_message") if agent.get("first_message_enabled") else None
                 )

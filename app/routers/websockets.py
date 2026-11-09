@@ -8,7 +8,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from app.auth.dependencies import decode_supabase_token
 from app.core.config import (
     VAD_SENSITIVITY, VAD_BARGE_IN_SENSITIVITY, VAD_SILENCE_LIMIT, VAD_MIN_SPEECH,
-    MEMORY_UPDATE_EVERY,
+    MEMORY_UPDATE_EVERY, REALTIME_PIPELINE_ENABLED,
 )
 
 router = APIRouter(tags=["voice:websocket"])
@@ -378,6 +378,180 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
             ))
             loop.create_task(asyncio.to_thread(set_call_duration_and_cost, conversation_id))
 
+async def _run_realtime_agent_session(
+    websocket, manager, session, agent: dict, agent_id: str, user_id: str,
+    conversation_id: str, doc_ids: list[str], tool_functions: list[dict],
+) -> str | None:
+    """Browser equivalent of app.telephony.shared.run_realtime_telephony_bridge -
+    bridges the mic/speaker websocket directly to OpenAI's Realtime API, no
+    VAD/Deepgram/llm_service/TTS involved. Audio here is raw pcm16 at the
+    client's own sample rate (set via the "sample_rate" control message,
+    default 16000 - see agent_websocket_endpoint), so each chunk is resampled
+    to/from the Realtime API's fixed 24 kHz pcm16; telephony doesn't need
+    this since its native g711_ulaw already matches what the API expects.
+
+    Note: the live "set_rag_scope" toggle (personal/global/both) that the
+    cascaded pipeline supports mid-call isn't wired up here - this always
+    searches both scopes via the search_knowledge_base tool."""
+    import base64
+    import json
+    from fastapi import WebSocketDisconnect
+    from app.core.websocket_manager import AgentState
+    from app.voice.realtime_service import RealtimeSession, build_realtime_tool, KB_SEARCH_TOOL, resample_pcm16
+    from app.conversations.message_repo import save_message
+    from app.agents.agent_rag_service import retrieve_agent_context, format_agent_context
+    from app.kb.user_kb_rag import retrieve_user_kb_context, format_user_kb_context
+
+    hr = (agent.get("hr_instructions") or "").strip()
+    name = (agent.get("name") or "").strip()
+    instructions = (
+        (f"Your name is {name}. If asked your name, say {name}.\n\n" if name else "")
+        + (agent.get("system_prompt") or "")
+        + (f"\n\n--- HR INSTRUCTIONS ---\n{hr}" if hr else "")
+    )
+
+    tools = [build_realtime_tool(f) for f in tool_functions] + [KB_SEARCH_TOOL]
+
+    rt_session = RealtimeSession(instructions=instructions, tools=tools, audio_format="pcm16")
+    await rt_session.connect()
+
+    sample_rate = 16000
+    _failure_reason: str | None = None
+    _active_item_id: str | None = None
+    _bytes_out_for_item: dict[str, int] = {}
+
+    async def _execute_tool(fn_name: str, args: dict) -> str:
+        if fn_name == "search_knowledge_base":
+            query = args.get("query", "")
+            parts = []
+            rag_chunks = await asyncio.to_thread(
+                retrieve_agent_context, query, agent_id, user_id, ["personal", "global"]
+            )
+            agent_ctx = format_agent_context(rag_chunks)
+            if agent_ctx:
+                parts.append(agent_ctx)
+            if doc_ids:
+                kb_chunks = await asyncio.to_thread(retrieve_user_kb_context, query, doc_ids)
+                kb_ctx = format_user_kb_context(kb_chunks) if kb_chunks else ""
+                if kb_ctx:
+                    parts.append(kb_ctx)
+            return "\n\n".join(parts) or "No relevant information found."
+        fn = next((f for f in tool_functions if f["name"] == fn_name), None)
+        if not fn:
+            return json.dumps({"error": "function not found"})
+        import httpx
+        method = (fn.get("method") or "POST").upper()
+        url = fn["url"]
+        headers = fn.get("headers") or {}
+        timeout_s = (fn.get("timeout_ms") or 30000) / 1000
+        try:
+            async with httpx.AsyncClient(timeout=timeout_s) as hclient:
+                if method == "GET":
+                    resp = await hclient.get(url, params=args, headers=headers)
+                elif method == "DELETE":
+                    resp = await hclient.delete(url, params=args, headers=headers)
+                else:
+                    resp = await hclient.request(method, url, json=args, headers=headers)
+            try:
+                return json.dumps(resp.json())
+            except Exception:
+                return json.dumps({"response": resp.text, "status": resp.status_code})
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
+    async def _drain_realtime_events():
+        nonlocal _active_item_id, _failure_reason
+        try:
+            async for event in rt_session.events():
+                etype = event.get("type")
+
+                if etype == "response.audio.delta":
+                    item_id = event.get("item_id")
+                    raw_24k = base64.b64decode(event.get("delta") or "")
+                    _active_item_id = item_id
+                    _bytes_out_for_item[item_id] = _bytes_out_for_item.get(item_id, 0) + len(raw_24k)
+                    if session.state != AgentState.SPEAKING:
+                        session.state = AgentState.SPEAKING
+                        await manager.send_json(websocket, {"type": "state", "state": "SPEAKING"})
+                    await manager.send_bytes(websocket, resample_pcm16(raw_24k, from_rate=24000, to_rate=sample_rate))
+
+                elif etype == "input_audio_buffer.speech_started":
+                    if _active_item_id:
+                        await rt_session.cancel_response()
+                        elapsed_ms = int(_bytes_out_for_item.get(_active_item_id, 0) / rt_session.bytes_per_ms)
+                        await rt_session.truncate(_active_item_id, elapsed_ms)
+                        _active_item_id = None
+                        await manager.send_json(websocket, {"type": "stop_audio"})
+                        session.state = AgentState.LISTENING
+                        await manager.send_json(websocket, {"type": "state", "state": "LISTENING"})
+
+                elif etype == "conversation.item.input_audio_transcription.completed":
+                    transcript = (event.get("transcript") or "").strip()
+                    if transcript:
+                        await manager.send_json(websocket, {"type": "transcript", "text": transcript})
+                        await asyncio.to_thread(save_message, conversation_id, user_id, "user", transcript)
+
+                elif etype == "response.audio_transcript.done":
+                    transcript = (event.get("transcript") or "").strip()
+                    if transcript:
+                        await manager.send_json(websocket, {"type": "reply", "text": transcript})
+                        await asyncio.to_thread(save_message, conversation_id, user_id, "assistant", transcript)
+
+                elif etype == "response.function_call_arguments.done":
+                    call_id = event.get("call_id")
+                    fn_name = event.get("name")
+                    try:
+                        args = json.loads(event.get("arguments") or "{}")
+                    except Exception:
+                        args = {}
+                    result = await _execute_tool(fn_name, args)
+                    await rt_session.send_tool_result(call_id, result)
+
+                elif etype == "response.done":
+                    if _active_item_id:
+                        await manager.send_json(websocket, {"type": "audio_end"})
+                    _active_item_id = None
+                    session.state = AgentState.LISTENING
+                    await manager.send_json(websocket, {"type": "state", "state": "LISTENING"})
+
+                elif etype == "error":
+                    print(f"[Browser Realtime] error: {event.get('error')}")
+        except Exception as e:
+            _failure_reason = str(e)[:500]
+
+    drain_task = asyncio.create_task(_drain_realtime_events())
+
+    if agent.get("first_message_enabled", True):
+        greeting = agent.get("first_message") or f"Hey! I'm {agent.get('name', 'your assistant')}. How can I help you today?"
+        await rt_session.say(greeting)
+        await asyncio.to_thread(save_message, conversation_id, user_id, "assistant", greeting)
+
+    try:
+        while True:
+            data = await websocket.receive()
+            if "bytes" in data and data["bytes"]:
+                await rt_session.append_audio(resample_pcm16(data["bytes"], from_rate=sample_rate, to_rate=24000))
+            elif "text" in data and data["text"]:
+                try:
+                    msg = json.loads(data["text"])
+                except json.JSONDecodeError:
+                    continue
+                if msg.get("type") == "sample_rate":
+                    sample_rate = int(msg.get("value", 16000))
+    except (WebSocketDisconnect, ConnectionResetError):
+        pass
+    except RuntimeError as e:
+        if "disconnect message" not in str(e):
+            _failure_reason = str(e)[:500]
+    except Exception as e:
+        _failure_reason = str(e)[:500]
+    finally:
+        drain_task.cancel()
+        await rt_session.close()
+
+    return _failure_reason
+
+
 @router.websocket("/ws/agent/{agent_id}/{token}")
 async def agent_websocket_endpoint(websocket: WebSocket, agent_id: str, token: str, docs: str = ""):
     """Voice session tied to a specific agent - uses agent system prompt + RAG over agent docs."""
@@ -519,7 +693,9 @@ async def agent_websocket_endpoint(websocket: WebSocket, agent_id: str, token: s
     # same as the phone-call paths (telephony_plivo.py/telephony_twilio.py) -
     # this previously always spoke one of these hardcoded templates regardless
     # of first_message_enabled or whatever text was configured in first_message.
-    if agent.get("first_message_enabled", True):
+    # Skipped when the Realtime pipeline is active - it speaks its own
+    # greeting (see _run_realtime_agent_session below).
+    if agent.get("first_message_enabled", True) and not REALTIME_PIPELINE_ENABLED:
         _agent_greetings = [
             f"Hey! I'm {agent['name']}. How can I help you today?",
             f"Hi there! {agent['name']} here. What can I do for you?",
@@ -740,6 +916,23 @@ async def agent_websocket_endpoint(websocket: WebSocket, agent_id: str, token: s
             await asyncio.to_thread(update_conversation_sentiment, conv_id, result)
         except Exception as e:
             print(f"[Agent Sentiment] Failed for {conv_id}: {e}")
+
+    if REALTIME_PIPELINE_ENABLED:
+        _ws_failure_reason = await _run_realtime_agent_session(
+            websocket, manager, session, agent, agent_id, user_id,
+            conversation_id, doc_ids, _tool_functions,
+        )
+        manager.remove_session(session)
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            loop.create_task(_update_agent_memory(user_id, conversation_id))
+            loop.create_task(_analyze_agent_session_sentiment(conversation_id))
+            loop.create_task(asyncio.to_thread(
+                set_call_status, conversation_id,
+                "failed" if _ws_failure_reason else "completed", _ws_failure_reason,
+            ))
+            loop.create_task(asyncio.to_thread(set_call_duration_and_cost, conversation_id))
+        return
 
     speech_buffer: list[bytes] = []
     silence_chunks = 0

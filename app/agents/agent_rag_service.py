@@ -6,11 +6,22 @@ import psycopg2
 
 from app.core.config import (
     OPENAI_API_KEY, RAG_EMBEDDING_MODEL, RAG_TOP_K,
+    AZURE_OPENAI_API_KEY, AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_VERSION,
+    AZURE_OPENAI_EMBEDDING_DEPLOYMENT,
     DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME,
 )
-from openai import OpenAI
+from openai import OpenAI, AzureOpenAI
 
 _openai = OpenAI(api_key=OPENAI_API_KEY)
+_azure_openai = (
+    AzureOpenAI(
+        api_key=AZURE_OPENAI_API_KEY,
+        azure_endpoint=AZURE_OPENAI_ENDPOINT,
+        api_version=AZURE_OPENAI_API_VERSION,
+    )
+    if AZURE_OPENAI_API_KEY and AZURE_OPENAI_ENDPOINT
+    else None
+)
 
 
 def _get_conn():
@@ -21,6 +32,16 @@ def _get_conn():
 
 
 def _embed_query(query: str) -> list[float]:
+    """Azure OpenAI is the primary embedding source when configured; plain
+    OpenAI is the fallback if Azure is unconfigured or a call to it fails."""
+    if _azure_openai is not None:
+        try:
+            response = _azure_openai.embeddings.create(
+                model=AZURE_OPENAI_EMBEDDING_DEPLOYMENT, input=[query]
+            )
+            return response.data[0].embedding
+        except Exception:
+            pass
     response = _openai.embeddings.create(model=RAG_EMBEDDING_MODEL, input=[query])
     return response.data[0].embedding
 

@@ -59,6 +59,7 @@ AZURE_OPENAI_API_KEY     = os.environ.get("AZURE_OPENAI_API_KEY", "")
 AZURE_OPENAI_ENDPOINT    = os.environ.get("AZURE_OPENAI_ENDPOINT", "")
 AZURE_OPENAI_API_VERSION = os.environ.get("AZURE_OPENAI_API_VERSION", "2024-10-21")
 AZURE_OPENAI_DEPLOYMENT  = os.environ.get("AZURE_OPENAI_DEPLOYMENT", "gpt-4.1-mini")
+AZURE_OPENAI_EMBEDDING_DEPLOYMENT = os.environ.get("AZURE_OPENAI_EMBEDDING_DEPLOYMENT", "text-embedding-3-small")
 
 DEEPGRAM_API_KEY        = os.environ["DEEPGRAM_API_KEY"]
 if not DEEPGRAM_API_KEY:
@@ -105,6 +106,15 @@ TTS_SPEAKER_BOOST       = bool(cfg("tts", "use_speaker_boost", default=True))
 OPENAI_PIPELINE_ENABLED  = bool(cfg("openai_pipeline", "enabled", default=False))
 OPENAI_PIPELINE_TTS_VOICE = cfg("openai_pipeline", "tts_voice", default="alloy")
 OPENAI_PIPELINE_TTS_MODEL = cfg("openai_pipeline", "tts_model", default="tts-1")
+
+# ─── OpenAI Realtime Pipeline ────────────────────────────────────────
+# A third, independent pipeline - speech-to-speech via OpenAI's Realtime
+# API. Always uses plain OPENAI_API_KEY (never Azure). When enabled, calls
+# bypass Deepgram, llm_service, and ElevenLabs/OpenAI TTS entirely - audio
+# is bridged directly to/from the Realtime model.
+REALTIME_PIPELINE_ENABLED = bool(cfg("realtime_pipeline", "enabled", default=False))
+REALTIME_MODEL           = cfg("realtime_pipeline", "model", default="gpt-realtime")
+REALTIME_VOICE            = cfg("realtime_pipeline", "voice", default="marin")
 
 WS_MAX_USERS            = int(cfg("websocket", "max_concurrent_users", default=50))
 

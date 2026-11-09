@@ -247,6 +247,178 @@ def build_phone_system_prompt(agent: dict, extra_system_context: str) -> str:
     )
 
 
+async def run_realtime_telephony_bridge(
+    websocket,
+    *,
+    log_label: str,
+    agent: dict,
+    agent_id: str,
+    user_id: str,
+    conversation_id: str,
+    extra_system_context: str,
+    greeting_override: str | None,
+    call_questions: list[dict],
+    interview_id: str,
+    campaign_candidate_id: str,
+    tool_functions: list[dict],
+    parse_media_payload,          # (data: dict) -> str | None - base64 mu-law payload, or None to ignore this message
+    send_audio_frame,             # async (b64_payload: str) -> None - relay to the caller, provider's own wire format
+    send_clear,                   # async () -> None - stop whatever's currently queued for playback (barge-in)
+) -> str | None:
+    """Bridges a phone call directly to OpenAI's Realtime API - no VAD, no
+    Deepgram, no llm_service, no separate TTS call. Caller audio (already
+    g711_ulaw/8kHz base64 from Plivo/Twilio) is forwarded to the Realtime
+    session byte-for-byte and its audio comes back the same way, since both
+    providers' native telephony encoding is exactly what the Realtime API
+    calls "g711_ulaw". Shared between telephony_plivo.py and
+    telephony_twilio.py - call this once "start" has been consumed (so
+    agent/conversation are already resolved); it owns the receive loop for
+    every message after that and returns a failure reason string (or None
+    on a clean end) for the caller's own existing Call Analytics wrap-up.
+    """
+    import asyncio
+    import base64
+    import json
+    from fastapi import WebSocketDisconnect
+    from app.voice.realtime_service import RealtimeSession, build_realtime_tool, KB_SEARCH_TOOL
+    from app.conversations.message_repo import save_message
+
+    doc_ids = agent.get("selected_kb_doc_ids") or []
+    tools = [build_realtime_tool(f) for f in tool_functions]
+    if doc_ids:
+        tools = tools + [KB_SEARCH_TOOL]
+
+    instructions = build_phone_system_prompt(agent, extra_system_context)
+    session = RealtimeSession(instructions=instructions, tools=tools, audio_format="g711_ulaw")
+    await session.connect()
+
+    _answered_question_ids: set = set()
+    _failure_reason: str | None = None
+    _active_item_id: str | None = None
+    _bytes_out_for_item: dict[str, int] = {}
+
+    async def _execute_tool(name: str, args: dict) -> str:
+        if name == "search_knowledge_base":
+            full_rag, _ = await retrieve_phone_rag_context(args.get("query", ""), agent, agent_id, user_id)
+            return full_rag or "No relevant information found."
+        fn = next((f for f in tool_functions if f["name"] == name), None)
+        if fn and fn.get("kind") == "internal_record_answer":
+            question_id = args.get("question_id", "")
+            answer_text = args.get("answer", "")
+            error = validate_question_answer(question_id, call_questions, _answered_question_ids)
+            if error:
+                return json.dumps({"error": error})
+            question_map = {q["id"]: q["text"] for q in call_questions}
+            await record_question_answer(
+                interview_id, campaign_candidate_id, question_id, question_map[question_id], answer_text
+            )
+            _answered_question_ids.add(question_id)
+            return json.dumps({"recorded": True})
+        if not fn:
+            return json.dumps({"error": "function not found"})
+        import httpx
+        method = (fn.get("method") or "POST").upper()
+        url = fn["url"]
+        headers = fn.get("headers") or {}
+        timeout_s = min((fn.get("timeout_ms") or 30000) / 1000, PHONE_WEBHOOK_MAX_TIMEOUT_S)
+        try:
+            async with httpx.AsyncClient(timeout=timeout_s) as hclient:
+                if method == "GET":
+                    resp = await hclient.get(url, params=args, headers=headers)
+                elif method == "DELETE":
+                    resp = await hclient.delete(url, params=args, headers=headers)
+                else:
+                    resp = await hclient.request(method, url, json=args, headers=headers)
+            try:
+                return json.dumps(resp.json())
+            except Exception:
+                return json.dumps({"response": resp.text, "status": resp.status_code})
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
+    async def _drain_realtime_events():
+        nonlocal _active_item_id, _failure_reason
+        try:
+            async for event in session.events():
+                etype = event.get("type")
+
+                if etype == "response.audio.delta":
+                    item_id = event.get("item_id")
+                    delta_b64 = event.get("delta") or ""
+                    _active_item_id = item_id
+                    _bytes_out_for_item[item_id] = (
+                        _bytes_out_for_item.get(item_id, 0) + len(base64.b64decode(delta_b64))
+                    )
+                    await send_audio_frame(delta_b64)
+
+                elif etype == "input_audio_buffer.speech_started":
+                    if _active_item_id:
+                        await session.cancel_response()
+                        elapsed_ms = int(_bytes_out_for_item.get(_active_item_id, 0) / session.bytes_per_ms)
+                        await session.truncate(_active_item_id, elapsed_ms)
+                        await send_clear()
+                        _active_item_id = None
+
+                elif etype == "conversation.item.input_audio_transcription.completed":
+                    transcript = (event.get("transcript") or "").strip()
+                    if transcript:
+                        print(f"[{log_label}] User said: {transcript}")
+                        await asyncio.to_thread(save_message, conversation_id, user_id, "user", transcript)
+
+                elif etype == "response.audio_transcript.done":
+                    transcript = (event.get("transcript") or "").strip()
+                    if transcript:
+                        await asyncio.to_thread(save_message, conversation_id, user_id, "assistant", transcript)
+
+                elif etype == "response.function_call_arguments.done":
+                    call_id = event.get("call_id")
+                    name = event.get("name")
+                    try:
+                        args = json.loads(event.get("arguments") or "{}")
+                    except Exception:
+                        args = {}
+                    result = await _execute_tool(name, args)
+                    await session.send_tool_result(call_id, result)
+
+                elif etype == "response.done":
+                    _active_item_id = None
+
+                elif etype == "error":
+                    print(f"[{log_label}] Realtime error: {event.get('error')}")
+        except Exception as e:
+            _failure_reason = str(e)[:500]
+
+    drain_task = asyncio.create_task(_drain_realtime_events())
+
+    greeting = greeting_override or (agent.get("first_message") if agent.get("first_message_enabled") else None)
+    if greeting:
+        await session.say(greeting)
+        await asyncio.to_thread(save_message, conversation_id, user_id, "assistant", greeting)
+
+    try:
+        while True:
+            raw = await websocket.receive_text()
+            data = json.loads(raw)
+            event = data.get("event")
+            if event == "media":
+                payload = parse_media_payload(data)
+                if payload:
+                    await session.append_audio_b64(payload)
+            elif event == "stop":
+                break
+    except WebSocketDisconnect as e:
+        if e.code not in (1000, 1001):
+            _failure_reason = f"WebSocket closed with code {e.code}" + (f": {e.reason}" if e.reason else "")
+    except Exception as e:
+        if "disconnect" not in str(e).lower():
+            _failure_reason = str(e)[:500]
+    finally:
+        drain_task.cancel()
+        await session.close()
+
+    return _failure_reason
+
+
 async def retrieve_phone_rag_context(user_message: str, agent: dict, agent_id: str, user_id: str) -> tuple[str, bool]:
     """Fetch RAG context for a phone call turn: agent-level KB (document_chunks,
     scoped by agent_id) plus account-level KB docs (user_document_chunks),
