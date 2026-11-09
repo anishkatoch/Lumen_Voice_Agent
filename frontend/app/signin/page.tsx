@@ -4,7 +4,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { API } from "@/lib/api";
 import { setTokens, setUser } from "@/lib/auth";
-import { Mic, Eye, EyeOff, Loader2, Zap, Brain, Lock, ShieldCheck, Sun, Moon } from "lucide-react";
+import { Mic, Eye, EyeOff, Loader2, Zap, Brain, Lock, ShieldCheck, Sun, Moon, Settings } from "lucide-react";
 import SocialAuthButtons from "@/components/SocialAuthButtons";
 
 const FEATURES = [
@@ -198,15 +198,23 @@ export default function SignIn() {
       {/* ── Right form panel ── */}
       <div className="flex-1 flex items-center justify-center p-8 relative" style={{ background: t.rightBg }}>
 
-        {/* Dark mode toggle */}
-        <button onClick={toggleDark}
-          className="absolute top-6 right-6 w-9 h-9 rounded-xl flex items-center justify-center transition-all"
-          style={{ background: t.toggleBg, border: `1px solid ${t.toggleBorder}` }}
-          title={dark ? "Switch to light mode" : "Switch to dark mode"}>
-          {dark
-            ? <Sun className="w-4 h-4" style={{ color: t.toggleIcon }} />
-            : <Moon className="w-4 h-4" style={{ color: t.toggleIcon }} />}
-        </button>
+        {/* Dark mode toggle + admin portal link */}
+        <div className="absolute top-6 right-6 flex items-center gap-2">
+          <Link href="/admin"
+            className="w-9 h-9 rounded-xl flex items-center justify-center transition-all"
+            style={{ background: t.toggleBg, border: `1px solid ${t.toggleBorder}` }}
+            title="Admin panel">
+            <Settings className="w-4 h-4" style={{ color: t.toggleIcon }} />
+          </Link>
+          <button onClick={toggleDark}
+            className="w-9 h-9 rounded-xl flex items-center justify-center transition-all"
+            style={{ background: t.toggleBg, border: `1px solid ${t.toggleBorder}` }}
+            title={dark ? "Switch to light mode" : "Switch to dark mode"}>
+            {dark
+              ? <Sun className="w-4 h-4" style={{ color: t.toggleIcon }} />
+              : <Moon className="w-4 h-4" style={{ color: t.toggleIcon }} />}
+          </button>
+        </div>
 
         <div className="w-full max-w-md">
           {/* Mobile logo */}
