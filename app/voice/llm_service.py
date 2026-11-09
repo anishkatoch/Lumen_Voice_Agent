@@ -393,29 +393,117 @@ async def generate_response_stream(
         yield "I encountered an error. Please try again."
 
 
-FILLER_PHRASES = [
-    "Let me check that for you.",
-    "One moment, I'll look that up.",
-    "Sure, give me just a second.",
-    "Hold on, let me find that for you.",
-    "Great question - let me pull that up.",
-    "Just a moment while I check.",
-    "I'll look into that right now.",
-    "Hang tight, checking that for you.",
-]
+FILLER_PHRASES_BY_CATEGORY: dict[str, list[str]] = {
+    # The caller just asked something and is waiting on an answer.
+    "question": [
+        "Let me check that for you.",
+        "One moment, I'll look that up.",
+        "Great question - let me pull that up.",
+        "Good question, hold on.",
+    ],
+    # The caller just gave information or confirmed something (an answer,
+    # a number, a "yes"/"no") - "let me check" reads oddly there since
+    # there's nothing to look up, it's just been handed to us.
+    "info": [
+        "Got it.",
+        "Thanks, noted.",
+        "Okay, got that.",
+        "Alright, noted.",
+    ],
+    # Anything else (small talk, the start of a turn, nothing classifiable).
+    "default": [
+        "One moment.",
+        "Just a second.",
+        "Give me a moment.",
+        "Okay.",
+    ],
+}
+FILLER_PHRASES = FILLER_PHRASES_BY_CATEGORY["default"]  # back-compat alias for any external import
+
+_FILLER_CATEGORIES = ("question", "info", "default")
+_QUESTION_STARTERS = (
+    "what", "why", "how", "when", "where", "who", "which",
+    "can you", "could you", "would you", "do you", "does", "is it", "are you", "will you",
+)
+_INFO_WORDS = {"yes", "no", "yeah", "yep", "nope", "correct", "right", "sure", "ok", "okay"}
 
 
-def get_filler_phrases(agent: dict | None) -> list[str]:
-    """Agent's own filler_phrases (one per line) if configured, else the
-    generic FILLER_PHRASES list. Spoken while a slow RAG/LLM call is in
-    flight, so the caller doesn't hear dead air."""
+def classify_filler_category(user_message: str) -> str:
+    """Cheap, no-LLM classification of the caller's last message, used to
+    pick a filler that actually fits the situation instead of a random one -
+    a filler dropped in front of a confirmation ("Got it.") reads very
+    differently from one dropped in front of the answer to a question
+    ("Let me check that for you."). This runs before the real reply exists
+    (that's the whole point of a filler - it covers the wait for it), so it
+    can only look at the caller's own words, never the content of the reply
+    it's covering for."""
+    text = (user_message or "").strip().lower()
+    if not text:
+        return "default"
+    if text.endswith("?") or text.startswith(_QUESTION_STARTERS):
+        return "question"
+    # First word only, punctuation stripped - "Yes, speaking." should match
+    # "yes" without "yesterday is fine" also matching it.
+    first_word = re.split(r"[\s,.!?]+", text, maxsplit=1)[0]
+    if first_word in _INFO_WORDS or re.search(r"\d", text):
+        return "info"
+    return "default"
+
+
+def get_filler_phrases(agent: dict | None, category: str = "default") -> list[str]:
+    """Filler phrases for `category` (from classify_filler_category) -
+    agent's own filler_phrases if configured for that category, else the
+    built-in FILLER_PHRASES_BY_CATEGORY list. Spoken while a slow RAG/LLM
+    call is in flight, so the caller doesn't hear dead air.
+
+    An agent's filler_phrases is still just one phrase per line, but a line
+    may be prefixed "question:", "info:", or "default:" to scope it to one
+    category; an unprefixed line is treated as "default" and used as a
+    catch-all for any category with no lines of its own - so an agent with
+    a plain flat list (no prefixes at all) behaves exactly as before,
+    situational selection is opt-in via prefixes, not a breaking change."""
+    if category not in _FILLER_CATEGORIES:
+        category = "default"
     if agent:
         raw = (agent.get("filler_phrases") or "").strip()
         if raw:
-            lines = [line.strip() for line in raw.splitlines() if line.strip()]
-            if lines:
-                return lines
-    return FILLER_PHRASES
+            buckets: dict[str, list[str]] = {"question": [], "info": [], "default": []}
+            for line in raw.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                for key in _FILLER_CATEGORIES:
+                    prefix = f"{key}:"
+                    if line.lower().startswith(prefix):
+                        phrase = line[len(prefix):].strip()
+                        if phrase:
+                            buckets[key].append(phrase)
+                        break
+                else:
+                    buckets["default"].append(line)
+            if buckets[category]:
+                return buckets[category]
+            if buckets["default"]:
+                return buckets["default"]
+    return FILLER_PHRASES_BY_CATEGORY.get(category) or FILLER_PHRASES_BY_CATEGORY["default"]
+
+
+def pick_filler_phrase(agent: dict | None, category: str, last_used: str | None = None) -> str:
+    """random.choice over get_filler_phrases(agent, category), but excludes
+    `last_used` (the filler most recently spoken in this same call) when
+    there's another option to pick instead. Without this, a short filler
+    list makes the exact same word repeat turn after turn by sheer chance -
+    especially likely here since most agents only have 2-4 words per
+    category - which reads as a stuck/broken agent rather than a natural
+    one. Falls back to the full list (so `last_used` can still be picked
+    again) only when it's the single option available for this category."""
+    import random
+    options = get_filler_phrases(agent, category)
+    if last_used and len(options) > 1:
+        narrowed = [o for o in options if o != last_used]
+        if narrowed:
+            options = narrowed
+    return random.choice(options)
 
 
 def build_system_prompt(

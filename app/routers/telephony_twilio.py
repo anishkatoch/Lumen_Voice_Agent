@@ -428,7 +428,7 @@ async def twilio_stream_endpoint(websocket: WebSocket):
     from app.voice.deepgram_service import get_streaming_transcriber
     from app.voice.llm_service import (
         generate_response_stream, build_system_prompt,
-        FILLER_PHRASES, get_filler_phrases, detect_tool_call, build_openai_tool,
+        pick_filler_phrase, classify_filler_category, detect_tool_call, build_openai_tool,
         stream_tool_result_response, stream_text_as_sentences,
     )
     from app.voice.elevenlabs_service import text_to_speech_stream
@@ -439,7 +439,7 @@ async def twilio_stream_endpoint(websocket: WebSocket):
     from app.voice.vad_service import build_wav_bytes
     from app.voice.turn_heuristics import sounds_unfinished
     from app.core.config import TURN_HEURISTIC_ENABLED
-    import json, random, base64
+    import json, base64
 
     await websocket.accept()
 
@@ -472,6 +472,9 @@ async def twilio_stream_endpoint(websocket: WebSocket):
     _speech_gen = 0
     _call_ended = False     # tracks whether we've already marked the interview done
     _call_failure_reason: str | None = None  # set on genuine errors, surfaced in Call Analytics
+    # Last filler phrase actually spoken, so the next one can avoid
+    # repeating it back-to-back - see pick_filler_phrase in llm_service.py.
+    _last_filler: str | None = None
     _dg_stream = None       # active StreamingTranscriber (opened on first speech chunk)
     _active_task: asyncio.Task | None = None  # current greeting/run_pipeline task, cancellable on barge-in
     _barge_in_streak = 0    # consecutive chunks over threshold while agent is speaking/processing
@@ -714,12 +717,15 @@ async def twilio_stream_endpoint(websocket: WebSocket):
         _stuck_watchdog_task = asyncio.create_task(_warn_if_stuck_processing("Twilio"))
 
         async def _cover_retrieval_delay():
+            nonlocal _last_filler
             # RAG lookups + the LLM's own "thinking" time can occasionally run
             # long before anything is said. If nothing has been spoken within
             # this window, say a filler phrase so the caller hears something
             # instead of dead air, rather than cancelling or rushing the work.
             await asyncio.sleep(RETRIEVAL_FILLER_DELAY_SECONDS)
-            filler = random.choice(get_filler_phrases(agent))
+            category = classify_filler_category(user_message)
+            filler = pick_filler_phrase(agent, category, last_used=_last_filler)
+            _last_filler = filler
             full_reply_parts.append(filler)
             await _speak(filler, gen)
 

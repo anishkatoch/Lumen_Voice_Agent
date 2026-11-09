@@ -669,6 +669,10 @@ async def agent_websocket_endpoint(websocket: WebSocket, agent_id: str, token: s
     # RAG scope - frontend can update mid-session via set_rag_scope message
     _rag_scopes: list[str] = ["personal", "global"]  # default = both
 
+    # Last filler phrase actually spoken, so the next one can avoid repeating
+    # it back-to-back - see pick_filler_phrase in app/voice/llm_service.py.
+    _last_filler: str | None = None
+
     await manager.send_json(websocket, {
         "type": "ready",
         "conversation_id": conversation_id,
@@ -735,7 +739,7 @@ async def agent_websocket_endpoint(websocket: WebSocket, agent_id: str, token: s
             from app.voice.llm_service import (
                 build_system_prompt, build_openai_tool,
                 detect_tool_call, stream_tool_result_response,
-                stream_text_as_sentences, get_filler_phrases,
+                stream_text_as_sentences, pick_filler_phrase, classify_filler_category,
             )
 
             full_reply_parts: list[str] = []
@@ -753,6 +757,7 @@ async def agent_websocket_endpoint(websocket: WebSocket, agent_id: str, token: s
                     await manager.send_json(websocket, {"type": "sentence_end"})
 
             async def _cover_retrieval_delay():
+                nonlocal _last_filler
                 # RAG/KB lookups and LLM round-trips can occasionally run long
                 # before anything is said. If nothing real has been spoken
                 # within this window, say a filler phrase so the user doesn't
@@ -761,7 +766,9 @@ async def agent_websocket_endpoint(websocket: WebSocket, agent_id: str, token: s
                 # fast this never fires, so it no longer speaks on every
                 # turn the way the old unconditional pre-tool-call filler did.
                 await asyncio.sleep(RETRIEVAL_FILLER_DELAY_SECONDS)
-                filler = random.choice(get_filler_phrases(agent))
+                category = classify_filler_category(transcript)
+                filler = pick_filler_phrase(agent, category, last_used=_last_filler)
+                _last_filler = filler
                 full_reply_parts.append(filler)
                 await _speak_filler_audio(filler)
 
