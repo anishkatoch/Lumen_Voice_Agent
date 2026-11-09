@@ -36,6 +36,7 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
 interface AdminConfig {
   stt_provider:     string;
   tts_provider:     string;
+  tts_elevenlabs_voice_id: string;
   tts_openai_voice: string;
   tts_openai_model: string;
   llm_provider:     string;
@@ -62,6 +63,11 @@ interface SystemStatus {
     stt: string; tts: string;
     llm: { provider: string; model: string; note: string | null };
   };
+}
+
+interface ElevenLabsVoice {
+  voice_id: string; name: string; category: string | null;
+  preview_url: string | null; free: boolean;
 }
 
 interface LlmTestResult {
@@ -203,6 +209,76 @@ function ModelSelect({ label, value, onChange, options, hint, customPlaceholder 
   );
 }
 
+function ElevenLabsVoicePicker({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const [voices, setVoices] = useState<ElevenLabsVoice[] | null>(null);
+  const [err, setErr] = useState("");
+  const [showAll, setShowAll] = useState(false);
+  const [playing, setPlaying] = useState<string | null>(null);
+
+  useEffect(() => {
+    api<ElevenLabsVoice[]>("/api/admin/elevenlabs-voices")
+      .then(setVoices)
+      .catch(e => setErr(e instanceof Error ? e.message : "Failed to load voices"));
+  }, []);
+
+  function preview(v: ElevenLabsVoice) {
+    if (!v.preview_url) return;
+    const audio = new Audio(v.preview_url);
+    setPlaying(v.voice_id);
+    audio.play().catch(() => {});
+    audio.onended = () => setPlaying(p => (p === v.voice_id ? null : p));
+  }
+
+  if (err) return <Notice>Couldn&apos;t load ElevenLabs voices: {err}</Notice>;
+  if (!voices) return <p style={{ fontSize: 12.5, color: "var(--ink-muted)" }}>Loading voices…</p>;
+
+  const shown = showAll ? voices : voices.filter(v => v.free);
+
+  return (
+    <div className="field">
+      <label>Voice</label>
+      <p style={{ fontSize: 12, color: "var(--ink-muted)", marginTop: -2, marginBottom: 8 }}>
+        {showAll ? "All voices on this account." : "Free voices only - usable on any plan, including the free tier."}
+        {" "}
+        <button type="button" className="btn btn-ghost btn-sm" style={{ padding: "1px 6px" }}
+          onClick={() => setShowAll(s => !s)}>
+          {showAll ? "Show free only" : "Show all"}
+        </button>
+      </p>
+      <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 280, overflowY: "auto" }}>
+        {shown.map(v => (
+          <label key={v.voice_id} style={{
+            display: "flex", alignItems: "center", gap: 10, padding: "8px 10px",
+            borderRadius: "var(--r-md)", border: "1px solid var(--border)",
+            background: value === v.voice_id ? "var(--accent-soft)" : "transparent",
+            cursor: "pointer",
+          }}>
+            <input type="radio" name="elevenlabs_voice" checked={value === v.voice_id}
+              onChange={() => onChange(v.voice_id)} />
+            <span style={{ flex: 1, fontSize: 13 }}>
+              {v.name}
+              <span style={{ color: "var(--ink-muted)", fontSize: 11.5, marginLeft: 6 }}>
+                {v.category}{!v.free && " · paid tier"}
+              </span>
+            </span>
+            {v.preview_url && (
+              <button type="button" className="btn btn-ghost btn-sm" onClick={() => preview(v)}>
+                <PlayCircle size={14} style={playing === v.voice_id ? { color: "var(--accent)" } : undefined} />
+              </button>
+            )}
+          </label>
+        ))}
+        {shown.length === 0 && (
+          <p style={{ fontSize: 12.5, color: "var(--ink-muted)" }}>No voices found.</p>
+        )}
+      </div>
+      <p style={{ fontSize: 12, color: "var(--ink-muted)", marginTop: 8, lineHeight: 1.5 }}>
+        Leave unset to use the ELEVENLABS_VOICE_ID environment default.
+      </p>
+    </div>
+  );
+}
+
 const PIPELINE_PRESETS = [
   {
     id: "deepgram_elevenlabs", icon: Mic, title: "Deepgram + ElevenLabs",
@@ -316,7 +392,7 @@ function ProvidersTab({ config, status, onSave }: {
   const azureWillRunInstead = local.llm_provider === "openai" && azure?.configured;
 
   return (
-    <div style={{ maxWidth: 680 }}>
+    <div style={{ maxWidth: 980 }}>
       <Section title="Voice pipeline">
         <PipelinePresetPicker stt={local.stt_provider} tts={local.tts_provider}
           onPick={(stt, tts) => setLocal(p => ({ ...p, stt_provider: stt, tts_provider: tts }))} />
@@ -347,6 +423,11 @@ function ProvidersTab({ config, status, onSave }: {
                   { value: "elevenlabs", label: "ElevenLabs" },
                   { value: "openai_tts", label: "OpenAI TTS" },
                 ]} />
+              {local.tts_provider === "elevenlabs" && (
+                <div style={{ marginTop: 14 }}>
+                  <ElevenLabsVoicePicker value={local.tts_elevenlabs_voice_id} onChange={set("tts_elevenlabs_voice_id")} />
+                </div>
+              )}
               {local.tts_provider === "openai_tts" && (
                 <div style={{ marginTop: 14, display: "flex", flexDirection: "column", gap: 4 }}>
                   <RadioGroup label="Voice" value={local.tts_openai_voice} onChange={set("tts_openai_voice")}
@@ -470,7 +551,7 @@ function StorageTab({ config, onSave }: { config: AdminConfig; onSave: (u: Parti
   }
 
   return (
-    <div style={{ maxWidth: 560 }}>
+    <div style={{ maxWidth: 980 }}>
       <Section title="Knowledge base storage limits">
         <StorageField label="User KB limit (MB per user)"
           hint="Max total document storage each user can upload to their personal Knowledge Base."
@@ -511,7 +592,7 @@ function KbAccessTab() {
   const resolved = requests.filter(r => r.status !== "pending");
 
   return (
-    <div style={{ maxWidth: 760 }}>
+    <div style={{ maxWidth: 1100 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 18 }}>
         <div className="segmented">
           {(["requests","users"] as const).map(t => (
@@ -619,7 +700,7 @@ function StatusTab() {
   const ap = status.active_pipeline;
 
   return (
-    <div style={{ maxWidth: 760 }}>
+    <div style={{ maxWidth: 1100 }}>
       <Section title="Right now, a new call would use">
         <div className="status-grid">
           <div className="status-row">
