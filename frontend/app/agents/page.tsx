@@ -49,8 +49,18 @@ function agentInitials(name: string) {
   return (parts[0][0] + parts[1][0]).toUpperCase();
 }
 
+function formatCallDuration(seconds: number | null | undefined): string | null {
+  if (seconds == null) return null;
+  if (seconds < 60) return `${seconds}s`;
+  const m = Math.floor(seconds / 60), s = seconds % 60;
+  return s > 0 ? `${m}m ${s}s` : `${m} min`;
+}
+
 function hrStatusPill(status: string): { cls: string; label: string } {
   if (status === "completed") return { cls: "pill-success", label: status };
+  if (status === "no_response") return { cls: "pill-warning", label: "No conversation" };
+  if (status === "busy") return { cls: "pill-warning", label: "Busy" };
+  if (status === "no_answer") return { cls: "pill-warning", label: "No answer" };
   if (status === "failed") return { cls: "pill-danger", label: status };
   if (status === "cancelled") return { cls: "pill-neutral", label: status };
   if (status === "calling") return { cls: "pill-accent", label: status };
@@ -900,6 +910,9 @@ function AgentHRSection({ agentId, hrInstructions, onHrInstructionsChange }: {
                               <span className={`pill ${s.cls}`}>{s.label}</span>
                               <span style={{ fontSize: 12, color: "var(--ink-2)", fontWeight: 500 }}>{new Date(iv.scheduled_at).toLocaleString()}</span>
                               <span style={{ fontSize: 11, color: "var(--ink-muted)" }}>calls {iv.call_lead_minutes} min before</span>
+                              {formatCallDuration(iv.call_duration_seconds) && (
+                                <span style={{ fontSize: 11, color: "var(--ink-muted)" }}>· {formatCallDuration(iv.call_duration_seconds)}</span>
+                              )}
                             </div>
                             {iv.specific_questions && (
                               <div style={{ fontSize: 11, color: "var(--ink-muted)", marginTop: 2 }}>
@@ -1639,7 +1652,7 @@ interface ConvDetail {
   sentiment?: "POSITIVE" | "NEGATIVE" | "NEUTRAL" | null;
   dominant_emotion?: string | null;
   sentiment_score?: number | null;
-  call_status?: "ringing" | "in_progress" | "completed" | "failed" | "busy" | "no_answer" | null;
+  call_status?: "ringing" | "in_progress" | "completed" | "no_response" | "failed" | "busy" | "no_answer" | null;
   failure_reason?: string | null;
   summary?: string | null;
 }
@@ -1654,6 +1667,7 @@ function callStatusPill(s: string | null | undefined): { cls: string; label: str
   if (s === "failed") return { cls: "pill-danger", label: "Failed" };
   if (s === "busy") return { cls: "pill-warning", label: "Busy" };
   if (s === "no_answer") return { cls: "pill-warning", label: "No answer" };
+  if (s === "no_response") return { cls: "pill-warning", label: "No conversation" };
   if (s === "in_progress") return { cls: "pill-accent", label: "In progress" };
   if (s === "ringing") return { cls: "pill-accent", label: "Ringing" };
   return { cls: "pill-success", label: "Completed" };
@@ -1856,7 +1870,7 @@ function SessionDetail({ conv, agents, onBack }: {
   );
 }
 
-type CallFilter = "all" | "completed" | "failed";
+type CallFilter = "all" | "completed" | "no_response" | "failed";
 
 function SessionsView({ agents }: { agents: Agent[] }) {
   const [convs, setConvs] = useState<ConvDetail[]>([]);
@@ -1883,6 +1897,7 @@ function SessionsView({ agents }: { agents: Agent[] }) {
     if (agentFilter !== "all" && c.agent_id !== agentFilter) return false;
     if (filter === "failed") return FAILED_CALL_STATUSES.has(c.call_status ?? "");
     if (filter === "completed") return (c.call_status ?? "completed") === "completed";
+    if (filter === "no_response") return c.call_status === "no_response";
     return true;
   });
 
@@ -1910,7 +1925,7 @@ function SessionsView({ agents }: { agents: Agent[] }) {
       {!loading && total > 0 && (
         <div className="filter-row">
           <div className="segmented">
-            {([["all", "All"], ["completed", "Completed"], ["failed", "Failed"]] as [CallFilter, string][]).map(([key, label]) => (
+            {([["all", "All"], ["completed", "Completed"], ["no_response", "No conversation"], ["failed", "Failed"]] as [CallFilter, string][]).map(([key, label]) => (
               <button key={key} className={filter === key ? "active" : ""} onClick={() => setFilter(key)}>{label}</button>
             ))}
           </div>

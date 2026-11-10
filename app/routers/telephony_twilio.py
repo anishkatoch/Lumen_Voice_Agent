@@ -325,8 +325,11 @@ async def twilio_interview_status_callback(request: Request):
 
     if call_sid and new_status:
         from app.hr_campaigns.hr_repo import mark_interview_status_by_call_sid
-        hr_status = "completed" if new_status == "completed" else "failed"
-        await asyncio.to_thread(mark_interview_status_by_call_sid, call_sid, hr_status)
+        # Pass the specific outcome through (busy/no_answer/failed/completed)
+        # instead of collapsing everything non-"completed" to a generic
+        # "failed" - mark_interview_status_by_call_sid's own "calling" guard
+        # already keeps this from racing the WS stream lifecycle.
+        await asyncio.to_thread(mark_interview_status_by_call_sid, call_sid, new_status)
 
         from app.conversations.conversation_repo import set_call_status_by_sid_if_unconnected
         await asyncio.to_thread(
@@ -388,6 +391,7 @@ async def twilio_voice_webhook(request: Request):
 
     form = await request.form()
     to_number = str(form.get("To", ""))
+    from_number = str(form.get("From", ""))
     print(f"[Twilio Voice] Inbound call, To={to_number!r}")
 
     # Look up the number record to find the owner's webhook base URL
@@ -415,6 +419,7 @@ async def twilio_voice_webhook(request: Request):
   <Connect>
     <Stream url="{ws_url}">
       <Parameter name="to" value="{to_number}" />
+      <Parameter name="from" value="{from_number}" />
     </Stream>
   </Connect>
 </Response>"""
@@ -434,7 +439,6 @@ async def twilio_stream_endpoint(websocket: WebSocket):
     from app.voice.elevenlabs_service import text_to_speech_stream
     from app.conversations.message_repo import save_message, get_session_messages
     from app.agents.agent_repo import get_agent, get_agent_functions
-    from app.conversations.conversation_repo import set_call_status
     from app.voice.deepgram_service import transcribe_audio_smart
     from app.voice.vad_service import build_wav_bytes
     from app.voice.turn_heuristics import sounds_unfinished
@@ -502,6 +506,7 @@ async def twilio_stream_endpoint(websocket: WebSocket):
         interview_id = custom_params.get("interview_id", "")
         campaign_candidate_id = custom_params.get("campaign_candidate_id", "")
         to = custom_params.get("to", "")
+        inbound_from = custom_params.get("from", "")
 
         from app.telephony.shared import resolve_call_context
         from app.telephony.twilio.twilio_repo import get_number_by_phone
@@ -554,13 +559,16 @@ async def twilio_stream_endpoint(websocket: WebSocket):
                     "agent_id": agent_id,
                     "call_status": "in_progress",
                     "call_sid": twilio_call_sid,
+                    "to_number": to or None,
+                    "from_number": inbound_from or None,
                 }).execute()
                 return res.data[0]
             except Exception as e:
-                # call_status/call_sid (migration 0017) may not exist yet on this
-                # database - a live phone call must never fail to connect just
-                # because Call Analytics hasn't been migrated in. Retry with only
-                # the pre-Call-Analytics columns.
+                # call_status/call_sid/to_number/from_number (migrations
+                # 0017/0026) may not exist yet on this database - a live phone
+                # call must never fail to connect just because Call Analytics
+                # hasn't been migrated in. Retry with only the pre-Call-Analytics
+                # columns.
                 print(f"[Twilio Stream] Insert with Call Analytics columns failed, retrying without them "
                       f"(did you run `alembic upgrade head`?): {e}")
                 res = _db.table("conversations").insert({
@@ -1034,21 +1042,19 @@ async def twilio_stream_endpoint(websocket: WebSocket):
                 await asyncio.to_thread(mark_candidate_completed, campaign_id, campaign_candidate_id)
             except Exception:
                 pass
-        # Call Analytics — record the final outcome. Best-effort: set_call_status
-        # swallows its own errors, and conversation_id may be None if setup
-        # failed before a row was ever created (nothing to record in that case).
+        # Call Analytics — record the final outcome. Best-effort:
+        # finalize_call_outcome swallows its own errors, and conversation_id
+        # may be None if setup failed before a row was ever created (nothing
+        # to record in that case).
         if conversation_id:
-            await asyncio.to_thread(
-                set_call_status, conversation_id,
-                "failed" if _call_failure_reason else "completed", _call_failure_reason,
-            )
-            from app.conversations.conversation_repo import set_call_duration_and_cost
-            await asyncio.to_thread(set_call_duration_and_cost, conversation_id)
+            from app.telephony.shared import finalize_call_outcome
+            final_status, history = await finalize_call_outcome(conversation_id, _call_failure_reason)
+            if interview_id and final_status == "no_response":
+                from app.hr_campaigns.hr_repo import mark_interview_no_response
+                await asyncio.to_thread(mark_interview_no_response, interview_id)
             try:
-                from app.conversations.message_repo import get_conversation_history
                 from app.conversations.conversation_repo import set_call_summary
                 from app.voice.llm_service import generate_call_summary
-                history = await asyncio.to_thread(get_conversation_history, conversation_id)
                 if history:
                     summary = await generate_call_summary(history)
                     if summary:

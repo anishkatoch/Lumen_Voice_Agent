@@ -115,6 +115,19 @@ def _attach_candidate(interviews: list[dict], db) -> list[dict]:
     return interviews
 
 
+def _attach_call_duration(interviews: list[dict]) -> list[dict]:
+    """Attaches call_duration_seconds from Call Analytics (looked up by
+    call_sid) onto each interview row - best-effort, never raises; a row
+    with no call yet (or a lookup failure) just keeps duration_seconds=None."""
+    from app.conversations.conversation_repo import get_call_durations_by_sids
+    call_sids = [r["call_sid"] for r in interviews if r.get("call_sid")]
+    durations = get_call_durations_by_sids(call_sids)
+    for row in interviews:
+        call = durations.get(row.get("call_sid"))
+        row["call_duration_seconds"] = call.get("duration_seconds") if call else None
+    return interviews
+
+
 def list_interviews(user_id: str) -> list[dict]:
     db = get_supabase()
     rows = (
@@ -125,10 +138,15 @@ def list_interviews(user_id: str) -> list[dict]:
         .execute()
         .data
     )
-    return _attach_candidate(rows, db)
+    return _attach_call_duration(_attach_candidate(rows, db))
 
 
 def get_interview(interview_id: str) -> dict | None:
+    """Used on the call-setup hot path (resolve_call_context) as well as by
+    the interview list - deliberately doesn't attach call duration like
+    list_interviews does, since that would add an extra Call Analytics
+    lookup to every single call's setup for data that can't exist yet at
+    that point anyway (the call hasn't happened)."""
     db = get_supabase()
     result = (
         db.table("hr_interviews")
@@ -232,6 +250,18 @@ def mark_interview_completed(interview_id: str) -> None:
 def mark_interview_failed(interview_id: str) -> None:
     db = get_supabase()
     db.table("hr_interviews").update({"status": "failed"}).eq("id", interview_id).execute()
+
+
+def mark_interview_no_response(interview_id: str) -> None:
+    """Downgrades an interview from 'completed' to 'no_response' once the WS
+    lifecycle has read back the call's message history and found the
+    candidate never said anything. Called after mark_interview_completed
+    (which runs eagerly, right on the "stop" event, before that history read
+    is even attempted) rather than replacing it - this is just a follow-up
+    correction. Conditional on still being 'completed' so a genuine 'failed'
+    outcome set by a different writer in the meantime is never clobbered."""
+    db = get_supabase()
+    db.table("hr_interviews").update({"status": "no_response"}).eq("id", interview_id).eq("status", "completed").execute()
 
 
 def record_interview_answer(interview_id: str, question_id: str, question_text: str, answer_text: str) -> dict:

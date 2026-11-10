@@ -21,20 +21,12 @@ async def get_messages(conversation_id: str, current_user: dict = Depends(get_cu
         raise HTTPException(status_code=404, detail="Conversation not found")
     return await asyncio.to_thread(get_conversation_history, conversation_id)
 
-@router.get("/api/conversations/{conversation_id}/qa")
-async def get_conversation_qa(conversation_id: str, current_user: dict = Depends(get_current_user)):
+async def build_qa_payload(call_sid: str | None) -> dict:
     """Per-question answered/not-answered status for an interview or campaign
     screening call, for Call Analytics. Conversations don't store a direct FK
     to hr_interviews/hr_campaign_candidates, so this joins via call_sid - the
-    one field both sides already share."""
-    from app.core.database import get_supabase
-    db = get_supabase()
-    convo = await asyncio.to_thread(
-        lambda: db.table("conversations").select("user_id, call_sid").eq("id", conversation_id).limit(1).execute()
-    )
-    if not convo.data or convo.data[0]["user_id"] != current_user["sub"]:
-        raise HTTPException(status_code=404, detail="Conversation not found")
-    call_sid = convo.data[0].get("call_sid")
+    one field both sides already share. Shared by the per-user and admin QA
+    routes, which each do their own ownership check before calling this."""
     if not call_sid:
         return {"questions": []}
 
@@ -66,3 +58,15 @@ async def get_conversation_qa(conversation_id: str, current_user: dict = Depends
             for q in questions
         ]
     }
+
+
+@router.get("/api/conversations/{conversation_id}/qa")
+async def get_conversation_qa(conversation_id: str, current_user: dict = Depends(get_current_user)):
+    from app.core.database import get_supabase
+    db = get_supabase()
+    convo = await asyncio.to_thread(
+        lambda: db.table("conversations").select("user_id, call_sid").eq("id", conversation_id).limit(1).execute()
+    )
+    if not convo.data or convo.data[0]["user_id"] != current_user["sub"]:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return await build_qa_payload(convo.data[0].get("call_sid"))

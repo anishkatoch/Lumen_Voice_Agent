@@ -336,12 +336,12 @@ def get_next_queued_candidate(campaign_id: str) -> dict | None:
     return _attach_candidate(result.data, db)[0]
 
 
-def _lookup_candidate_name(candidate_id: str, db) -> str:
+def _lookup_candidate(candidate_id: str, db) -> dict:
     try:
-        result = db.table("hr_candidates").select("name").eq("id", candidate_id).execute()
-        return result.data[0]["name"] if result.data else "candidate"
+        result = db.table("hr_candidates").select("name, phone").eq("id", candidate_id).execute()
+        return result.data[0] if result.data else {}
     except Exception:
-        return "candidate"
+        return {}
 
 
 def _record_exhaustion_analytics(campaign: dict, row: dict, db) -> None:
@@ -358,10 +358,12 @@ def _record_exhaustion_analytics(campaign: dict, row: dict, db) -> None:
     else:
         call_status, reason = "no_answer", f"Candidate did not pick up after {attempts} attempts"
     try:
-        candidate_name = _lookup_candidate_name(row["candidate_id"], db)
+        candidate = _lookup_candidate(row["candidate_id"], db)
+        candidate_name = candidate.get("name") or "candidate"
         create_conversation(
             campaign["user_id"], f"Campaign call - {candidate_name}",
             agent_id=campaign.get("agent_id"), call_status=call_status, failure_reason=reason,
+            to_number=candidate.get("phone"),
         )
     except Exception as e:
         print(f"[HR Campaign Dialer] Exhaustion analytics write failed (non-fatal): {e}")

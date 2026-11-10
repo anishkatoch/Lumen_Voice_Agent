@@ -313,8 +313,10 @@ async def plivo_interview_status_callback(request: Request):
 
     if call_uuid and new_status:
         from app.hr_campaigns.hr_repo import mark_interview_status_by_call_sid
-        hr_status = "completed" if new_status == "completed" else "failed"
-        await asyncio.to_thread(mark_interview_status_by_call_sid, call_uuid, hr_status)
+        # Pass the specific outcome through (busy/no_answer/failed/completed)
+        # instead of collapsing everything non-"completed" to a generic
+        # "failed" - mirrors telephony_twilio.twilio_interview_status_callback.
+        await asyncio.to_thread(mark_interview_status_by_call_sid, call_uuid, new_status)
 
         from app.conversations.conversation_repo import set_call_status_by_sid_if_unconnected
         await asyncio.to_thread(
@@ -364,8 +366,10 @@ async def plivo_voice_webhook(request: Request):
     try:
         form = await request.form()
         to_number = str(form.get("To", ""))
+        from_number = str(form.get("From", ""))
     except Exception:
         to_number = str(request.query_params.get("To", ""))
+        from_number = str(request.query_params.get("From", ""))
     print(f"[Plivo Voice] Inbound call, To={to_number!r}")
 
     number_record = await asyncio.to_thread(get_number_by_phone, to_number)
@@ -386,7 +390,7 @@ async def plivo_voice_webhook(request: Request):
     # so call context travels there directly instead of via <Parameter> tags.
     # The number must be percent-encoded - a raw "+" in a query string is
     # parsed back as a space, which silently broke the inbound number lookup.
-    ws_url = f"wss://{host}/plivo/stream?to={quote(to_number)}"
+    ws_url = f"wss://{host}/plivo/stream?to={quote(to_number)}&from={quote(from_number)}"
     xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Stream bidirectional="true" keepCallAlive="true" contentType="audio/x-mulaw;rate=8000">{ws_url}</Stream>
@@ -410,7 +414,6 @@ async def plivo_stream_endpoint(websocket: WebSocket):
     )
     from app.conversations.message_repo import save_message, get_session_messages
     from app.agents.agent_repo import get_agent, get_agent_functions
-    from app.conversations.conversation_repo import set_call_status
     from app.voice.deepgram_service import transcribe_audio_smart
     from app.voice.vad_service import build_wav_bytes
     from app.voice.turn_heuristics import sounds_unfinished
@@ -479,6 +482,7 @@ async def plivo_stream_endpoint(websocket: WebSocket):
         interview_id = query_params.get("interview_id", "")
         campaign_candidate_id = query_params.get("campaign_candidate_id", "")
         to = query_params.get("to", "")
+        inbound_from = query_params.get("from", "")
 
         from app.telephony.shared import resolve_call_context
         from app.telephony.plivo.plivo_repo import get_number_by_phone
@@ -522,6 +526,8 @@ async def plivo_stream_endpoint(websocket: WebSocket):
                     "agent_id": agent_id,
                     "call_status": "in_progress",
                     "call_sid": plivo_call_uuid,
+                    "to_number": to or None,
+                    "from_number": inbound_from or None,
                 }).execute()
                 return res.data[0]
             except Exception as e:
@@ -978,17 +984,14 @@ async def plivo_stream_endpoint(websocket: WebSocket):
             except Exception:
                 pass
         if conversation_id:
-            await asyncio.to_thread(
-                set_call_status, conversation_id,
-                "failed" if _call_failure_reason else "completed", _call_failure_reason,
-            )
-            from app.conversations.conversation_repo import set_call_duration_and_cost
-            await asyncio.to_thread(set_call_duration_and_cost, conversation_id)
+            from app.telephony.shared import finalize_call_outcome
+            final_status, history = await finalize_call_outcome(conversation_id, _call_failure_reason)
+            if interview_id and final_status == "no_response":
+                from app.hr_campaigns.hr_repo import mark_interview_no_response
+                await asyncio.to_thread(mark_interview_no_response, interview_id)
             try:
-                from app.conversations.message_repo import get_conversation_history
                 from app.conversations.conversation_repo import set_call_summary
                 from app.voice.llm_service import generate_call_summary
-                history = await asyncio.to_thread(get_conversation_history, conversation_id)
                 if history:
                     summary = await generate_call_summary(history)
                     if summary:

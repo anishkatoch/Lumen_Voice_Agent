@@ -157,6 +157,68 @@ async def admin_list_elevenlabs_voices(current_user: dict = Depends(get_current_
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"ElevenLabs error: {e}")
 
+@router.get("/api/admin/call-accounts")
+async def admin_list_call_accounts(current_user: dict = Depends(get_current_user)):
+    """Every account that has placed/received at least one call, for the
+    Call Analytics account picker - call count, last activity, and email
+    (resolved from Supabase Auth, since conversations only stores user_id)."""
+    _require_admin(current_user)
+    from app.conversations.conversation_repo import list_call_accounts
+    accounts = await asyncio.to_thread(list_call_accounts)
+
+    def _resolve_emails() -> dict[str, str]:
+        from app.core.database import get_supabase
+        db = get_supabase()
+        emails: dict[str, str] = {}
+        try:
+            page = 1
+            while True:
+                users = db.auth.admin.list_users(page=page, per_page=200)
+                if not users:
+                    break
+                for u in users:
+                    emails[u.id] = u.email or u.id
+                if len(users) < 200:
+                    break
+                page += 1
+        except Exception as e:
+            print(f"[Admin] Failed to resolve account emails: {e}")
+        return emails
+
+    emails = await asyncio.to_thread(_resolve_emails)
+    for a in accounts:
+        a["email"] = emails.get(a["user_id"], a["user_id"])
+    return accounts
+
+@router.get("/api/admin/call-accounts/{user_id}/conversations")
+async def admin_list_account_conversations(user_id: str, current_user: dict = Depends(get_current_user)):
+    _require_admin(current_user)
+    from app.conversations.conversation_repo import get_conversations
+    return await asyncio.to_thread(get_conversations, user_id)
+
+@router.get("/api/admin/call-accounts/{user_id}/conversations/{conversation_id}/messages")
+async def admin_get_account_messages(user_id: str, conversation_id: str, current_user: dict = Depends(get_current_user)):
+    _require_admin(current_user)
+    from app.conversations.conversation_repo import get_conversation_by_id
+    from app.conversations.message_repo import get_conversation_history
+    convo = await asyncio.to_thread(get_conversation_by_id, conversation_id)
+    if not convo or convo.get("user_id") != user_id:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return await asyncio.to_thread(get_conversation_history, conversation_id)
+
+@router.get("/api/admin/call-accounts/{user_id}/conversations/{conversation_id}/qa")
+async def admin_get_account_conversation_qa(user_id: str, conversation_id: str, current_user: dict = Depends(get_current_user)):
+    _require_admin(current_user)
+    from app.core.database import get_supabase
+    db = get_supabase()
+    convo = await asyncio.to_thread(
+        lambda: db.table("conversations").select("user_id, call_sid").eq("id", conversation_id).limit(1).execute()
+    )
+    if not convo.data or convo.data[0]["user_id"] != user_id:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    from app.routers.conversations import build_qa_payload
+    return await build_qa_payload(convo.data[0].get("call_sid"))
+
 @router.post("/api/admin/test-llm")
 async def admin_test_llm(current_user: dict = Depends(get_current_user)):
     """Fires one real, minimal completion through the currently configured LLM

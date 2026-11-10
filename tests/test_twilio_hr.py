@@ -725,7 +725,7 @@ class TestSchedulerDeduplication:
 
         async def fake_initiate(*a, **kw):
             call_order.append("twilio_call")
-            return "CAtest123", None
+            return "CAtest123", "+14155550123", None
 
         mocker.patch("app.core.database.get_supabase", return_value=db)
         mocker.patch("app.telephony.plivo.plivo_repo.get_number_for_agent", return_value=None)
@@ -788,7 +788,7 @@ class TestSchedulerDeduplication:
         db = self._make_claim_db(mocker, claim_data=[iv])
 
         mocker.patch("app.hr_campaigns.hr_scheduler._initiate_outbound_call",
-                     new_callable=AsyncMock, return_value=(None, "Twilio rejected the call - check the phone number and account status"))
+                     new_callable=AsyncMock, return_value=(None, None, "Twilio rejected the call - check the phone number and account status"))
         mock_fail = mocker.patch("app.hr_campaigns.hr_repo.mark_interview_failed")
         mocker.patch("app.core.database.get_supabase", return_value=db)
         mocker.patch("app.telephony.plivo.plivo_repo.get_number_for_agent", return_value=None)
@@ -849,14 +849,14 @@ class TestInitiateOutboundCall:
     async def test_no_credentials_returns_short_reason(self, mocker):
         from app.hr_campaigns.hr_scheduler import _initiate_outbound_call
         iv = _interview()
-        call_sid, reason = await _initiate_outbound_call(iv, _settings(account_sid="", auth_token=""), TEST_WEBHOOK)
+        call_sid, from_number, reason = await _initiate_outbound_call(iv, _settings(account_sid="", auth_token=""), TEST_WEBHOOK)
         assert call_sid is None
         assert reason == "No Twilio account connected for this user"
 
     async def test_no_candidate_phone_returns_short_reason(self, mocker):
         from app.hr_campaigns.hr_scheduler import _initiate_outbound_call
         iv = _interview(hr_candidates={"name": "Priya Sharma", "phone": ""})
-        call_sid, reason = await _initiate_outbound_call(iv, _settings(), TEST_WEBHOOK)
+        call_sid, from_number, reason = await _initiate_outbound_call(iv, _settings(), TEST_WEBHOOK)
         assert call_sid is None
         assert reason == "Candidate has no phone number on file"
 
@@ -864,7 +864,7 @@ class TestInitiateOutboundCall:
         self._mock_db_no_number(mocker)
         from app.hr_campaigns.hr_scheduler import _initiate_outbound_call
         iv = _interview()
-        call_sid, reason = await _initiate_outbound_call(iv, _settings(), TEST_WEBHOOK)
+        call_sid, from_number, reason = await _initiate_outbound_call(iv, _settings(), TEST_WEBHOOK)
         assert call_sid is None
         assert reason == "No active Twilio phone number configured"
 
@@ -883,7 +883,7 @@ class TestInitiateOutboundCall:
 
         from app.hr_campaigns.hr_scheduler import _initiate_outbound_call
         iv = _interview()
-        call_sid, reason = await _initiate_outbound_call(iv, _settings(), TEST_WEBHOOK)
+        call_sid, from_number, reason = await _initiate_outbound_call(iv, _settings(), TEST_WEBHOOK)
         assert call_sid is None
         assert reason == "Twilio rejected the call - check the phone number and account status"
 
@@ -895,7 +895,7 @@ class TestInitiateOutboundCall:
 
         from app.hr_campaigns.hr_scheduler import _initiate_outbound_call
         iv = _interview()
-        call_sid, reason = await _initiate_outbound_call(iv, _settings(), TEST_WEBHOOK)
+        call_sid, from_number, reason = await _initiate_outbound_call(iv, _settings(), TEST_WEBHOOK)
         assert call_sid is None
         assert reason == "Could not reach Twilio to place the call"
 
@@ -914,7 +914,7 @@ class TestInitiateOutboundCall:
 
         from app.hr_campaigns.hr_scheduler import _initiate_outbound_call
         iv = _interview()
-        call_sid, reason = await _initiate_outbound_call(iv, _settings(), TEST_WEBHOOK)
+        call_sid, from_number, reason = await _initiate_outbound_call(iv, _settings(), TEST_WEBHOOK)
         assert call_sid == "CAsuccess000000000000000000000000000"
         assert reason is None
 
@@ -978,6 +978,7 @@ class TestCheckAndCallWritesCallAnalytics:
         mock_record.assert_called_once_with(
             TEST_USER_ID, "Interview call - Priya Sharma", TEST_AGENT_ID,
             "No Twilio account connected for this user",
+            to_number="+919876543210",
         )
 
     async def test_no_candidate_phone_end_to_end(self, mocker):
@@ -997,6 +998,7 @@ class TestCheckAndCallWritesCallAnalytics:
         mock_record.assert_called_once_with(
             TEST_USER_ID, "Interview call - Priya Sharma", TEST_AGENT_ID,
             "Candidate has no phone number on file",
+            to_number="",
         )
 
     async def test_record_failed_call_exception_does_not_abort_remaining_interviews(self, mocker):

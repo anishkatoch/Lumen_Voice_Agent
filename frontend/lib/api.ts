@@ -442,9 +442,10 @@ export interface HRInterview {
   scheduled_at: string;
   call_lead_minutes: number;
   specific_questions?: string | null;
-  status: "pending" | "calling" | "completed" | "failed" | "cancelled";
+  status: "pending" | "calling" | "completed" | "no_response" | "busy" | "no_answer" | "failed" | "cancelled";
   called_at?: string | null;
   call_sid?: string | null;
+  call_duration_seconds?: number | null;
   created_at: string;
   hr_candidates?: { name: string; phone: string; role?: string | null } | null;
 }
