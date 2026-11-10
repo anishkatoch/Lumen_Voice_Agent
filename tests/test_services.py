@@ -189,10 +189,11 @@ async def test_generate_response_stream_no_rag(mocker):
 
 async def test_embed_text(mocker):
     mock_response = MagicMock()
-    mock_response.data[0].embedding = [0.1] * 1536
-    mock_client = AsyncMock()
-    mock_client.embeddings.create = AsyncMock(return_value=mock_response)
-    mocker.patch("app.agents.rag_service._get_openai", return_value=mock_client)
+    mock_response.data = [MagicMock(embedding=[0.1] * 1536)]
+    mock_client = MagicMock()
+    mock_client.embeddings.create.return_value = mock_response
+    mocker.patch("app.core.embeddings._openai", mock_client)
+    mocker.patch("app.core.embeddings._azure_openai", None)
 
     from app.agents.rag_service import embed_text
     result = await embed_text("test query")

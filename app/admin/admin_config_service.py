@@ -35,9 +35,16 @@ DEFAULTS: dict[str, str] = {
 
 def _load() -> None:
     global _cache, _cache_time
-    db = get_supabase()
-    rows = db.table("admin_config").select("key,value").execute().data
-    _cache = {**DEFAULTS, **{r["key"]: r["value"] for r in rows}}
+    try:
+        db = get_supabase()
+        rows = db.table("admin_config").select("key,value").execute().data
+        _cache = {**DEFAULTS, **{r["key"]: r["value"] for r in rows}}
+    except Exception as e:
+        # A transient DB/network hiccup here must not abort every live call
+        # that checks e.g. voice_pipeline mid-setup - fall back to defaults
+        # and retry after the normal TTL rather than raising.
+        print(f"[AdminConfig] Failed to load config, using defaults: {e}")
+        _cache = dict(DEFAULTS)
     _cache_time = time.monotonic()
 
 

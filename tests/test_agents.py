@@ -610,7 +610,8 @@ async def test_embed_chunks_calls_openai(mocker):
         MagicMock(embedding=[0.1] * 1536),
         MagicMock(embedding=[0.2] * 1536),
     ]
-    mocker.patch("app.agents.agent_doc_processor._openai", mock_client)
+    mocker.patch("app.core.embeddings._openai", mock_client)
+    mocker.patch("app.core.embeddings._azure_openai", None)
 
     result = embed_chunks(["chunk one", "chunk two"])
     assert len(result) == 2
@@ -723,7 +724,8 @@ async def test_retrieve_agent_context_personal_scope(mocker):
 
     mock_openai = MagicMock()
     mock_openai.embeddings.create.return_value.data = [MagicMock(embedding=[0.1] * 1536)]
-    mocker.patch("app.agents.agent_rag_service._openai", mock_openai)
+    mocker.patch("app.core.embeddings._openai", mock_openai)
+    mocker.patch("app.core.embeddings._azure_openai", None)
 
     mock_cursor = MagicMock()
     mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)
@@ -746,7 +748,8 @@ async def test_retrieve_agent_context_global_scope_no_user_id_filter(mocker):
 
     mock_openai = MagicMock()
     mock_openai.embeddings.create.return_value.data = [MagicMock(embedding=[0.2] * 1536)]
-    mocker.patch("app.agents.agent_rag_service._openai", mock_openai)
+    mocker.patch("app.core.embeddings._openai", mock_openai)
+    mocker.patch("app.core.embeddings._azure_openai", None)
 
     mock_cursor = MagicMock()
     mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)
@@ -772,7 +775,8 @@ async def test_retrieve_agent_context_both_scopes_includes_user_id_in_query(mock
 
     mock_openai = MagicMock()
     mock_openai.embeddings.create.return_value.data = [MagicMock(embedding=[0.3] * 1536)]
-    mocker.patch("app.agents.agent_rag_service._openai", mock_openai)
+    mocker.patch("app.core.embeddings._openai", mock_openai)
+    mocker.patch("app.core.embeddings._azure_openai", None)
 
     mock_cursor = MagicMock()
     mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)
@@ -797,7 +801,8 @@ async def test_retrieve_agent_context_closes_connection_on_error(mocker):
 
     mock_openai = MagicMock()
     mock_openai.embeddings.create.return_value.data = [MagicMock(embedding=[0.1] * 1536)]
-    mocker.patch("app.agents.agent_rag_service._openai", mock_openai)
+    mocker.patch("app.core.embeddings._openai", mock_openai)
+    mocker.patch("app.core.embeddings._azure_openai", None)
 
     mock_cursor = MagicMock()
     mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)

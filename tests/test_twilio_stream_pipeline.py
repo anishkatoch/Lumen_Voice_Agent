@@ -212,7 +212,10 @@ class TestPipelineFunctionSignatures:
             # crash with "Cannot call send once a close message has been sent",
             # silently dropping the assistant save_message call this test
             # asserts on - a real timing characteristic, not a mocking gap.
-            time.sleep(0.3)
+            # Polls instead of a fixed sleep - a hardcoded duration flaked on
+            # a slower/loaded CI runner once more async work (KB eligibility
+            # lookup, situational filler selection) landed in the hot path.
+            _wait_until(lambda: len(mock_pipeline["save_message_calls"]) >= 3)
             ws.send_text(json.dumps({"event": "stop", "streamSid": STREAM_SID}))
 
         calls = mock_pipeline["save_message_calls"]
@@ -380,7 +383,9 @@ class TestCampaignCallLiveToolRecording:
             # crash with "Cannot call send once a close message has been sent",
             # silently dropping the assistant save_message call this test
             # asserts on - a real timing characteristic, not a mocking gap.
-            time.sleep(0.3)
+            # Polls instead of a fixed sleep - see the comment on the same
+            # pattern in TestPipelineFunctionSignatures above.
+            _wait_until(lambda: "value" in captured_result)
             ws.send_text(json.dumps({"event": "stop", "streamSid": STREAM_SID}))
 
         mock_record.assert_not_called()
@@ -420,7 +425,9 @@ class TestCampaignCallLiveToolRecording:
             # crash with "Cannot call send once a close message has been sent",
             # silently dropping the assistant save_message call this test
             # asserts on - a real timing characteristic, not a mocking gap.
-            time.sleep(0.3)
+            # Polls instead of a fixed sleep - see the comment on the same
+            # pattern in TestPipelineFunctionSignatures above.
+            _wait_until(lambda: len(mock_pipeline["save_message_calls"]) >= 3)
             ws.send_text(json.dumps({"event": "stop", "streamSid": STREAM_SID}))
 
         mock_get_campaign_candidate.assert_not_called()
@@ -523,7 +530,9 @@ class TestDeepgramFallback:
             # crash with "Cannot call send once a close message has been sent",
             # silently dropping the assistant save_message call this test
             # asserts on - a real timing characteristic, not a mocking gap.
-            time.sleep(0.3)
+            # Polls instead of a fixed sleep - see the comment on the same
+            # pattern in TestPipelineFunctionSignatures above.
+            _wait_until(lambda: len(mock_pipeline["save_message_calls"]) >= 3)
             ws.send_text(json.dumps({"event": "stop", "streamSid": STREAM_SID}))
 
         assert len(fallback_calls) == 1, "prerecorded fallback should have been invoked exactly once"
@@ -682,15 +691,17 @@ class TestBargeInStopsGenerationAndSpeech:
                 ws.send_text(_mulaw_media_event())
 
             # Let "Sentence one." get spoken, then interrupt mid-response
-            # (well before "Sentence two." at the 0.4s mark).
-            time.sleep(0.15)
+            # (well before "Sentence two." at the 0.4s mark). Polls for the
+            # observable event instead of a fixed sleep - a hardcoded
+            # duration flaked on a slower/loaded CI runner.
+            _wait_until(lambda: "Sentence one." in tts_calls)
             for _ in range(6):  # > BARGE_IN_STREAK_NEEDED (4)
                 ws.send_text(_mulaw_media_event())
 
             # Give the cancellation time to propagate, and long enough that
             # "Sentence two."/"three."/"four." would have been spoken by now
             # if the interruption hadn't actually stopped the old response.
-            time.sleep(1.5)
+            _wait_until(lambda: generation_state["cancelled"], timeout=3.0)
             ws.send_text(json.dumps({"event": "stop", "streamSid": STREAM_SID}))
 
         assert "Sentence one." in tts_calls, f"expected the first sentence to have been spoken, got {tts_calls}"
@@ -762,14 +773,16 @@ class TestCallEndCancelsInFlightResponse:
 
             # "Sentence one." gets spoken, then the caller hangs up - well
             # before "Sentence two." at the 0.4s mark - instead of a barge-in.
-            time.sleep(0.15)
+            # Polls for the observable event instead of a fixed sleep - a
+            # hardcoded duration flaked on a slower/loaded CI runner.
+            _wait_until(lambda: "Sentence one." in tts_calls)
             ws.send_text(json.dumps({"event": "stop", "streamSid": STREAM_SID}))
 
             # Give the server time to process "stop" and run its cleanup
             # while the connection is still open - exiting the `with` block
             # right away masks the bug (the client-side teardown races with,
             # and can hide, what the orphaned task does on the server side).
-            time.sleep(1.0)
+            _wait_until(lambda: generation_state["cancelled"], timeout=3.0)
 
         assert "Sentence one." in tts_calls, f"expected the first sentence to have been spoken, got {tts_calls}"
         assert generation_state["cancelled"], "ending the call should cancel the in-flight LLM stream"
@@ -872,8 +885,10 @@ class TestRetrievalFiller:
             for _ in range(40):
                 ws.send_text(_mulaw_media_event())
             # Give the watchdog (1.2s) + the slow fake LLM (1.5s) + TTS time
-            # to finish before the `with` block tears the socket down.
-            time.sleep(3.5)
+            # to finish before the `with` block tears the socket down. Polls
+            # instead of a fixed sleep - a hardcoded duration flaked on a
+            # slower/loaded CI runner.
+            _wait_until(lambda: len(mock_pipeline["save_message_calls"]) >= 3, timeout=8.0)
             ws.send_text(json.dumps({"event": "stop", "streamSid": STREAM_SID}))
 
         calls = mock_pipeline["save_message_calls"]
