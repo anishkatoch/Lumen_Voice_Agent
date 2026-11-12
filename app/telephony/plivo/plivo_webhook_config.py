@@ -14,7 +14,33 @@ from app.core.database import get_supabase
 _APP_NAME_PREFIX = "lumen-agent-"
 
 
-async def _find_or_create_app(auth_id: str, auth_token: str, answer_url: str) -> str | None:
+def _message_url(webhook_base_url: str) -> str:
+    return webhook_base_url.rstrip("/") + "/plivo/sms/inbound"
+
+
+async def _ensure_message_url(auth_id: str, auth_token: str, app_id: str, message_url: str) -> None:
+    """Point the Application's inbound-SMS webhook at us. Applications made
+    before the email-by-text feature only have an answer_url, so this is
+    what retrofits them; it is a no-op when already set."""
+    url = f"https://api.plivo.com/v1/Account/{auth_id}/Application/{app_id}/"
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(url, auth=(auth_id, auth_token))
+            if resp.status_code == 200 and resp.json().get("message_url") == message_url:
+                return
+            resp = await client.post(
+                url, auth=(auth_id, auth_token),
+                json={"message_url": message_url, "message_method": "POST"},
+            )
+            if resp.status_code in (200, 202):
+                print(f"[Plivo Webhook] Set message_url on app {app_id}")
+            else:
+                print(f"[Plivo Webhook] Failed to set message_url on app {app_id}: {resp.status_code} {resp.text[:200]}")
+    except Exception as e:
+        print(f"[Plivo Webhook] HTTP error setting message_url: {e}")
+
+
+async def _find_or_create_app(auth_id: str, auth_token: str, answer_url: str, message_url: str | None = None) -> str | None:
     """Return the app_id of a Plivo Application whose answer_url matches,
     creating one if none exists yet."""
     app_name = _APP_NAME_PREFIX + str(abs(hash(answer_url)) % (10**10))
@@ -25,17 +51,20 @@ async def _find_or_create_app(auth_id: str, auth_token: str, answer_url: str) ->
             if resp.status_code == 200:
                 for app in resp.json().get("objects", []):
                     if app.get("answer_url") == answer_url:
-                        return app.get("app_id")
+                        app_id = app.get("app_id")
+                        if message_url and app.get("message_url") != message_url:
+                            await _ensure_message_url(auth_id, auth_token, app_id, message_url)
+                        return app_id
 
-            resp = await client.post(
-                base,
-                auth=(auth_id, auth_token),
-                json={
-                    "app_name": app_name,
-                    "answer_url": answer_url,
-                    "answer_method": "POST",
-                },
-            )
+            payload = {
+                "app_name": app_name,
+                "answer_url": answer_url,
+                "answer_method": "POST",
+            }
+            if message_url:
+                payload["message_url"] = message_url
+                payload["message_method"] = "POST"
+            resp = await client.post(base, auth=(auth_id, auth_token), json=payload)
             if resp.status_code in (200, 201):
                 return resp.json().get("app_id")
             print(f"[Plivo Webhook] Failed to create application: {resp.status_code} {resp.text[:200]}")
@@ -69,8 +98,13 @@ async def configure_number_webhook(user_id: str, number_id: str, auth_id: str, a
         return
     record = row.data[0]
     answer_url = webhook_base_url.rstrip("/") + "/plivo/voice"
+    message_url = _message_url(webhook_base_url)
 
-    app_id = record.get("plivo_app_id") or await _find_or_create_app(auth_id, auth_token, answer_url)
+    if record.get("plivo_app_id"):
+        app_id = record["plivo_app_id"]
+        await _ensure_message_url(auth_id, auth_token, app_id, message_url)
+    else:
+        app_id = await _find_or_create_app(auth_id, auth_token, answer_url, message_url)
     if not app_id:
         print(f"[Plivo Webhook] Could not resolve application for {record['phone_number']}")
         return
@@ -86,7 +120,7 @@ async def configure_all_user_numbers(user_id: str, auth_id: str, auth_token: str
     db = get_supabase()
     numbers = db.table("plivo_phone_numbers").select("*").eq("user_id", user_id).execute().data
     answer_url = webhook_base_url.rstrip("/") + "/plivo/voice"
-    app_id = await _find_or_create_app(auth_id, auth_token, answer_url)
+    app_id = await _find_or_create_app(auth_id, auth_token, answer_url, _message_url(webhook_base_url))
     if not app_id:
         return
     for record in numbers:
@@ -104,7 +138,7 @@ async def configure_numbers_for_account(
     db = get_supabase()
     numbers = db.table("plivo_phone_numbers").select("*").eq("user_id", user_id).execute().data
     answer_url = webhook_base_url.rstrip("/") + "/plivo/voice"
-    app_id = await _find_or_create_app(auth_id, auth_token, answer_url)
+    app_id = await _find_or_create_app(auth_id, auth_token, answer_url, _message_url(webhook_base_url))
     if not app_id:
         return
 

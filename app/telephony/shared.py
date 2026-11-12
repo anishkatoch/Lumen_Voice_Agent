@@ -411,6 +411,7 @@ async def run_realtime_telephony_bridge(
     parse_media_payload,          # (data: dict) -> str | None - base64 mu-law payload, or None to ignore this message
     send_audio_frame,             # async (b64_payload: str) -> None - relay to the caller, provider's own wire format
     send_clear,                   # async () -> None - stop whatever's currently queued for playback (barge-in)
+    sms_capture=None,             # SmsCaptureContext when the email-by-text tools are on this call (Plivo only so far)
 ) -> str | None:
     """Bridges a phone call directly to OpenAI's Realtime API - no VAD, no
     Deepgram, no llm_service, no separate TTS call. Caller audio (already
@@ -478,6 +479,9 @@ async def run_realtime_telephony_bridge(
         from app.integrations.meeting_tools import MEETING_KINDS, execute_meeting_tool
         if fn and fn.get("kind") in MEETING_KINDS:
             return await execute_meeting_tool(fn, args, agent, user_id, conversation_id)
+        from app.telephony.sms_email_capture import SMS_EMAIL_KINDS, execute_sms_email_tool
+        if fn and fn.get("kind") in SMS_EMAIL_KINDS:
+            return await execute_sms_email_tool(fn, args, sms_capture)
         if not fn:
             return json.dumps({"error": "function not found"})
         import httpx
