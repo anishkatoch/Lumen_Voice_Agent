@@ -4,6 +4,9 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: "Lumen - Voice AI Agent",
   description: "Talk to your AI agent using your voice",
+  verification: {
+    google: "LBBIG6JKHsl-PvXwLwqZa7F7SqS-cySgjnl-47DJHdk",
+  },
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
