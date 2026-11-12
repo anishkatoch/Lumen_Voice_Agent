@@ -397,6 +397,26 @@ async def plivo_voice_webhook(request: Request):
 </Response>"""
     return Response(content=xml, media_type="application/xml")
 
+@router.post("/plivo/sms/inbound")
+async def plivo_sms_inbound(request: Request):
+    """Plivo posts here (the Application's message_url, set by
+    plivo_webhook_config) for every text sent to a connected number. Only
+    texts that answer a pending email request are acted on; anything else
+    is logged and dropped. Always 200 - Plivo retries on anything else."""
+    try:
+        form = await request.form()
+        payload = dict(form)
+    except Exception:
+        payload = dict(request.query_params)
+    from_number = str(payload.get("From", ""))
+    to_number = str(payload.get("To", ""))
+    text = str(payload.get("Text", ""))
+    print(f"[Plivo SMS] inbound From={from_number!r} To={to_number!r}")
+    if from_number and to_number:
+        from app.telephony.sms_email_capture import handle_inbound_sms
+        await handle_inbound_sms(from_number, to_number, text)
+    return Response(content='<?xml version="1.0"?><Response></Response>', media_type="application/xml")
+
 @router.websocket("/plivo/stream")
 async def plivo_stream_endpoint(websocket: WebSocket):
     """Handles Plivo Audio Streaming - bidirectional audio for inbound and
@@ -436,6 +456,7 @@ async def plivo_stream_endpoint(websocket: WebSocket):
     conversation_id: str | None = None
     _tool_functions: list = []
     _kb_documents: list = []  # docs search_knowledge_base may touch - see get_eligible_kb_documents
+    _sms_ctx = None  # set when the email-by-text tools are on this call - see sms_email_capture.py
     initial_memory = None
 
     stream_id: str | None = None
@@ -476,7 +497,7 @@ async def plivo_stream_endpoint(websocket: WebSocket):
         / campaign_candidate_id) is read straight from it rather than from a
         'start' event payload field."""
         nonlocal agent_id, user_id, interview_id, extra_system_context, greeting_override
-        nonlocal agent, conversation_id, _tool_functions, _kb_documents, initial_memory
+        nonlocal agent, conversation_id, _tool_functions, _kb_documents, _sms_ctx, initial_memory
         nonlocal campaign_candidate_id, campaign_id, campaign_data, call_questions
 
         interview_id = query_params.get("interview_id", "")
@@ -571,6 +592,26 @@ async def plivo_stream_endpoint(websocket: WebSocket):
         if _meeting_tools:
             _tool_functions = _tool_functions + _meeting_tools
             extra_system_context += build_meeting_system_context(agent)
+
+        # Email-by-text tools - only alongside the meeting tools (the email is
+        # for the invite) and only when this transport knows both numbers,
+        # which an inbound Plivo call does via the Stream URL's query string.
+        from app.telephony.sms_email_capture import SMS_EMAIL_CAPTURE_ENABLED
+        if SMS_EMAIL_CAPTURE_ENABLED and _meeting_tools and to and inbound_from:
+            from app.telephony.plivo.user_plivo_settings_repo import resolve_account_for_number
+            from app.telephony.sms_email_capture import (
+                SmsCaptureContext, build_sms_email_tools, build_sms_email_system_context,
+            )
+            number_record = await asyncio.to_thread(get_number_by_phone, to)
+            settings = await asyncio.to_thread(resolve_account_for_number, number_record or {}, user_id)
+            if settings.get("auth_id") and settings.get("auth_token"):
+                _sms_ctx = SmsCaptureContext(
+                    user_id=user_id, agent_id=agent_id, agent_name=agent.get("name") or "",
+                    conversation_id=conversation_id, agent_number=to, caller_number=inbound_from,
+                    auth_id=settings["auth_id"], auth_token=settings["auth_token"],
+                )
+                _tool_functions = _tool_functions + build_sms_email_tools()
+                extra_system_context += build_sms_email_system_context()
 
         # Never inject the agent OWNER's long_term_memory into a phone call -
         # the caller on a phone call is never the account owner (unlike the
@@ -739,6 +780,7 @@ async def plivo_stream_endpoint(websocket: WebSocket):
 
                 if tool_name:
                     from app.integrations.meeting_tools import MEETING_KINDS, execute_meeting_tool
+                    from app.telephony.sms_email_capture import SMS_EMAIL_KINDS, execute_sms_email_tool
                     from app.voice.llm_service import tool_steps_to_messages
 
                     async def _dispatch_tool(fn: dict | None, args: dict) -> str:
@@ -757,6 +799,8 @@ async def plivo_stream_endpoint(websocket: WebSocket):
                             # Calendar HTTP calls genuinely take time - leave the
                             # retrieval filler running so it can cover the wait.
                             return await execute_meeting_tool(fn, args, agent, user_id, conversation_id)
+                        if fn and fn.get("kind") in SMS_EMAIL_KINDS:
+                            return await execute_sms_email_tool(fn, args, _sms_ctx)
                         if fn:
                             return await _execute_webhook_plivo(fn, args)
                         return "{}"
@@ -862,6 +906,7 @@ async def plivo_stream_endpoint(websocket: WebSocket):
                         interview_id=interview_id, campaign_candidate_id=campaign_candidate_id,
                         tool_functions=_tool_functions, parse_media_payload=_parse_media_payload,
                         send_audio_frame=_send_audio_frame, send_clear=_send_clear,
+                        sms_capture=_sms_ctx,
                     )
                     # Not _call_ended = True - unlike the "stop" event path, no
                     # mark_interview/campaign_completed call happened above, so
@@ -875,6 +920,25 @@ async def plivo_stream_endpoint(websocket: WebSocket):
                     _speech_gen += 1
                     _active_task = asyncio.create_task(_speak_greeting(greeting, _speech_gen))
                     _active_task.add_done_callback(lambda t: log_task_exception(t, "Plivo"))
+
+                if _sms_ctx:
+                    from app.telephony.sms_email_capture import register_reply_listener, format_reply_for_transcript
+
+                    async def _on_sms_reply(row: dict):
+                        """The caller's texted email lands as its own caller turn
+                        so the model can act on it right away. Wait for the agent
+                        to finish talking/thinking first, otherwise this would
+                        cancel the turn in flight exactly like a barge-in."""
+                        nonlocal _speech_gen, _active_task
+                        for _ in range(120):
+                            if not is_speaking and not is_processing:
+                                break
+                            await asyncio.sleep(0.5)
+                        _speech_gen += 1
+                        _active_task = asyncio.create_task(run_pipeline(format_reply_for_transcript(row), _speech_gen))
+                        _active_task.add_done_callback(lambda t: log_task_exception(t, "Plivo"))
+
+                    register_reply_listener(conversation_id, _on_sms_reply)
 
             elif event == "media":
                 if not agent:
@@ -1004,6 +1068,9 @@ async def plivo_stream_endpoint(websocket: WebSocket):
     finally:
         if _active_task and not _active_task.done():
             _active_task.cancel()
+        if conversation_id:
+            from app.telephony.sms_email_capture import unregister_reply_listeners
+            unregister_reply_listeners(conversation_id)
         if _dg_stream:
             try:
                 await _dg_stream.finish()
