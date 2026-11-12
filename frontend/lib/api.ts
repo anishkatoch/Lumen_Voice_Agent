@@ -299,6 +299,15 @@ export const API = {
   setDefaultPlivoAccount: (accountId: string) =>
     API.request<PlivoAccount>(`/api/plivo/accounts/${accountId}/set-default`, { method: "POST" }),
 
+  // Integrations (Google Calendar)
+  googleCalendarStatus: () =>
+    API.request<{ connected: boolean; email: string | null }>("/api/integrations/google/status"),
+  googleCalendarConnect: () =>
+    API.request<{ auth_url: string }>("/api/integrations/google/connect"),
+  googleCalendarDisconnect: () =>
+    API.request<{ connected: boolean }>("/api/integrations/google", { method: "DELETE" }),
+  meetings: () => API.request<Meeting[]>("/api/meetings"),
+
   // Admin
   isAdmin: () => API.request<{ is_admin: boolean }>("/api/admin/is-admin"),
   adminKbRequests: () => API.request<KbAccessRequest[]>("/api/admin/kb-requests"),
@@ -356,8 +365,31 @@ export interface Agent {
   hr_instructions?: string | null;
   filler_phrases?: string | null;
   selected_kb_doc_ids: string[];
+  meeting_booking_enabled?: boolean;
+  meeting_duration_minutes?: number;
+  meeting_buffer_minutes?: number;
+  meeting_timezone?: string;
+  booking_hours_start?: string;
+  booking_hours_end?: string;
+  meeting_instructions?: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface Meeting {
+  id: string;
+  user_id: string;
+  agent_id: string;
+  conversation_id?: string | null;
+  google_event_id?: string | null;
+  attendee_name?: string | null;
+  attendee_email?: string | null;
+  topic?: string | null;
+  start_time: string;
+  end_time: string;
+  meet_link?: string | null;
+  status: string;
+  created_at: string;
 }
 
 export interface FunctionParameter {

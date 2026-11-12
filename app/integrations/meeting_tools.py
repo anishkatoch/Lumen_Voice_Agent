@@ -20,7 +20,12 @@ from datetime import datetime, timedelta, timezone
 
 KIND_CHECK_AVAILABILITY = "internal_check_availability"
 KIND_BOOK_MEETING = "internal_book_meeting"
-MEETING_KINDS = (KIND_CHECK_AVAILABILITY, KIND_BOOK_MEETING)
+KIND_CANCEL_MEETING = "internal_cancel_meeting"
+KIND_RESCHEDULE_MEETING = "internal_reschedule_meeting"
+MEETING_KINDS = (
+    KIND_CHECK_AVAILABILITY, KIND_BOOK_MEETING,
+    KIND_CANCEL_MEETING, KIND_RESCHEDULE_MEETING,
+)
 
 # How far ahead one check_availability call scans, and the minimum notice
 # before a bookable slot (a caller can't book a meeting starting mid-call).
@@ -120,6 +125,9 @@ def build_check_availability_tool() -> dict:
         "parameters": [
             {"name": "date", "type": "string",
              "description": "The day the caller asked about, format YYYY-MM-DD. Omit to check starting today."},
+            {"name": "after", "type": "string",
+             "description": "Earliest time of day to consider, format HH:MM 24-hour. Use 12:00 when the "
+                            "caller asks for the afternoon, 15:00 for late afternoon. Omit for any time."},
         ],
     }
 
@@ -147,6 +155,46 @@ def build_book_meeting_tool() -> dict:
     }
 
 
+def build_cancel_meeting_tool() -> dict:
+    return {
+        "name": "cancel_meeting",
+        "kind": KIND_CANCEL_MEETING,
+        "description": (
+            "Cancel an upcoming meeting that was booked on this calendar. Ask for the email "
+            "address the meeting was booked under (spell it back to confirm), and always "
+            "confirm with the caller before cancelling."
+        ),
+        "parameters": [
+            {"name": "attendee_email", "type": "string",
+             "description": "The email address the meeting was booked under."},
+            {"name": "start_time", "type": "string",
+             "description": "The meeting's start time, format YYYY-MM-DDTHH:MM, if the caller has "
+                            "more than one upcoming meeting. Leave empty otherwise."},
+        ],
+    }
+
+
+def build_reschedule_meeting_tool() -> dict:
+    return {
+        "name": "reschedule_meeting",
+        "kind": KIND_RESCHEDULE_MEETING,
+        "description": (
+            "Move an upcoming meeting to a new time. Ask for the email address the meeting was "
+            "booked under, call check_availability for the new day first, and confirm the new "
+            "time with the caller before rescheduling."
+        ),
+        "parameters": [
+            {"name": "attendee_email", "type": "string",
+             "description": "The email address the meeting was booked under."},
+            {"name": "new_start_time", "type": "string",
+             "description": "The new start time in the calendar's timezone, format YYYY-MM-DDTHH:MM."},
+            {"name": "old_start_time", "type": "string",
+             "description": "The current start time, format YYYY-MM-DDTHH:MM, if the caller has "
+                            "more than one upcoming meeting. Leave empty otherwise."},
+        ],
+    }
+
+
 async def get_meeting_tool_functions(agent: dict, user_id: str) -> list[dict]:
     """The gate, mirroring get_eligible_kb_documents' philosophy: the tools
     exist on a call only when the agent setting is on AND the owner's Google
@@ -165,7 +213,10 @@ async def get_meeting_tool_functions(agent: dict, user_id: str) -> list[dict]:
         print(f"[Meeting] agent {agent.get('id')} has booking enabled but user {user_id} "
               f"has no Google Calendar connected - tools not offered")
         return []
-    return [build_check_availability_tool(), build_book_meeting_tool()]
+    return [
+        build_check_availability_tool(), build_book_meeting_tool(),
+        build_cancel_meeting_tool(), build_reschedule_meeting_tool(),
+    ]
 
 
 def build_meeting_system_context(agent: dict) -> str:
@@ -190,6 +241,12 @@ def build_meeting_system_context(agent: dict) -> str:
         "not want an email invite, book without one."
         "\nNever promise a time check_availability did not return, and never claim a meeting is "
         "booked unless book_meeting confirmed it."
+        "\nTo cancel or move an existing meeting you need the email address it was booked under. "
+        "If the caller already gave their email earlier in this conversation (for example when "
+        "booking), reuse it without asking again; only ask (and spell it back) when you do not "
+        "have it yet. Confirm the caller really wants to cancel before calling cancel_meeting. "
+        "For a new time, call check_availability first, and once the caller agrees to the new "
+        "slot call reschedule_meeting immediately - do not re-confirm details you already have."
         + (f"\nAdditional booking rules from the business:\n{extra}" if extra else "")
     )
 
@@ -206,6 +263,10 @@ async def execute_meeting_tool(
             return await _check_availability(args, agent, user_id)
         if kind == KIND_BOOK_MEETING:
             return await _book_meeting(args, agent, user_id, conversation_id)
+        if kind == KIND_CANCEL_MEETING:
+            return await _cancel_meeting(args, agent, user_id)
+        if kind == KIND_RESCHEDULE_MEETING:
+            return await _reschedule_meeting(args, agent, user_id)
         return "This tool is not available on this call."
     except CalendarAuthError as e:
         print(f"[Meeting] auth error for user {user_id}: {e}")
@@ -240,6 +301,16 @@ async def _check_availability(args: dict, agent: dict, user_id: str) -> str:
         from_date = now.date()
 
     window_start, window_end, day_start, day_end, tz = _booking_window(agent, from_date)
+    # "afternoon"-style requests: without this, the 5-slot cap means a free
+    # morning fills the whole answer and afternoon slots never surface, so
+    # the agent wrongly tells the caller the afternoon is unavailable
+    # (found in live testing 2026-11-12). The `after` arg raises the start
+    # of each day's scan; a bad value just falls back to the booking hours.
+    after_raw = (args.get("after") or "").strip()
+    if after_raw:
+        after = _parse_hhmm(after_raw, day_start)
+        if after > day_start:
+            day_start = min(after, day_end)
     busy = await fetch_busy_intervals(user_id, window_start, window_end)
     slots = compute_free_slots(
         busy=[(s.astimezone(tz), e.astimezone(tz)) for s, e in busy],
@@ -261,6 +332,148 @@ async def _check_availability(args: dict, agent: dict, user_id: str) -> str:
     return (
         f"Open slots (each {int(agent.get('meeting_duration_minutes') or 30)} minutes): {spoken}. "
         "Offer the caller two or three of these, not the whole list."
+    )
+
+
+def _parse_meeting_row_time(row: dict, tz) -> datetime | None:
+    try:
+        return datetime.fromisoformat(str(row["start_time"]).replace("Z", "+00:00")).astimezone(tz)
+    except (KeyError, ValueError):
+        return None
+
+
+def _spoken_time(dt: datetime) -> str:
+    return dt.strftime("%A, %B %d at %I:%M %p")
+
+
+async def _find_target_meeting(args: dict, agent: dict, user_id: str, start_key: str) -> tuple[dict | None, str | None]:
+    """Resolve which upcoming meeting the caller means from their email (and,
+    when they have several, the start time in args[start_key]). Returns
+    (row, None) on success or (None, spoken_error) telling the model what to
+    ask for next. Scoped to this account's own meetings table, so a caller
+    can only ever touch meetings booked under the email they give."""
+    from app.integrations.meetings_repo import get_upcoming_meetings
+
+    email = (args.get("attendee_email") or "").strip()
+    if not email or not _EMAIL_RE.match(email):
+        return None, ("Ask the caller for the email address the meeting was booked under, "
+                      "spell it back to confirm, and try again.")
+    rows = await asyncio.to_thread(get_upcoming_meetings, user_id)
+    matches = [r for r in rows if (r.get("attendee_email") or "").strip().lower() == email.lower()]
+    if not matches:
+        return None, (f"No upcoming meeting is booked under {email}. Double check the spelling "
+                      "of the email with the caller.")
+
+    tz = _agent_tz(agent)
+    requested = (args.get(start_key) or "").strip()
+    if requested:
+        try:
+            want = datetime.strptime(requested, "%Y-%m-%dT%H:%M").replace(tzinfo=tz)
+        except ValueError:
+            want = None
+        if want is not None:
+            for r in matches:
+                row_start = _parse_meeting_row_time(r, tz)
+                if row_start and abs((row_start - want).total_seconds()) < 60:
+                    return r, None
+            times = "; ".join(_spoken_time(t) for t in
+                              filter(None, (_parse_meeting_row_time(r, tz) for r in matches)))
+            return None, (f"No meeting under {email} starts at that time. Their upcoming "
+                          f"meetings: {times}. Ask which one they mean.")
+    if len(matches) > 1:
+        times = "; ".join(_spoken_time(t) for t in
+                          filter(None, (_parse_meeting_row_time(r, tz) for r in matches)))
+        return None, (f"There are several upcoming meetings under {email}: {times}. "
+                      "Ask the caller which one they mean, then call this tool again with "
+                      "that start time.")
+    return matches[0], None
+
+
+async def _cancel_meeting(args: dict, agent: dict, user_id: str) -> str:
+    from app.integrations.google_calendar_service import delete_calendar_event
+    from app.integrations.meetings_repo import set_meeting_status
+
+    row, err = await _find_target_meeting(args, agent, user_id, "start_time")
+    if err:
+        return err
+    tz = _agent_tz(agent)
+    when = _parse_meeting_row_time(row, tz)
+    if row.get("google_event_id"):
+        await delete_calendar_event(user_id, row["google_event_id"])
+    print(f"[Meeting] cancelled meeting {row['id']} (event {row.get('google_event_id')}) "
+          f"for user {user_id}")
+    # Best-effort after the Google delete succeeded: a DB hiccup here must not
+    # make the agent tell the caller the cancellation failed when the event
+    # is already gone from the calendar (Google is the source of truth).
+    try:
+        await asyncio.to_thread(set_meeting_status, row["id"], "cancelled")
+    except Exception as e:
+        print(f"[Meeting] event cancelled on Google but failed to mark meetings row: {e}")
+    return (
+        f"Cancelled: the meeting on {_spoken_time(when) if when else 'the requested time'} "
+        f"for {row.get('attendee_name') or 'the caller'} has been removed from the calendar"
+        + (" and a cancellation email was sent." if row.get("attendee_email") else ".")
+        + " Confirm this to the caller in one short sentence."
+    )
+
+
+async def _reschedule_meeting(args: dict, agent: dict, user_id: str) -> str:
+    from app.integrations.google_calendar_service import fetch_busy_intervals, update_calendar_event_time
+    from app.integrations.meetings_repo import update_meeting_time
+
+    row, err = await _find_target_meeting(args, agent, user_id, "old_start_time")
+    if err:
+        return err
+    if not row.get("google_event_id"):
+        return ("This meeting has no linked calendar event, so it cannot be moved automatically. "
+                "Offer to cancel it and book a fresh meeting at the new time instead.")
+
+    tz = _agent_tz(agent)
+    now = datetime.now(tz)
+    raw_new = (args.get("new_start_time") or "").strip()
+    try:
+        new_start = datetime.strptime(raw_new, "%Y-%m-%dT%H:%M").replace(tzinfo=tz)
+    except ValueError:
+        return (f"Invalid new_start_time {raw_new!r} - it must look like 2026-11-13T14:30. "
+                "Re-check the new date and time with the caller and try again.")
+    if new_start <= now + timedelta(minutes=5):
+        return "That new time is in the past or starts too soon. Ask the caller for a later time."
+
+    duration = timedelta(minutes=int(agent.get("meeting_duration_minutes") or 30))
+    buffer = timedelta(minutes=int(agent.get("meeting_buffer_minutes") or 0))
+    new_end = new_start + duration
+
+    # Conflict check for the new slot, ignoring the meeting's own current
+    # block on the calendar - otherwise moving a meeting 15 minutes later
+    # would falsely collide with itself.
+    old_start = _parse_meeting_row_time(row, tz)
+    try:
+        old_end = datetime.fromisoformat(str(row["end_time"]).replace("Z", "+00:00")).astimezone(tz)
+    except (KeyError, ValueError):
+        old_end = old_start + duration if old_start else None
+    busy = await fetch_busy_intervals(user_id, new_start - buffer, new_end + buffer)
+    if old_start and old_end:
+        busy = [(s, e) for s, e in busy if not (s >= old_start and e <= old_end)]
+    if any(s < new_end + buffer and e > new_start - buffer for s, e in busy):
+        return (f"The {_spoken_time(new_start)} slot is not free. Call check_availability and "
+                "offer the caller open times instead. Never move the meeting to a time the "
+                "caller has not agreed to.")
+
+    tz_label = getattr(tz, "key", None) or "UTC"
+    await update_calendar_event_time(user_id, row["google_event_id"], new_start, new_end, tz_label)
+    print(f"[Meeting] rescheduled meeting {row['id']} (event {row['google_event_id']}) "
+          f"to {new_start.isoformat()} for user {user_id}")
+    # Best-effort after the Google move succeeded - same reasoning as cancel.
+    try:
+        await asyncio.to_thread(update_meeting_time, row["id"], new_start.isoformat(), new_end.isoformat())
+    except Exception as e:
+        print(f"[Meeting] event moved on Google but failed to update meetings row: {e}")
+    return (
+        f"Rescheduled: the meeting for {row.get('attendee_name') or 'the caller'} "
+        f"moved from {_spoken_time(old_start) if old_start else 'its previous time'} "
+        f"to {_spoken_time(new_start)}."
+        + (" An updated invite was emailed." if row.get("attendee_email") else "")
+        + " Confirm this to the caller in one short sentence."
     )
 
 
@@ -302,7 +515,8 @@ async def _book_meeting(args: dict, agent: dict, user_id: str, conversation_id: 
     if any(b_start < end + buffer and b_end > start - buffer for b_start, b_end in busy):
         return (
             f"The {start.strftime('%A, %B %d at %I:%M %p')} slot was just taken. Apologize, "
-            "call check_availability again, and offer new times."
+            "call check_availability again, and offer new times. Never book a different time "
+            "than the caller asked for until they have explicitly agreed to it."
         )
 
     summary = f"{topic} - {attendee_name}"
@@ -316,6 +530,8 @@ async def _book_meeting(args: dict, agent: dict, user_id: str, conversation_id: 
     )
 
     meet_link = event.get("hangoutLink") or ""
+    print(f"[Meeting] booked event {event.get('id')} at {start.isoformat()} "
+          f"for user {user_id} (attendee: {attendee_email or 'none'})")
     # Audit row is best-effort: the calendar event already exists, and a DB
     # hiccup here must not make the agent tell the caller the booking failed.
     try:

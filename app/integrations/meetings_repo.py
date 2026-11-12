@@ -39,3 +39,30 @@ def get_meetings(user_id: str) -> list[dict]:
         db.table("meetings").select("*")
         .eq("user_id", user_id).order("start_time", desc=True).execute().data
     )
+
+
+def get_upcoming_meetings(user_id: str) -> list[dict]:
+    """Upcoming still-booked meetings for this account, soonest first. Email
+    matching is done by the caller (case-insensitive, in Python) rather than
+    in SQL so 'Alice@Example.com' finds the row stored as 'alice@example.com'."""
+    from datetime import datetime, timezone
+    db = get_supabase()
+    now_iso = datetime.now(timezone.utc).isoformat()
+    return (
+        db.table("meetings").select("*")
+        .eq("user_id", user_id).eq("status", "booked")
+        .gte("start_time", now_iso)
+        .order("start_time", desc=False).execute().data
+    )
+
+
+def set_meeting_status(meeting_id: str, status: str) -> None:
+    db = get_supabase()
+    db.table("meetings").update({"status": status}).eq("id", meeting_id).execute()
+
+
+def update_meeting_time(meeting_id: str, start_time: str, end_time: str) -> None:
+    db = get_supabase()
+    db.table("meetings").update(
+        {"start_time": start_time, "end_time": end_time}
+    ).eq("id", meeting_id).execute()

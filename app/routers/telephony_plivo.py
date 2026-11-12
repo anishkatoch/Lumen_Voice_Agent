@@ -738,32 +738,53 @@ async def plivo_stream_endpoint(websocket: WebSocket):
                 text, tool_name, tool_args, call_id = await detect_tool_call(conv_msgs, system_str, tools)
 
                 if tool_name:
-                    fn = next((f for f in _tool_functions if f["name"] == tool_name), None)
-                    if fn and fn.get("kind") == "internal_record_answer":
-                        # Mirrors app/routers/telephony_twilio.py's fix - record_answer
-                        # is always fast (a DB write), so the filler is cancelled
-                        # outright rather than left to fire on the two sequential LLM
-                        # round-trips (detect_tool_call + stream_tool_result_response)
-                        # that reliably exceed its delay even with nothing slow going on.
-                        if _retrieval_filler_task and not _retrieval_filler_task.done():
-                            _retrieval_filler_task.cancel()
-                        tool_result = await _record_answer_tool(tool_args)
-                    elif fn and fn.get("kind") == "internal_kb_search":
-                        tool_result = await _execute_kb_search(tool_args, user_message)
-                    elif fn and fn.get("kind") in ("internal_check_availability", "internal_book_meeting"):
-                        # Calendar HTTP calls genuinely take time - leave the
-                        # retrieval filler running so it can cover the wait.
-                        from app.integrations.meeting_tools import execute_meeting_tool
-                        tool_result = await execute_meeting_tool(fn, tool_args, agent, user_id, conversation_id)
-                    elif fn:
-                        tool_result = await _execute_webhook_plivo(fn, tool_args)
+                    from app.integrations.meeting_tools import MEETING_KINDS, execute_meeting_tool
+                    from app.voice.llm_service import tool_steps_to_messages
+
+                    async def _dispatch_tool(fn: dict | None, args: dict) -> str:
+                        if fn and fn.get("kind") == "internal_record_answer":
+                            # Mirrors app/routers/telephony_twilio.py's fix - record_answer
+                            # is always fast (a DB write), so the filler is cancelled
+                            # outright rather than left to fire on the two sequential LLM
+                            # round-trips (detect_tool_call + stream_tool_result_response)
+                            # that reliably exceed its delay even with nothing slow going on.
+                            if _retrieval_filler_task and not _retrieval_filler_task.done():
+                                _retrieval_filler_task.cancel()
+                            return await _record_answer_tool(args)
+                        if fn and fn.get("kind") == "internal_kb_search":
+                            return await _execute_kb_search(args, user_message)
+                        if fn and fn.get("kind") in MEETING_KINDS:
+                            # Calendar HTTP calls genuinely take time - leave the
+                            # retrieval filler running so it can cover the wait.
+                            return await execute_meeting_tool(fn, args, agent, user_id, conversation_id)
+                        if fn:
+                            return await _execute_webhook_plivo(fn, args)
+                        return "{}"
+
+                    # Up to 3 chained tool calls per caller turn - mirrors
+                    # app/routers/telephony_twilio.py (see the comment there).
+                    executed: list[tuple] = []
+                    final_text: str | None = None
+                    while tool_name and len(executed) < 3:
+                        print(f"[Plivo] tool call {len(executed) + 1}: {tool_name}({tool_args})")
+                        fn = next((f for f in _tool_functions if f["name"] == tool_name), None)
+                        tool_result = await _dispatch_tool(fn, tool_args)
+                        executed.append((tool_name, call_id, tool_args, tool_result))
+                        final_text, tool_name, tool_args, call_id = await detect_tool_call(
+                            conv_msgs + tool_steps_to_messages(executed), system_str, tools
+                        )
+                    if not tool_name and final_text:
+                        async for sentence in stream_text_as_sentences(final_text):
+                            await _speak_covering_delay(sentence)
+                            full_reply_parts.append(sentence)
                     else:
-                        tool_result = "{}"
-                    async for sentence in stream_tool_result_response(
-                        conv_msgs, system_str, tool_name, call_id, tool_args, tool_result
-                    ):
-                        await _speak_covering_delay(sentence)
-                        full_reply_parts.append(sentence)
+                        last_name, last_id, last_args, last_result = executed[-1]
+                        async for sentence in stream_tool_result_response(
+                            conv_msgs + tool_steps_to_messages(executed[:-1]),
+                            system_str, last_name, last_id, last_args, last_result
+                        ):
+                            await _speak_covering_delay(sentence)
+                            full_reply_parts.append(sentence)
                 else:
                     async for sentence in stream_text_as_sentences(text or ""):
                         await _speak_covering_delay(sentence)

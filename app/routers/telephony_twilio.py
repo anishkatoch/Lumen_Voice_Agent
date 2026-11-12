@@ -788,38 +788,64 @@ async def twilio_stream_endpoint(websocket: WebSocket):
                 text, tool_name, tool_args, call_id = await detect_tool_call(conv_msgs, system_str, tools)
 
                 if tool_name:
-                    fn = next((f for f in _tool_functions if f["name"] == tool_name), None)
-                    if fn and fn.get("kind") == "internal_record_answer":
-                        # record_answer is always fast (a DB write, no network call) -
-                        # there's never a real delay worth covering, so the filler is
-                        # cancelled outright rather than left to the timer. Left to the
-                        # timer, detect_tool_call + stream_tool_result_response's two
-                        # sequential LLM round-trips reliably exceed the filler delay
-                        # on their own even though nothing slow is actually happening,
-                        # so a filler like "let me pull that up" was speaking on nearly
-                        # every plain yes/no answer (found 2026-11-04).
-                        if _retrieval_filler_task and not _retrieval_filler_task.done():
-                            _retrieval_filler_task.cancel()
-                        tool_result = await _record_answer_tool(tool_args)
-                    elif fn and fn.get("kind") == "internal_kb_search":
-                        tool_result = await _execute_kb_search(tool_args, user_message)
-                    elif fn and fn.get("kind") in ("internal_check_availability", "internal_book_meeting"):
-                        # Calendar HTTP calls genuinely take time - leave the
-                        # retrieval filler running so it can cover the wait.
-                        from app.integrations.meeting_tools import execute_meeting_tool
-                        tool_result = await execute_meeting_tool(fn, tool_args, agent, user_id, conversation_id)
-                    elif fn:
-                        # A webhook call genuinely can be slow (an external HTTP
-                        # request) - leave the retrieval filler task running so it
-                        # can still cover that if needed.
-                        tool_result = await _execute_webhook_twilio(fn, tool_args)
+                    from app.integrations.meeting_tools import MEETING_KINDS, execute_meeting_tool
+                    from app.voice.llm_service import tool_steps_to_messages
+
+                    async def _dispatch_tool(fn: dict | None, args: dict) -> str:
+                        if fn and fn.get("kind") == "internal_record_answer":
+                            # record_answer is always fast (a DB write, no network call) -
+                            # there's never a real delay worth covering, so the filler is
+                            # cancelled outright rather than left to the timer. Left to the
+                            # timer, detect_tool_call + stream_tool_result_response's two
+                            # sequential LLM round-trips reliably exceed the filler delay
+                            # on their own even though nothing slow is actually happening,
+                            # so a filler like "let me pull that up" was speaking on nearly
+                            # every plain yes/no answer (found 2026-11-04).
+                            if _retrieval_filler_task and not _retrieval_filler_task.done():
+                                _retrieval_filler_task.cancel()
+                            return await _record_answer_tool(args)
+                        if fn and fn.get("kind") == "internal_kb_search":
+                            return await _execute_kb_search(args, user_message)
+                        if fn and fn.get("kind") in MEETING_KINDS:
+                            # Calendar HTTP calls genuinely take time - leave the
+                            # retrieval filler running so it can cover the wait.
+                            return await execute_meeting_tool(fn, args, agent, user_id, conversation_id)
+                        if fn:
+                            # A webhook call genuinely can be slow (an external HTTP
+                            # request) - leave the retrieval filler task running so it
+                            # can still cover that if needed.
+                            return await _execute_webhook_twilio(fn, args)
+                        return "{}"
+
+                    # Up to 3 chained tool calls per caller turn - a single
+                    # allowed call meant "check availability, then book" could
+                    # never complete in one turn, and the model would announce
+                    # an action it silently couldn't perform (found live
+                    # 2026-11-12). Mirrors telephony_plivo.py / websockets.py.
+                    executed: list[tuple] = []
+                    final_text: str | None = None
+                    while tool_name and len(executed) < 3:
+                        print(f"[Twilio] tool call {len(executed) + 1}: {tool_name}({tool_args})")
+                        fn = next((f for f in _tool_functions if f["name"] == tool_name), None)
+                        tool_result = await _dispatch_tool(fn, tool_args)
+                        executed.append((tool_name, call_id, tool_args, tool_result))
+                        final_text, tool_name, tool_args, call_id = await detect_tool_call(
+                            conv_msgs + tool_steps_to_messages(executed), system_str, tools
+                        )
+                    if not tool_name and final_text:
+                        async for sentence in stream_text_as_sentences(final_text):
+                            await _speak_covering_delay(sentence)
+                            full_reply_parts.append(sentence)
                     else:
-                        tool_result = "{}"
-                    async for sentence in stream_tool_result_response(
-                        conv_msgs, system_str, tool_name, call_id, tool_args, tool_result
-                    ):
-                        await _speak_covering_delay(sentence)
-                        full_reply_parts.append(sentence)
+                        # Step cap reached or the follow-up detect failed -
+                        # speak from the last tool result the proven way.
+                        last_name, last_id, last_args, last_result = executed[-1]
+                        async for sentence in stream_tool_result_response(
+                            conv_msgs + tool_steps_to_messages(executed[:-1]),
+                            system_str, last_name, last_id, last_args, last_result
+                        ):
+                            await _speak_covering_delay(sentence)
+                            full_reply_parts.append(sentence)
                 else:
                     async for sentence in stream_text_as_sentences(text or ""):
                         await _speak_covering_delay(sentence)

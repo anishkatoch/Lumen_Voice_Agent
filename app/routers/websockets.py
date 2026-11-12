@@ -461,8 +461,8 @@ async def _run_realtime_agent_session(
                 parts.append(kb_ctx)
             return "\n\n".join(parts) or "No relevant information found."
         fn = next((f for f in tool_functions if f["name"] == fn_name), None)
-        if fn and fn.get("kind") in ("internal_check_availability", "internal_book_meeting"):
-            from app.integrations.meeting_tools import execute_meeting_tool
+        from app.integrations.meeting_tools import MEETING_KINDS, execute_meeting_tool
+        if fn and fn.get("kind") in MEETING_KINDS:
             return await execute_meeting_tool(fn, args, agent, user_id, conversation_id)
         if not fn:
             return json.dumps({"error": "function not found"})
@@ -531,6 +531,7 @@ async def _run_realtime_agent_session(
                         args = json.loads(event.get("arguments") or "{}")
                     except Exception:
                         args = {}
+                    print(f"[Agent Realtime] tool call: {fn_name}({args})")
                     result = await _execute_tool(fn_name, args)
                     await rt_session.send_tool_result(call_id, result)
 
@@ -940,29 +941,46 @@ async def agent_websocket_endpoint(websocket: WebSocket, agent_id: str, token: s
                         conv_messages, system_str, tools
                     )
                     if tool_name and call_id:
-                        print(f"[Agent Pipeline] Tool call: {tool_name}({tool_args})")
+                        from app.integrations.meeting_tools import MEETING_KINDS, execute_meeting_tool
+                        from app.voice.llm_service import tool_steps_to_messages
 
-                        # Execute the webhook - the retrieval filler (already
-                        # running) covers this if it's slow; nothing extra
-                        # to speak here.
-                        fn = next((f for f in _tool_functions if f["name"] == tool_name), None)
-                        tool_result = json.dumps({"error": "function not found"})
-                        if fn and fn.get("kind") == "internal_kb_search":
-                            tool_result = await _execute_kb_search(tool_args, transcript)
-                            print(f"[Agent Pipeline] KB search result: {tool_result[:120]}")
-                        elif fn and fn.get("kind") in ("internal_check_availability", "internal_book_meeting"):
-                            from app.integrations.meeting_tools import execute_meeting_tool
-                            tool_result = await execute_meeting_tool(fn, tool_args, agent, user_id, conversation_id)
-                        elif fn:
-                            tool_result = await _execute_webhook(fn, tool_args)
-                            print(f"[Agent Pipeline] Webhook result: {tool_result[:120]}")
+                        async def _dispatch_tool(fn: dict | None, args: dict) -> str:
+                            # The retrieval filler (already running) covers a
+                            # slow webhook/calendar call; nothing extra to speak.
+                            if fn and fn.get("kind") == "internal_kb_search":
+                                result = await _execute_kb_search(args, transcript)
+                                print(f"[Agent Pipeline] KB search result: {result[:120]}")
+                                return result
+                            if fn and fn.get("kind") in MEETING_KINDS:
+                                return await execute_meeting_tool(fn, args, agent, user_id, conversation_id)
+                            if fn:
+                                result = await _execute_webhook(fn, args)
+                                print(f"[Agent Pipeline] Webhook result: {result[:120]}")
+                                return result
+                            return json.dumps({"error": "function not found"})
 
-                        # Second LLM call streams the actual answer using the tool result
-                        await _tts_stream_sentences(
-                            stream_tool_result_response(
-                                conv_messages, system_str, tool_name, call_id, tool_args, tool_result
+                        # Up to 3 chained tool calls per user turn - mirrors
+                        # app/routers/telephony_twilio.py (see the comment there).
+                        executed: list[tuple] = []
+                        final_text: str | None = None
+                        while tool_name and len(executed) < 3:
+                            print(f"[Agent Pipeline] Tool call: {tool_name}({tool_args})")
+                            fn = next((f for f in _tool_functions if f["name"] == tool_name), None)
+                            tool_result = await _dispatch_tool(fn, tool_args)
+                            executed.append((tool_name, call_id, tool_args, tool_result))
+                            final_text, tool_name, tool_args, call_id = await detect_tool_call(
+                                conv_messages + tool_steps_to_messages(executed), system_str, tools
                             )
-                        )
+                        if not tool_name and final_text:
+                            await _tts_stream_sentences(stream_text_as_sentences(final_text))
+                        else:
+                            last_name, last_id, last_args, last_result = executed[-1]
+                            await _tts_stream_sentences(
+                                stream_tool_result_response(
+                                    conv_messages + tool_steps_to_messages(executed[:-1]),
+                                    system_str, last_name, last_id, last_args, last_result
+                                )
+                            )
                     else:
                         # LLM chose to answer directly without calling any tool
                         await _tts_stream_sentences(

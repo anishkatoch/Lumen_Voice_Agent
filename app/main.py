@@ -184,6 +184,16 @@ if os.path.isdir(_FRONTEND):
     async def _admin_page():
         return FileResponse(os.path.join(_FRONTEND, "admin", "index.html"))
 
+    @app.get("/privacy/", include_in_schema=False)
+    @app.get("/privacy", include_in_schema=False)
+    async def _privacy_page():
+        return FileResponse(os.path.join(_FRONTEND, "privacy", "index.html"))
+
+    @app.get("/terms/", include_in_schema=False)
+    @app.get("/terms", include_in_schema=False)
+    async def _terms_page():
+        return FileResponse(os.path.join(_FRONTEND, "terms", "index.html"))
+
     @app.get("/", include_in_schema=False)
     async def _root_page():
         return FileResponse(os.path.join(_FRONTEND, "index.html"))

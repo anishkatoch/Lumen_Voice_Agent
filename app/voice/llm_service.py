@@ -606,6 +606,28 @@ async def detect_tool_call(
     return "", None, {}, None
 
 
+def tool_steps_to_messages(steps: list[tuple[str, str, dict, str]]) -> list[dict]:
+    """Render already-executed tool steps [(name, call_id, args, result), ...]
+    as OpenAI chat messages, so a follow-up detect_tool_call can let the model
+    chain another tool in the same caller turn (e.g. check_availability and
+    then reschedule_meeting). Without this, the cascade pipelines were limited
+    to exactly one tool call per turn, and a model that said 'I'll move it
+    now' after an availability check silently never did (found live
+    2026-11-12)."""
+    msgs: list[dict] = []
+    for name, call_id, args, result in steps:
+        msgs.append({
+            "role": "assistant",
+            "tool_calls": [{
+                "id": call_id,
+                "type": "function",
+                "function": {"name": name, "arguments": json.dumps(args)},
+            }],
+        })
+        msgs.append({"role": "tool", "tool_call_id": call_id, "content": result})
+    return msgs
+
+
 async def stream_tool_result_response(
     conv_messages: list[dict],
     system: str,

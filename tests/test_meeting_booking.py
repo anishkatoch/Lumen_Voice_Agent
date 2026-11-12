@@ -116,9 +116,11 @@ class TestGetMeetingToolFunctions:
             return_value={"refresh_token": "rt", "calendar_id": "primary"},
         )
         tools = await get_meeting_tool_functions(AGENT, USER_ID)
-        assert [t["name"] for t in tools] == ["check_availability", "book_meeting"]
-        assert tools[0]["kind"] == "internal_check_availability"
-        assert tools[1]["kind"] == "internal_book_meeting"
+        assert [t["name"] for t in tools] == [
+            "check_availability", "book_meeting", "cancel_meeting", "reschedule_meeting",
+        ]
+        from app.integrations.meeting_tools import MEETING_KINDS
+        assert [t["kind"] for t in tools] == list(MEETING_KINDS)
 
     async def test_integration_lookup_failure_fails_open_to_no_tools(self, mocker):
         """A DB hiccup during call setup must disable booking for the call,
@@ -146,6 +148,33 @@ class TestCheckAvailability:
         assert "12:00 PM" in result
         assert "09:00 AM" not in result
         assert "Monday, January 07" in result
+
+    async def test_after_param_surfaces_afternoon_slots(self, mocker):
+        """A free morning must not hide the afternoon: with the 5-slot cap,
+        'afternoon' requests need the after arg to push the scan past noon
+        (live bug 2026-11-12: agent said afternoon was unavailable on a
+        free afternoon because all 5 returned slots were morning ones)."""
+        from app.integrations.meeting_tools import build_check_availability_tool, execute_meeting_tool
+        mocker.patch(
+            "app.integrations.google_calendar_service.fetch_busy_intervals",
+            new=AsyncMock(return_value=[]),
+        )
+        result = await execute_meeting_tool(
+            build_check_availability_tool(), {"date": "2030-01-07", "after": "12:00"}, AGENT, USER_ID,
+        )
+        assert "12:00 PM" in result
+        assert "09:00 AM" not in result and "10:00 AM" not in result
+
+    async def test_bad_after_value_falls_back_to_booking_hours(self, mocker):
+        from app.integrations.meeting_tools import build_check_availability_tool, execute_meeting_tool
+        mocker.patch(
+            "app.integrations.google_calendar_service.fetch_busy_intervals",
+            new=AsyncMock(return_value=[]),
+        )
+        result = await execute_meeting_tool(
+            build_check_availability_tool(), {"date": "2030-01-07", "after": "the afternoon"}, AGENT, USER_ID,
+        )
+        assert "09:00 AM" in result
 
     async def test_no_slots_tells_model_to_ask_for_another_date(self, mocker):
         from app.integrations.meeting_tools import build_check_availability_tool, execute_meeting_tool
@@ -297,6 +326,126 @@ class TestBookMeeting:
             AGENT, USER_ID,
         )
         assert "Booked" in result
+
+
+# ── cancel / reschedule handlers ─────────────────────────────────────────────
+
+def _meeting_row(start_h=10, email="alice@example.com", mid="m-1", event="evt-1"):
+    start = _slot(start_h)
+    return {
+        "id": mid, "google_event_id": event, "attendee_name": "Alice",
+        "attendee_email": email, "topic": "Demo", "status": "booked",
+        "start_time": start.isoformat(), "end_time": (start + timedelta(minutes=30)).isoformat(),
+    }
+
+
+class TestCancelMeeting:
+    async def test_cancels_matching_meeting(self, mocker):
+        from app.integrations.meeting_tools import build_cancel_meeting_tool, execute_meeting_tool
+        mocker.patch("app.integrations.meetings_repo.get_upcoming_meetings",
+                     return_value=[_meeting_row()])
+        delete = AsyncMock()
+        mocker.patch("app.integrations.google_calendar_service.delete_calendar_event", new=delete)
+        status = mocker.patch("app.integrations.meetings_repo.set_meeting_status")
+        result = await execute_meeting_tool(
+            build_cancel_meeting_tool(), {"attendee_email": "Alice@Example.com"}, AGENT, USER_ID,
+        )
+        assert "Cancelled" in result
+        delete.assert_awaited_once_with(USER_ID, "evt-1")
+        status.assert_called_once_with("m-1", "cancelled")
+
+    async def test_unknown_email_cancels_nothing(self, mocker):
+        from app.integrations.meeting_tools import build_cancel_meeting_tool, execute_meeting_tool
+        mocker.patch("app.integrations.meetings_repo.get_upcoming_meetings",
+                     return_value=[_meeting_row()])
+        delete = AsyncMock()
+        mocker.patch("app.integrations.google_calendar_service.delete_calendar_event", new=delete)
+        result = await execute_meeting_tool(
+            build_cancel_meeting_tool(), {"attendee_email": "someone@else.com"}, AGENT, USER_ID,
+        )
+        assert "No upcoming meeting" in result
+        delete.assert_not_awaited()
+
+    async def test_multiple_meetings_require_start_time(self, mocker):
+        from app.integrations.meeting_tools import build_cancel_meeting_tool, execute_meeting_tool
+        mocker.patch("app.integrations.meetings_repo.get_upcoming_meetings",
+                     return_value=[_meeting_row(10, mid="m-1"), _meeting_row(14, mid="m-2", event="evt-2")])
+        delete = AsyncMock()
+        mocker.patch("app.integrations.google_calendar_service.delete_calendar_event", new=delete)
+        result = await execute_meeting_tool(
+            build_cancel_meeting_tool(), {"attendee_email": "alice@example.com"}, AGENT, USER_ID,
+        )
+        assert "several upcoming meetings" in result
+        delete.assert_not_awaited()
+        # and with the start time it picks the right one
+        status = mocker.patch("app.integrations.meetings_repo.set_meeting_status")
+        result = await execute_meeting_tool(
+            build_cancel_meeting_tool(),
+            {"attendee_email": "alice@example.com", "start_time": "2030-01-07T14:00"},
+            AGENT, USER_ID,
+        )
+        assert "Cancelled" in result
+        status.assert_called_once_with("m-2", "cancelled")
+
+
+class TestRescheduleMeeting:
+    def _mocks(self, mocker, rows=None, busy=None):
+        mocker.patch("app.integrations.meetings_repo.get_upcoming_meetings",
+                     return_value=rows if rows is not None else [_meeting_row()])
+        mocker.patch("app.integrations.google_calendar_service.fetch_busy_intervals",
+                     new=AsyncMock(return_value=busy or []))
+        patch_ev = AsyncMock(return_value={"id": "evt-1"})
+        mocker.patch("app.integrations.google_calendar_service.update_calendar_event_time", new=patch_ev)
+        upd = mocker.patch("app.integrations.meetings_repo.update_meeting_time")
+        return patch_ev, upd
+
+    async def test_moves_meeting_to_free_slot(self, mocker):
+        from app.integrations.meeting_tools import build_reschedule_meeting_tool, execute_meeting_tool
+        patch_ev, upd = self._mocks(mocker)
+        result = await execute_meeting_tool(
+            build_reschedule_meeting_tool(),
+            {"attendee_email": "alice@example.com", "new_start_time": "2030-01-07T15:00"},
+            AGENT, USER_ID,
+        )
+        assert "Rescheduled" in result
+        assert patch_ev.call_args[0][1] == "evt-1"
+        assert patch_ev.call_args[0][2] == _slot(15)
+        upd.assert_called_once()
+
+    async def test_own_old_slot_does_not_block_small_moves(self, mocker):
+        """Moving a meeting within/near its own current block must not be
+        rejected as a conflict with itself."""
+        from app.integrations.meeting_tools import build_reschedule_meeting_tool, execute_meeting_tool
+        patch_ev, _ = self._mocks(mocker, busy=[(_slot(10), _slot(10, 30))])
+        result = await execute_meeting_tool(
+            build_reschedule_meeting_tool(),
+            {"attendee_email": "alice@example.com", "new_start_time": "2030-01-07T10:00"},
+            AGENT, USER_ID,
+        )
+        assert "Rescheduled" in result
+        patch_ev.assert_awaited_once()
+
+    async def test_conflicting_new_slot_is_refused(self, mocker):
+        from app.integrations.meeting_tools import build_reschedule_meeting_tool, execute_meeting_tool
+        patch_ev, _ = self._mocks(mocker, busy=[(_slot(15), _slot(16))])
+        result = await execute_meeting_tool(
+            build_reschedule_meeting_tool(),
+            {"attendee_email": "alice@example.com", "new_start_time": "2030-01-07T15:00"},
+            AGENT, USER_ID,
+        )
+        assert "not free" in result
+        patch_ev.assert_not_awaited()
+
+    async def test_past_new_time_is_refused(self, mocker):
+        from app.integrations.meeting_tools import build_reschedule_meeting_tool, execute_meeting_tool
+        patch_ev, _ = self._mocks(mocker)
+        result = await execute_meeting_tool(
+            build_reschedule_meeting_tool(),
+            {"attendee_email": "alice@example.com", "new_start_time": "2020-01-07T10:00"},
+            AGENT, USER_ID,
+        )
+        assert "past" in result
+        patch_ev.assert_not_awaited()
 
 
 # ── prompt context ───────────────────────────────────────────────────────────

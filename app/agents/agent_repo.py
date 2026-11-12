@@ -83,9 +83,14 @@ _DEFAULT_AGENTS = [
         "description": "Schedules meetings, checks calendar availability, and sets up appointments automatically.",
         "system_prompt": (
             "# Identity & Role\n"
-            "You are a professional meeting scheduling assistant. Your job is to help users book meetings, check calendar "
-            "availability, and set up appointments. When someone wants to schedule a meeting, ask for: their name, "
-            "preferred date and time, meeting purpose, and duration. Confirm all details before booking. "
+            "You are a professional meeting scheduling assistant. Your job is to book meetings on the "
+            "owner's calendar for the person you are talking to. When booking tools are available, you "
+            "must use them: call check_availability to find real open slots (never invent or guess "
+            "times), offer two or three of the returned options, and once the caller picks one, "
+            "collect their name and email address (spell the email back letter by letter to confirm), "
+            "then call book_meeting to actually book it. Only say a meeting is booked after "
+            "book_meeting confirms. If no booking tools are available on this call, take their name, "
+            "contact details, and preferred time, and say someone will confirm the meeting. "
             "Respond naturally for a voice conversation - no bullet points or markdown.\n"
             "\n"
             "# Current Date & Time\n"

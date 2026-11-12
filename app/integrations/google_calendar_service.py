@@ -25,7 +25,14 @@ GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 GOOGLE_REVOKE_URL = "https://oauth2.googleapis.com/revoke"
 CALENDAR_API = "https://www.googleapis.com/calendar/v3"
-OAUTH_SCOPES = "https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/calendar.freebusy"
+# openid + email are included so the token response carries an id_token with
+# the user's email, shown in the UI as "Connected as <email>". Without them
+# Google returns no id_token at all and connected_email stays empty.
+OAUTH_SCOPES = (
+    "openid email "
+    "https://www.googleapis.com/auth/calendar.events "
+    "https://www.googleapis.com/auth/calendar.freebusy"
+)
 
 HTTP_TIMEOUT_S = 10
 
@@ -149,6 +156,7 @@ async def get_valid_access_token(user_id: str) -> tuple[str, str]:
 
     if not access_token or expires_soon:
         access_token, new_expiry = await _refresh_access_token(integration["refresh_token"])
+        print(f"[GoogleCalendar] refreshed access token for user {user_id} (expires {new_expiry})")
         await asyncio.to_thread(
             update_access_token, user_id, GOOGLE_CALENDAR, access_token, new_expiry
         )
@@ -222,6 +230,42 @@ async def create_calendar_event(
         )
     if resp.status_code not in (200, 201):
         raise RuntimeError(f"Google event insert failed ({resp.status_code}): {resp.text[:300]}")
+    return resp.json()
+
+
+async def delete_calendar_event(user_id: str, event_id: str) -> None:
+    """Delete (cancel) an event. sendUpdates=all makes Google email the
+    cancellation to attendees. An already-deleted event (404/410) is treated
+    as success - the caller's goal state is 'event gone' either way."""
+    access_token, calendar_id = await get_valid_access_token(user_id)
+    async with httpx.AsyncClient(timeout=HTTP_TIMEOUT_S) as client:
+        resp = await client.delete(
+            f"{CALENDAR_API}/calendars/{calendar_id}/events/{event_id}",
+            headers={"Authorization": f"Bearer {access_token}"},
+            params={"sendUpdates": "all"},
+        )
+    if resp.status_code not in (200, 204, 404, 410):
+        raise RuntimeError(f"Google event delete failed ({resp.status_code}): {resp.text[:300]}")
+
+
+async def update_calendar_event_time(
+    user_id: str, event_id: str, start: datetime, end: datetime, timezone_name: str,
+) -> dict:
+    """Move an existing event to a new start/end. sendUpdates=all emails the
+    updated invite to attendees."""
+    access_token, calendar_id = await get_valid_access_token(user_id)
+    async with httpx.AsyncClient(timeout=HTTP_TIMEOUT_S) as client:
+        resp = await client.patch(
+            f"{CALENDAR_API}/calendars/{calendar_id}/events/{event_id}",
+            headers={"Authorization": f"Bearer {access_token}"},
+            params={"sendUpdates": "all"},
+            json={
+                "start": {"dateTime": start.isoformat(), "timeZone": timezone_name},
+                "end": {"dateTime": end.isoformat(), "timeZone": timezone_name},
+            },
+        )
+    if resp.status_code != 200:
+        raise RuntimeError(f"Google event update failed ({resp.status_code}): {resp.text[:300]}")
     return resp.json()
 
 

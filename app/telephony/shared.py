@@ -475,8 +475,8 @@ async def run_realtime_telephony_bridge(
             )
             _answered_question_ids.add(question_id)
             return json.dumps({"recorded": True})
-        if fn and fn.get("kind") in ("internal_check_availability", "internal_book_meeting"):
-            from app.integrations.meeting_tools import execute_meeting_tool
+        from app.integrations.meeting_tools import MEETING_KINDS, execute_meeting_tool
+        if fn and fn.get("kind") in MEETING_KINDS:
             return await execute_meeting_tool(fn, args, agent, user_id, conversation_id)
         if not fn:
             return json.dumps({"error": "function not found"})
@@ -541,6 +541,7 @@ async def run_realtime_telephony_bridge(
                         args = json.loads(event.get("arguments") or "{}")
                     except Exception:
                         args = {}
+                    print(f"[{log_label}] Realtime tool call: {name}({args})")
                     result = await _execute_tool(name, args)
                     await session.send_tool_result(call_id, result)
 
