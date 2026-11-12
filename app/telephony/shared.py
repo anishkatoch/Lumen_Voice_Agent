@@ -436,8 +436,13 @@ async def run_realtime_telephony_bridge(
     # doc merely being selected isn't an instruction to use it (see
     # get_eligible_kb_documents). An agent with docs attached but nothing
     # written about them there should behave as if it has no KB at all.
+    # Skip adding it when the caller's _setup_call already put it in
+    # tool_functions (both phone routers do) - otherwise the Realtime
+    # session is configured with two tools named search_knowledge_base,
+    # which the browser bridge in app/routers/websockets.py explicitly
+    # warns against.
     _kb_documents = await get_eligible_kb_documents(agent, user_id)
-    if _kb_documents:
+    if _kb_documents and not any(f.get("kind") == "internal_kb_search" for f in tool_functions):
         tools = tools + [build_realtime_tool(build_kb_search_tool(_kb_documents))]
 
     voice = await asyncio.to_thread(get_admin_config, "realtime_voice")
@@ -470,6 +475,9 @@ async def run_realtime_telephony_bridge(
             )
             _answered_question_ids.add(question_id)
             return json.dumps({"recorded": True})
+        from app.integrations.meeting_tools import MEETING_KINDS, execute_meeting_tool
+        if fn and fn.get("kind") in MEETING_KINDS:
+            return await execute_meeting_tool(fn, args, agent, user_id, conversation_id)
         if not fn:
             return json.dumps({"error": "function not found"})
         import httpx
@@ -533,6 +541,7 @@ async def run_realtime_telephony_bridge(
                         args = json.loads(event.get("arguments") or "{}")
                     except Exception:
                         args = {}
+                    print(f"[{log_label}] Realtime tool call: {name}({args})")
                     result = await _execute_tool(name, args)
                     await session.send_tool_result(call_id, result)
 
@@ -624,3 +633,46 @@ async def retrieve_phone_rag_context(
 
     full_rag = "\n\n".join(filter(None, [rag_ctx, kb_ctx]))
     return full_rag, bool(doc_ids)
+
+
+async def finalize_call_outcome(conversation_id: str, failure_reason: str | None) -> tuple[str, list[dict]]:
+    """
+    Decides and records a telephony call's final Call Analytics outcome -
+    called once, from the Twilio/Plivo WS lifecycle's finally block, for every
+    call that reached this point (so excludes busy/no-answer/failed calls that
+    never connected to the media stream at all - those are resolved earlier by
+    the provider status-callback route instead).
+
+    Distinguishes three outcomes instead of collapsing everything that
+    connected into "completed":
+      - "failed"      - a genuine pipeline/transport error occurred
+      - "no_response" - the call connected but the other party never said a
+                         word (picked up and immediately hung up, stayed
+                         silent, voicemail that wasn't caught by AMD, etc.)
+      - "completed"   - at least one "user"-role message was captured
+
+    Reading back the message history is best-effort: if it fails (e.g. a
+    transient DB hiccup), this fails open to "completed" rather than losing
+    the call's outcome entirely - same fail-open posture as the rest of
+    Call Analytics' writes.
+
+    Returns (status, history) so the caller can reuse the already-fetched
+    history for summary generation instead of fetching it twice.
+    """
+    from app.conversations.conversation_repo import set_call_status, set_call_duration_and_cost
+    from app.conversations.message_repo import get_conversation_history
+
+    history: list[dict] = []
+    status = "failed" if failure_reason else "completed"
+    if not failure_reason:
+        try:
+            history = await asyncio.to_thread(get_conversation_history, conversation_id)
+            if not any(m.get("role") == "user" for m in history):
+                status = "no_response"
+        except Exception as e:
+            print(f"[Call Analytics] Could not read back message history for {conversation_id}, "
+                  f"defaulting to 'completed': {e}")
+
+    await asyncio.to_thread(set_call_status, conversation_id, status, failure_reason)
+    await asyncio.to_thread(set_call_duration_and_cost, conversation_id)
+    return status, history

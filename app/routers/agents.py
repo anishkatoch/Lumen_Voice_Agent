@@ -28,6 +28,13 @@ class AgentUpdate(BaseModel):
     hr_instructions: Optional[str] = None
     selected_kb_doc_ids: Optional[List[str]] = None
     filler_phrases: Optional[str] = None
+    meeting_booking_enabled: Optional[bool] = None
+    meeting_duration_minutes: Optional[int] = None
+    meeting_buffer_minutes: Optional[int] = None
+    meeting_timezone: Optional[str] = None
+    booking_hours_start: Optional[str] = None
+    booking_hours_end: Optional[str] = None
+    meeting_instructions: Optional[str] = None
 
 class AgentFunctionCreate(BaseModel):
     name: str

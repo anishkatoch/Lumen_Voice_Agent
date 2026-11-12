@@ -392,27 +392,48 @@ async def _run_realtime_agent_session(
 
     Note: the live "set_rag_scope" toggle (personal/global/both) that the
     cascaded pipeline supports mid-call isn't wired up here - this always
-    searches both scopes via the search_knowledge_base tool."""
+    searches both scopes via the search_knowledge_base tool.
+
+    The search_knowledge_base tool itself is only offered when the agent has
+    eligible KB docs (get_eligible_kb_documents - gated by kb_instructions
+    actually naming them, same as the phone Realtime bridge,
+    app.telephony.shared.run_realtime_telephony_bridge), via tool_functions
+    passed in from agent_websocket_endpoint, which already adds it there -
+    so this function must not also add a second, ungated copy of it."""
     import base64
     import json
     from fastapi import WebSocketDisconnect
     from app.core.websocket_manager import AgentState
-    from app.voice.realtime_service import RealtimeSession, build_realtime_tool, KB_SEARCH_TOOL, resample_pcm16
+    from app.voice.realtime_service import RealtimeSession, build_realtime_tool, resample_pcm16
     from app.conversations.message_repo import save_message
     from app.agents.agent_rag_service import retrieve_agent_context, format_agent_context
     from app.kb.user_kb_rag import retrieve_user_kb_context, format_user_kb_context
     from app.admin.admin_config_service import get as get_admin_config
+    from app.telephony.shared import get_eligible_kb_documents, resolve_kb_search_doc_ids
 
     voice = await asyncio.to_thread(get_admin_config, "realtime_voice")
+    _kb_documents = await get_eligible_kb_documents(agent, user_id)
     hr = (agent.get("hr_instructions") or "").strip()
+    # Folded in unconditionally, same as the cascade path above and
+    # app.telephony.shared.build_phone_system_prompt for phone calls -
+    # without this the model is never told it has a KB worth checking
+    # before the search_knowledge_base tool is even offered a chance.
+    kb = (agent.get("kb_instructions") or "").strip() if _kb_documents else ""
     name = (agent.get("name") or "").strip()
+    # Meeting tools arrive via tool_functions (added by the endpoint's setup,
+    # same as the KB tool) - detect them by kind to fold in the booking
+    # prompt block without re-querying the integration.
+    from app.integrations.meeting_tools import build_meeting_system_context
+    _has_meeting_tools = any(f.get("kind") == "internal_book_meeting" for f in tool_functions)
     instructions = (
         (f"Your name is {name}. If asked your name, say {name}.\n\n" if name else "")
         + (agent.get("system_prompt") or "")
         + (f"\n\n--- HR INSTRUCTIONS ---\n{hr}" if hr else "")
+        + (f"\n\n--- KNOWLEDGE BASE INSTRUCTIONS ---\n{kb}" if kb else "")
+        + (build_meeting_system_context(agent) if _has_meeting_tools else "")
     )
 
-    tools = [build_realtime_tool(f) for f in tool_functions] + [KB_SEARCH_TOOL]
+    tools = [build_realtime_tool(f) for f in tool_functions]
 
     rt_session = RealtimeSession(instructions=instructions, tools=tools, audio_format="pcm16", voice=voice)
     await rt_session.connect()
@@ -425,20 +446,24 @@ async def _run_realtime_agent_session(
     async def _execute_tool(fn_name: str, args: dict) -> str:
         if fn_name == "search_knowledge_base":
             query = args.get("query", "")
+            restrict_ids = resolve_kb_search_doc_ids(args, _kb_documents)
             parts = []
-            rag_chunks = await asyncio.to_thread(
-                retrieve_agent_context, query, agent_id, user_id, ["personal", "global"]
-            )
-            agent_ctx = format_agent_context(rag_chunks)
-            if agent_ctx:
-                parts.append(agent_ctx)
-            if doc_ids:
-                kb_chunks = await asyncio.to_thread(retrieve_user_kb_context, query, doc_ids)
-                kb_ctx = format_user_kb_context(kb_chunks) if kb_chunks else ""
-                if kb_ctx:
-                    parts.append(kb_ctx)
+            if agent.get("selected_kb_doc_ids"):
+                rag_chunks = await asyncio.to_thread(
+                    retrieve_agent_context, query, agent_id, user_id, ["personal", "global"]
+                )
+                agent_ctx = format_agent_context(rag_chunks)
+                if agent_ctx:
+                    parts.append(agent_ctx)
+            kb_chunks = await asyncio.to_thread(retrieve_user_kb_context, query, restrict_ids or doc_ids)
+            kb_ctx = format_user_kb_context(kb_chunks) if kb_chunks else ""
+            if kb_ctx:
+                parts.append(kb_ctx)
             return "\n\n".join(parts) or "No relevant information found."
         fn = next((f for f in tool_functions if f["name"] == fn_name), None)
+        from app.integrations.meeting_tools import MEETING_KINDS, execute_meeting_tool
+        if fn and fn.get("kind") in MEETING_KINDS:
+            return await execute_meeting_tool(fn, args, agent, user_id, conversation_id)
         if not fn:
             return json.dumps({"error": "function not found"})
         import httpx
@@ -506,6 +531,7 @@ async def _run_realtime_agent_session(
                         args = json.loads(event.get("arguments") or "{}")
                     except Exception:
                         args = {}
+                    print(f"[Agent Realtime] tool call: {fn_name}({args})")
                     result = await _execute_tool(fn_name, args)
                     await rt_session.send_tool_result(call_id, result)
 
@@ -584,20 +610,57 @@ async def agent_websocket_endpoint(websocket: WebSocket, agent_id: str, token: s
         return
 
     agent_sensitivity = float(agent.get("barge_in_sensitivity", VAD_BARGE_IN_SENSITIVITY))
-    _hr = (agent.get("hr_instructions") or "").strip()
-    _name = (agent.get("name") or "").strip()
-    agent_system_prompt = (
-        (f"Your name is {_name}. If asked your name, say {_name}.\n\n" if _name else "")
-        + (agent.get("system_prompt") or "")
-        + (f"\n\n--- HR INSTRUCTIONS ---\n{_hr}" if _hr else "")
-    ) or None
-    agent_kb_instructions = agent.get("kb_instructions") or None
     doc_ids = [d.strip() for d in docs.split(",") if d.strip()] if docs else []
 
     # Load active tool functions for this agent
     from app.agents.agent_repo import get_agent_functions
     _all_fns = await asyncio.to_thread(get_agent_functions, agent_id)
     _tool_functions = [f for f in _all_fns if f.get("url") and f.get("trigger_type") == "llm_tool_call"]
+
+    # Same on-demand KB tool phone calls get (app/telephony/shared.py) -
+    # only offered when kb_instructions actually names eligible documents,
+    # so a test session behaves like a real call instead of always eagerly
+    # pulling the agent's own KB regardless of whether it's actually
+    # relevant (see run_agent_pipeline below, which used to call
+    # retrieve_agent_context unconditionally every turn). Computed before
+    # agent_system_prompt below, since kb_instructions needs to be folded in
+    # unconditionally when this is non-empty (see _kb below).
+    from app.telephony.shared import get_eligible_kb_documents, build_kb_search_tool
+    _kb_documents = await get_eligible_kb_documents(agent, user_id)
+    if _kb_documents:
+        _tool_functions = _tool_functions + [build_kb_search_tool(_kb_documents)]
+
+    # Meeting booking tools - gated like the KB tool above (setting on AND
+    # the owner's Google Calendar connected), so a browser test session
+    # books exactly like a real phone call. Mirrors
+    # app/routers/telephony_twilio.py and app/routers/telephony_plivo.py.
+    from app.integrations.meeting_tools import get_meeting_tool_functions, build_meeting_system_context
+    _meeting_tools = await get_meeting_tool_functions(agent, user_id)
+    if _meeting_tools:
+        _tool_functions = _tool_functions + _meeting_tools
+
+    _hr = (agent.get("hr_instructions") or "").strip()
+    # Folded in unconditionally (like app.telephony.shared.build_phone_system_prompt
+    # does for phone calls) rather than left to build_system_prompt's
+    # rag_context/has_kb gating below - that gating assumes rag_context is
+    # either eager-fetched content or genuinely "nothing found", neither of
+    # which is true here before the model has even decided to call the
+    # search_knowledge_base tool. Passing has_kb=True with an empty
+    # rag_context there would prepend "No relevant documents found", which
+    # discourages the model from ever calling the tool in the first place
+    # (found live 2026-11-12: the model just answered "I don't have access"
+    # without searching, because the prompt had already told it nothing
+    # would be found).
+    _kb = (agent.get("kb_instructions") or "").strip() if _kb_documents else ""
+    _name = (agent.get("name") or "").strip()
+    agent_system_prompt = (
+        (f"Your name is {_name}. If asked your name, say {_name}.\n\n" if _name else "")
+        + (agent.get("system_prompt") or "")
+        + (f"\n\n--- HR INSTRUCTIONS ---\n{_hr}" if _hr else "")
+        + (f"\n\n--- KNOWLEDGE BASE INSTRUCTIONS ---\n{_kb}" if _kb else "")
+        + (build_meeting_system_context(agent) if _meeting_tools else "")
+    ) or None
+    agent_kb_instructions = agent.get("kb_instructions") or None
 
     from app.admin.admin_config_service import get as get_admin_config
     _realtime_active = await asyncio.to_thread(get_admin_config, "voice_pipeline") == "realtime"
@@ -624,6 +687,34 @@ async def agent_websocket_endpoint(websocket: WebSocket, agent_id: str, token: s
         except Exception as e:
             print(f"[Webhook] {fn['name']} error: {e}")
             return json.dumps({"error": str(e)})
+
+    async def _execute_kb_search(args: dict, fallback_query: str) -> str:
+        """Backs the search_knowledge_base tool (built by
+        app.telephony.shared.build_kb_search_tool) - mirrors
+        app/routers/telephony_twilio.py's _execute_kb_search (via
+        app.telephony.shared.retrieve_phone_rag_context) so a browser test
+        session searches the agent's KB exactly like a real call does: only
+        on turns the model decides need it, scoped to whichever eligible
+        document it named (resolve_kb_search_doc_ids), and only when the
+        agent actually has KB docs selected. Builds its own version instead
+        of calling retrieve_phone_rag_context directly so the mid-session
+        "set_rag_scope" toggle (_rag_scopes - personal/global/both, browser-only,
+        no phone equivalent) keeps working, rather than being silently
+        ignored by that function's hardcoded ["personal", "global"]."""
+        from app.telephony.shared import resolve_kb_search_doc_ids
+        query = args.get("query") or fallback_query
+        restrict_ids = resolve_kb_search_doc_ids(args, _kb_documents)
+        parts = []
+        if agent.get("selected_kb_doc_ids"):
+            raw = await asyncio.to_thread(retrieve_agent_context, query, agent_id, user_id, _rag_scopes)
+            agent_ctx = format_agent_context(raw)
+            if agent_ctx:
+                parts.append(agent_ctx)
+        kb_chunks = await asyncio.to_thread(retrieve_user_kb_context, query, restrict_ids)
+        kb_ctx = format_user_kb_context(kb_chunks) if kb_chunks else ""
+        if kb_ctx:
+            parts.append(kb_ctx)
+        return "\n\n".join(parts) or "No relevant information found in the knowledge base."
 
     if manager.is_full():
         await websocket.close(code=1008, reason="Server at capacity")
@@ -779,23 +870,25 @@ async def agent_websocket_endpoint(websocket: WebSocket, agent_id: str, token: s
             _retrieval_filler_task = asyncio.create_task(_cover_retrieval_delay())
 
             t1 = time.time()
-            gather_tasks = [
-                asyncio.to_thread(retrieve_agent_context, transcript, agent_id, user_id, _rag_scopes),
-                asyncio.to_thread(get_session_messages, conversation_id),
-            ]
+            # No eager agent-KB fetch here - when the agent has eligible KB
+            # docs, _tool_functions (built in agent_websocket_endpoint)
+            # includes a search_knowledge_base tool so the model can pull
+            # that content only on turns it decides actually need it,
+            # exactly like the phone pipelines (see _execute_kb_search).
+            # doc_ids (ad hoc "test with these documents" docs attached to
+            # just this browser session, no phone equivalent) still fetch
+            # eagerly - a tester explicitly attached them for this session.
+            gather_tasks = [asyncio.to_thread(get_session_messages, conversation_id)]
             if doc_ids:
                 gather_tasks.append(asyncio.to_thread(retrieve_user_kb_context, transcript, doc_ids))
             gather_results = await asyncio.gather(*gather_tasks)
-            rag_chunks = gather_results[0]
-            session_history = gather_results[1]
-            user_kb_chunks = gather_results[2] if doc_ids else []
+            session_history = gather_results[0]
+            user_kb_chunks = gather_results[1] if doc_ids else []
             asyncio.create_task(asyncio.to_thread(save_message, conversation_id, user_id, "user", transcript))
 
-            agent_rag_context = format_agent_context(rag_chunks)
-            user_kb_context_str = format_user_kb_context(user_kb_chunks)
-            rag_context = "\n\n".join(filter(None, [agent_rag_context, user_kb_context_str]))
+            rag_context = format_user_kb_context(user_kb_chunks)
             long_term_memory = _memory_cache["summary"]
-            print(f"[Agent Pipeline] RAG+History: {time.time()-t1:.2f}s, scopes={_rag_scopes}, kb_docs={len(doc_ids)}")
+            print(f"[Agent Pipeline] History: {time.time()-t1:.2f}s, kb_tool={bool(_kb_documents)}, doc_ids={len(doc_ids)}")
 
             session.state = AgentState.SPEAKING
             session.speaking_started_at = time.time()
@@ -804,6 +897,11 @@ async def agent_websocket_endpoint(websocket: WebSocket, agent_id: str, token: s
 
             system_str = build_system_prompt(
                 agent_system_prompt, long_term_memory, rag_context, agent_kb_instructions,
+                # Only the ad hoc per-session test docs (doc_ids) go through
+                # this eager rag_context/has_kb path - the agent's own
+                # eligible KB docs are handled by the unconditional fold into
+                # agent_system_prompt above (kb_instructions) plus the
+                # on-demand search_knowledge_base tool, not here.
                 has_kb=bool(doc_ids),
             )
             conv_messages = list(session_history) + [{"role": "user", "content": transcript}]
@@ -843,23 +941,46 @@ async def agent_websocket_endpoint(websocket: WebSocket, agent_id: str, token: s
                         conv_messages, system_str, tools
                     )
                     if tool_name and call_id:
-                        print(f"[Agent Pipeline] Tool call: {tool_name}({tool_args})")
+                        from app.integrations.meeting_tools import MEETING_KINDS, execute_meeting_tool
+                        from app.voice.llm_service import tool_steps_to_messages
 
-                        # Execute the webhook - the retrieval filler (already
-                        # running) covers this if it's slow; nothing extra
-                        # to speak here.
-                        fn = next((f for f in _tool_functions if f["name"] == tool_name), None)
-                        tool_result = json.dumps({"error": "function not found"})
-                        if fn:
-                            tool_result = await _execute_webhook(fn, tool_args)
-                            print(f"[Agent Pipeline] Webhook result: {tool_result[:120]}")
+                        async def _dispatch_tool(fn: dict | None, args: dict) -> str:
+                            # The retrieval filler (already running) covers a
+                            # slow webhook/calendar call; nothing extra to speak.
+                            if fn and fn.get("kind") == "internal_kb_search":
+                                result = await _execute_kb_search(args, transcript)
+                                print(f"[Agent Pipeline] KB search result: {result[:120]}")
+                                return result
+                            if fn and fn.get("kind") in MEETING_KINDS:
+                                return await execute_meeting_tool(fn, args, agent, user_id, conversation_id)
+                            if fn:
+                                result = await _execute_webhook(fn, args)
+                                print(f"[Agent Pipeline] Webhook result: {result[:120]}")
+                                return result
+                            return json.dumps({"error": "function not found"})
 
-                        # Second LLM call streams the actual answer using the tool result
-                        await _tts_stream_sentences(
-                            stream_tool_result_response(
-                                conv_messages, system_str, tool_name, call_id, tool_args, tool_result
+                        # Up to 3 chained tool calls per user turn - mirrors
+                        # app/routers/telephony_twilio.py (see the comment there).
+                        executed: list[tuple] = []
+                        final_text: str | None = None
+                        while tool_name and len(executed) < 3:
+                            print(f"[Agent Pipeline] Tool call: {tool_name}({tool_args})")
+                            fn = next((f for f in _tool_functions if f["name"] == tool_name), None)
+                            tool_result = await _dispatch_tool(fn, tool_args)
+                            executed.append((tool_name, call_id, tool_args, tool_result))
+                            final_text, tool_name, tool_args, call_id = await detect_tool_call(
+                                conv_messages + tool_steps_to_messages(executed), system_str, tools
                             )
-                        )
+                        if not tool_name and final_text:
+                            await _tts_stream_sentences(stream_text_as_sentences(final_text))
+                        else:
+                            last_name, last_id, last_args, last_result = executed[-1]
+                            await _tts_stream_sentences(
+                                stream_tool_result_response(
+                                    conv_messages + tool_steps_to_messages(executed[:-1]),
+                                    system_str, last_name, last_id, last_args, last_result
+                                )
+                            )
                     else:
                         # LLM chose to answer directly without calling any tool
                         await _tts_stream_sentences(

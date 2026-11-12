@@ -76,7 +76,9 @@ def _gap_elapsed(campaign: dict) -> bool:
     from datetime import datetime, timezone
     try:
         last_ended_dt = datetime.fromisoformat(last_ended.replace("Z", "+00:00"))
-    except Exception:
+    except Exception as e:
+        print(f"[HR Campaign Dialer] Could not parse last_call_ended_at ({last_ended!r}) for campaign "
+              f"{campaign.get('id')} - treating the call gap as elapsed: {e}")
         return True
     elapsed_minutes = (datetime.now(timezone.utc) - last_ended_dt).total_seconds() / 60
     return elapsed_minutes >= campaign["call_gap_minutes"]
@@ -150,14 +152,14 @@ async def _dial_candidate(campaign: dict, candidate_row: dict):
     if not (base_url and account_sid and auth_token):
         print(f"[HR Campaign Dialer] Missing Twilio config for campaign_candidate {campaign_candidate_id}")
         await asyncio.to_thread(mark_candidate_failed_and_release, campaign_id, campaign_candidate_id)
-        await _record_call_analytics(record_failed_call, user_id, call_title, agent_id, "No Twilio account connected for this user")
+        await _record_call_analytics(record_failed_call, user_id, call_title, agent_id, "No Twilio account connected for this user", to_number=to_number)
         return
 
     from_number_record = await asyncio.to_thread(get_from_number, user_id, campaign["agent_id"])
     if not from_number_record:
         print(f"[HR Campaign Dialer] No Twilio phone number configured for user {user_id}")
         await asyncio.to_thread(mark_candidate_failed_and_release, campaign_id, campaign_candidate_id)
-        await _record_call_analytics(record_failed_call, user_id, call_title, agent_id, "No active Twilio phone number configured")
+        await _record_call_analytics(record_failed_call, user_id, call_title, agent_id, "No active Twilio phone number configured", to_number=to_number)
         return
 
     from_number = from_number_record["phone_number"]
@@ -189,10 +191,12 @@ async def _dial_candidate(campaign: dict, candidate_row: dict):
         await _record_call_analytics(
             create_conversation, user_id, call_title,
             agent_id=agent_id, call_sid=call_sid, call_status="ringing",
+            to_number=to_number, from_number=from_number,
         )
     else:
         await asyncio.to_thread(mark_candidate_failed_and_release, campaign_id, campaign_candidate_id)
-        await _record_call_analytics(record_failed_call, user_id, call_title, agent_id, fail_reason or "Call could not be placed")
+        await _record_call_analytics(record_failed_call, user_id, call_title, agent_id, fail_reason or "Call could not be placed",
+                                      to_number=to_number, from_number=from_number)
 
 
 async def _place_twilio_call(
@@ -262,7 +266,7 @@ async def _dial_candidate_plivo(campaign: dict, candidate_row: dict, from_number
     if not (base_url and auth_id and auth_token):
         print(f"[HR Campaign Dialer] Missing Plivo config for campaign_candidate {campaign_candidate_id}")
         await asyncio.to_thread(mark_candidate_failed_and_release, campaign_id, campaign_candidate_id)
-        await _record_call_analytics(record_failed_call, user_id, call_title, agent_id, "No Plivo account connected for this user")
+        await _record_call_analytics(record_failed_call, user_id, call_title, agent_id, "No Plivo account connected for this user", to_number=to_number)
         return
 
     from_number = from_number_record["phone_number"]
@@ -276,10 +280,12 @@ async def _dial_candidate_plivo(campaign: dict, candidate_row: dict, from_number
         await _record_call_analytics(
             create_conversation, user_id, call_title,
             agent_id=agent_id, call_sid=call_uuid, call_status="ringing",
+            to_number=to_number, from_number=from_number,
         )
     else:
         await asyncio.to_thread(mark_candidate_failed_and_release, campaign_id, campaign_candidate_id)
-        await _record_call_analytics(record_failed_call, user_id, call_title, agent_id, fail_reason or "Call could not be placed")
+        await _record_call_analytics(record_failed_call, user_id, call_title, agent_id, fail_reason or "Call could not be placed",
+                                      to_number=to_number, from_number=from_number)
 
 
 async def _place_plivo_call(

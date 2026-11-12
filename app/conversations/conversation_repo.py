@@ -5,7 +5,8 @@ from app.core.database import get_supabase
 
 def create_conversation(user_id: str, title: str = "Voice session",
                          agent_id: str | None = None, call_sid: str | None = None,
-                         call_status: str = "in_progress", failure_reason: str | None = None) -> dict:
+                         call_status: str = "in_progress", failure_reason: str | None = None,
+                         to_number: str | None = None, from_number: str | None = None) -> dict:
     db = get_supabase()
     row: dict = {"user_id": user_id, "title": title, "call_status": call_status}
     if agent_id:
@@ -14,14 +15,19 @@ def create_conversation(user_id: str, title: str = "Voice session",
         row["call_sid"] = call_sid
     if failure_reason:
         row["failure_reason"] = failure_reason
+    if to_number:
+        row["to_number"] = to_number
+    if from_number:
+        row["from_number"] = from_number
     try:
         result = db.table("conversations").insert(row).execute()
     except Exception as e:
-        # The call_status/failure_reason/call_sid columns (migration 0017) may
-        # not exist yet on this database - conversation creation is on the hot
-        # path for every live call (browser + Twilio), so that must never be
-        # allowed to break just because Call Analytics hasn't been migrated in
-        # yet. Retry with only the pre-Call-Analytics columns.
+        # The call_status/failure_reason/call_sid/to_number/from_number columns
+        # (migrations 0017/0026) may not exist yet on this database -
+        # conversation creation is on the hot path for every live call
+        # (browser + Twilio), so that must never be allowed to break just
+        # because Call Analytics hasn't been migrated in yet. Retry with only
+        # the pre-Call-Analytics columns.
         print(f"[Call Analytics] create_conversation with analytics columns failed, retrying without them "
               f"(did you run `alembic upgrade head`?): {e}")
         legacy_row: dict = {"user_id": user_id, "title": title}
@@ -33,11 +39,13 @@ def create_conversation(user_id: str, title: str = "Voice session",
     return result.data[0]
 
 
-def record_failed_call(user_id: str, title: str, agent_id: str | None, reason: str) -> None:
+def record_failed_call(user_id: str, title: str, agent_id: str | None, reason: str,
+                        to_number: str | None = None, from_number: str | None = None) -> None:
     """Best-effort: creates a Call Analytics row for a call that never even
     connected (e.g. dial failed before Twilio ever answered). Never raises."""
     try:
-        create_conversation(user_id, title, agent_id=agent_id, call_status="failed", failure_reason=reason)
+        create_conversation(user_id, title, agent_id=agent_id, call_status="failed", failure_reason=reason,
+                             to_number=to_number, from_number=from_number)
     except Exception as e:
         print(f"[Call Analytics] Failed to record failed call for user {user_id}: {e}")
 
@@ -99,6 +107,29 @@ def set_call_duration_and_cost(conversation_id: str) -> None:
         }).eq("id", conversation_id).execute()
     except Exception as e:
         print(f"[Call Analytics] Failed to record call duration/cost for {conversation_id}: {e}")
+
+
+def get_call_durations_by_sids(call_sids: list[str]) -> dict[str, dict]:
+    """Best-effort: maps call_sid -> {duration_seconds, call_status} for the
+    given Twilio/Plivo call ids, so a scheduled-call list (HR interviews,
+    campaign candidates) can show how long each call actually ran without
+    duplicating that bookkeeping outside Call Analytics. Never raises -
+    callers should treat a missing/empty result as "duration unknown"."""
+    if not call_sids:
+        return {}
+    try:
+        db = get_supabase()
+        rows = (
+            db.table("conversations")
+            .select("call_sid, duration_seconds, call_status")
+            .in_("call_sid", call_sids)
+            .execute()
+            .data
+        )
+        return {r["call_sid"]: r for r in rows if r.get("call_sid")}
+    except Exception as e:
+        print(f"[Call Analytics] Failed to look up call durations: {e}")
+        return {}
 
 
 def get_conversation_by_id(conversation_id: str) -> dict | None:
@@ -232,3 +263,26 @@ def get_conversations(user_id: str) -> list[dict]:
         .execute()
     )
     return result.data
+
+
+def list_call_accounts() -> list[dict]:
+    """Every account that has at least one call/session, with a call count
+    and last-activity time - the picker list for admin Call Analytics.
+    Aggregated in Python since Supabase's REST API has no GROUP BY."""
+    db = get_supabase()
+    rows = (
+        db.table("conversations")
+        .select("user_id, created_at")
+        .order("created_at", desc=True)
+        .execute()
+        .data
+    )
+    accounts: dict[str, dict] = {}
+    for r in rows:
+        uid = r["user_id"]
+        acc = accounts.get(uid)
+        if acc is None:
+            accounts[uid] = {"user_id": uid, "call_count": 1, "last_call_at": r["created_at"]}
+        else:
+            acc["call_count"] += 1
+    return sorted(accounts.values(), key=lambda a: a["last_call_at"], reverse=True)

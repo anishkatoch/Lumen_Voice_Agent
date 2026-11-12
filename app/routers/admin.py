@@ -69,6 +69,9 @@ async def update_admin_config(request: Request, current_user: dict = Depends(get
         "llm_provider", "llm_model", "llm_api_key", "llm_base_url",
         "user_kb_max_mb", "agent_kb_max_mb",
         "voice_pipeline", "realtime_voice",
+        "azure_openai_deployment", "azure_openai_embedding_deployment", "azure_openai_transcribe_deployment",
+        "stt_model", "tts_elevenlabs_model_id", "azure_speech_voice", "realtime_model",
+        "call_retry_interval_minutes", "call_retry_max_attempts",
     }
     updates = {k: str(v) for k, v in body.items() if k in ALLOWED}
     if not updates:
@@ -94,9 +97,10 @@ async def admin_system_status(current_user: dict = Depends(get_current_user)):
     cfg = get_all()
     azure_configured = bool(AZURE_OPENAI_API_KEY and AZURE_OPENAI_ENDPOINT)
     llm_provider = cfg.get("llm_provider", "openai")
+    effective_deployment = cfg.get("azure_openai_deployment") or AZURE_OPENAI_DEPLOYMENT
 
     if llm_provider == "openai" and azure_configured:
-        effective_llm = {"provider": "azure_openai", "model": AZURE_OPENAI_DEPLOYMENT,
+        effective_llm = {"provider": "azure_openai", "model": effective_deployment,
                           "note": "Azure OpenAI is used first; plain OpenAI is only the fallback if Azure errors."}
     else:
         effective_llm = {"provider": llm_provider, "model": cfg.get("llm_model"), "note": None}
@@ -104,7 +108,7 @@ async def admin_system_status(current_user: dict = Depends(get_current_user)):
     return {
         "providers": {
             "azure_openai": {"configured": azure_configured, "endpoint": AZURE_OPENAI_ENDPOINT or None,
-                              "deployment": AZURE_OPENAI_DEPLOYMENT if azure_configured else None},
+                              "deployment": effective_deployment if azure_configured else None},
             "openai":       {"configured": bool(OPENAI_API_KEY)},
             "groq":         {"configured": bool(os.environ.get("GROQ_API_KEY"))},
             "anthropic":    {"configured": bool(os.environ.get("ANTHROPIC_API_KEY") or cfg.get("llm_api_key"))},
@@ -156,6 +160,68 @@ async def admin_list_elevenlabs_voices(current_user: dict = Depends(get_current_
         return await asyncio.to_thread(_fetch)
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"ElevenLabs error: {e}")
+
+@router.get("/api/admin/call-accounts")
+async def admin_list_call_accounts(current_user: dict = Depends(get_current_user)):
+    """Every account that has placed/received at least one call, for the
+    Call Analytics account picker - call count, last activity, and email
+    (resolved from Supabase Auth, since conversations only stores user_id)."""
+    _require_admin(current_user)
+    from app.conversations.conversation_repo import list_call_accounts
+    accounts = await asyncio.to_thread(list_call_accounts)
+
+    def _resolve_emails() -> dict[str, str]:
+        from app.core.database import get_supabase
+        db = get_supabase()
+        emails: dict[str, str] = {}
+        try:
+            page = 1
+            while True:
+                users = db.auth.admin.list_users(page=page, per_page=200)
+                if not users:
+                    break
+                for u in users:
+                    emails[u.id] = u.email or u.id
+                if len(users) < 200:
+                    break
+                page += 1
+        except Exception as e:
+            print(f"[Admin] Failed to resolve account emails: {e}")
+        return emails
+
+    emails = await asyncio.to_thread(_resolve_emails)
+    for a in accounts:
+        a["email"] = emails.get(a["user_id"], a["user_id"])
+    return accounts
+
+@router.get("/api/admin/call-accounts/{user_id}/conversations")
+async def admin_list_account_conversations(user_id: str, current_user: dict = Depends(get_current_user)):
+    _require_admin(current_user)
+    from app.conversations.conversation_repo import get_conversations
+    return await asyncio.to_thread(get_conversations, user_id)
+
+@router.get("/api/admin/call-accounts/{user_id}/conversations/{conversation_id}/messages")
+async def admin_get_account_messages(user_id: str, conversation_id: str, current_user: dict = Depends(get_current_user)):
+    _require_admin(current_user)
+    from app.conversations.conversation_repo import get_conversation_by_id
+    from app.conversations.message_repo import get_conversation_history
+    convo = await asyncio.to_thread(get_conversation_by_id, conversation_id)
+    if not convo or convo.get("user_id") != user_id:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return await asyncio.to_thread(get_conversation_history, conversation_id)
+
+@router.get("/api/admin/call-accounts/{user_id}/conversations/{conversation_id}/qa")
+async def admin_get_account_conversation_qa(user_id: str, conversation_id: str, current_user: dict = Depends(get_current_user)):
+    _require_admin(current_user)
+    from app.core.database import get_supabase
+    db = get_supabase()
+    convo = await asyncio.to_thread(
+        lambda: db.table("conversations").select("user_id, call_sid").eq("id", conversation_id).limit(1).execute()
+    )
+    if not convo.data or convo.data[0]["user_id"] != user_id:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    from app.routers.conversations import build_qa_payload
+    return await build_qa_payload(convo.data[0].get("call_sid"))
 
 @router.post("/api/admin/test-llm")
 async def admin_test_llm(current_user: dict = Depends(get_current_user)):

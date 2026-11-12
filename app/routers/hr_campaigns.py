@@ -48,9 +48,12 @@ class CampaignCreate(BaseModel):
     agent_id: str
     name: str
     questions: List[CampaignQuestion] = []
-    max_retry_attempts: int = 4
-    retry_delay_minutes: int = 3
-    failed_retry_delay_minutes: int = 5
+    # None = fall back to the admin-portal call retry settings (see
+    # hr_campaign_repo.create_campaign/_default_retry_settings) instead of a
+    # value baked into this request schema.
+    max_retry_attempts: Optional[int] = None
+    retry_delay_minutes: Optional[int] = None
+    failed_retry_delay_minutes: Optional[int] = None
     call_gap_minutes: int = 4
 
 class CampaignUpdate(BaseModel):

@@ -47,3 +47,6 @@ hub/
 # Private planning - never push to GitHub or Hugging Face
 nextinnovation/
 planning/
+
+# Local-only AI assistant notes - never push to GitHub or Hugging Face
+CLAUDE.md

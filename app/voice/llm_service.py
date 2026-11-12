@@ -56,8 +56,10 @@ def _augment_with_azure(
     azure = _get_azure_openai()
     if azure is None:
         return [(client, provider, model)]
+    from app.admin.admin_config_service import get as get_config
+    azure_deployment = get_config("azure_openai_deployment") or AZURE_OPENAI_DEPLOYMENT
     return [
-        (azure, "azure_openai", AZURE_OPENAI_DEPLOYMENT),
+        (azure, "azure_openai", azure_deployment),
         (client, provider, LLM_FALLBACK_MODEL),
     ]
 
@@ -604,6 +606,28 @@ async def detect_tool_call(
     return "", None, {}, None
 
 
+def tool_steps_to_messages(steps: list[tuple[str, str, dict, str]]) -> list[dict]:
+    """Render already-executed tool steps [(name, call_id, args, result), ...]
+    as OpenAI chat messages, so a follow-up detect_tool_call can let the model
+    chain another tool in the same caller turn (e.g. check_availability and
+    then reschedule_meeting). Without this, the cascade pipelines were limited
+    to exactly one tool call per turn, and a model that said 'I'll move it
+    now' after an availability check silently never did (found live
+    2026-11-12)."""
+    msgs: list[dict] = []
+    for name, call_id, args, result in steps:
+        msgs.append({
+            "role": "assistant",
+            "tool_calls": [{
+                "id": call_id,
+                "type": "function",
+                "function": {"name": name, "arguments": json.dumps(args)},
+            }],
+        })
+        msgs.append({"role": "tool", "tool_call_id": call_id, "content": result})
+    return msgs
+
+
 async def stream_tool_result_response(
     conv_messages: list[dict],
     system: str,
@@ -702,7 +726,10 @@ async def _summarize_with_fallback(prompt: str, max_tokens: int) -> str | None:
     if not chain:
         chain = [(_get_openai(), "openai", MEMORY_MODEL)]
     for try_client, try_provider, _try_model in chain:
-        use_model = AZURE_OPENAI_DEPLOYMENT if try_provider == "azure_openai" else MEMORY_MODEL
+        # azure_openai already carries the admin-overridden deployment as
+        # _try_model (see _augment_with_azure) - reuse it instead of
+        # re-deriving the env default here.
+        use_model = _try_model if try_provider == "azure_openai" else MEMORY_MODEL
         try:
             response = await try_client.chat.completions.create(
                 model=use_model,

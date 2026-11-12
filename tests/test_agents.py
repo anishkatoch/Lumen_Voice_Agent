@@ -889,6 +889,38 @@ async def test_generate_response_stream_uses_default_when_no_override(mocker):
 # Agent Repo Unit Tests
 # ─────────────────────────────────────────────────────────────────────────────
 
+def test_duplicate_agent_carries_hr_instructions_and_kb_doc_ids(mocker):
+    """duplicate_agent previously whitelisted-copied every agent field except
+    hr_instructions (the "HR scheduler" box) and selected_kb_doc_ids - both
+    real columns it simply forgot. A duplicate must keep whatever flavor
+    (Lumen/meeting-assistant/HR agent seed text) the source agent had."""
+    from app.agents.agent_repo import duplicate_agent
+
+    src = _agent()
+    src["hr_instructions"] = "Ask about years of relevant experience."
+    src["selected_kb_doc_ids"] = [TEST_DOC_ID]
+    src["kb_instructions"] = "Use the attached handbook as your source of truth."
+
+    mock_db = MagicMock()
+    mock_db.table.return_value.select.return_value.eq.return_value.eq.return_value.limit.return_value.execute.return_value.data = [src]
+    inserted = {}
+
+    def _insert(payload):
+        inserted.update(payload)
+        m = MagicMock()
+        m.execute.return_value.data = [{**payload, "id": "new-agent-id"}]
+        return m
+
+    mock_db.table.return_value.insert.side_effect = _insert
+    mocker.patch("app.agents.agent_repo.get_supabase", return_value=mock_db)
+
+    result = duplicate_agent(TEST_AGENT_ID, TEST_USER_ID)
+
+    assert inserted["hr_instructions"] == "Ask about years of relevant experience."
+    assert inserted["selected_kb_doc_ids"] == [TEST_DOC_ID]
+    assert result["id"] == "new-agent-id"
+
+
 def test_get_agent_storage_used_zero(mocker):
     from app.agents.agent_repo import get_agent_storage_used
     mock_db = MagicMock()

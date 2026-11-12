@@ -3,7 +3,8 @@ import { useState, useEffect, useCallback } from "react";
 import {
   Settings, Plug, HardDrive, KeyRound, LogOut, Check, X, RefreshCw,
   Eye, EyeOff, Loader2, Zap, Mic, Cpu, ChevronRight, CheckCircle2,
-  XCircle, Activity, PlayCircle,
+  XCircle, Activity, PlayCircle, Phone, ArrowLeft, Search, Clock,
+  Calendar, DollarSign,
 } from "lucide-react";
 
 const BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8004";
@@ -47,6 +48,15 @@ interface AdminConfig {
   agent_kb_max_mb:  string;
   voice_pipeline:   string;
   realtime_voice:   string;
+  azure_openai_deployment:            string;
+  azure_openai_embedding_deployment:  string;
+  azure_openai_transcribe_deployment: string;
+  stt_model:                string;
+  tts_elevenlabs_model_id:  string;
+  azure_speech_voice:       string;
+  realtime_model:           string;
+  call_retry_interval_minutes: string;
+  call_retry_max_attempts:     string;
 }
 
 interface KbRequest {
@@ -79,9 +89,40 @@ interface LlmTestResult {
   error?: string; attempts?: { provider: string; model: string; latency_ms: number; error: string }[];
 }
 
-type Tab = "providers" | "storage" | "kb" | "status";
+interface CallAccount {
+  user_id: string; email: string; call_count: number; last_call_at: string;
+}
+
+interface AdminConversation {
+  id: string;
+  title: string;
+  created_at: string;
+  agent_id?: string | null;
+  sentiment?: "POSITIVE" | "NEGATIVE" | "NEUTRAL" | null;
+  dominant_emotion?: string | null;
+  call_status?: "ringing" | "in_progress" | "completed" | "no_response" | "failed" | "busy" | "no_answer" | null;
+  failure_reason?: string | null;
+  summary?: string | null;
+  to_number?: string | null;
+  from_number?: string | null;
+  duration_seconds?: number | null;
+  cost_usd?: number | null;
+}
+
+interface AdminMessage {
+  role: "user" | "assistant";
+  content: string;
+  created_at: string;
+}
+
+interface AdminConversationQA {
+  questions: { question: string; answered: boolean; answer: string | null }[];
+}
+
+type Tab = "providers" | "storage" | "kb" | "status" | "calls";
 const NAV_ITEMS: { id: Tab; label: string; icon: typeof Plug }[] = [
   { id: "providers", label: "Providers", icon: Plug },
+  { id: "calls",     label: "Call Analytics", icon: Phone },
   { id: "status",    label: "System status", icon: Activity },
   { id: "storage",   label: "Storage",   icon: HardDrive },
   { id: "kb",        label: "KB Access", icon: KeyRound },
@@ -415,6 +456,9 @@ function ProvidersTab({ config, status, onSave }: {
             <div style={{ marginTop: 14 }}>
               <RadioGroup label="Voice" value={local.realtime_voice} onChange={set("realtime_voice")}
                 options={["marin","cedar","alloy","ash","ballad","coral","echo","sage","shimmer","verse"].map(v => ({ value: v, label: v }))} />
+              <Field label="Model override" value={local.realtime_model}
+                onChange={set("realtime_model")} placeholder="gpt-realtime"
+                hint="Leave empty to use the config.yaml default." />
             </div>
           </div>
         ) : local.voice_pipeline === "openai_classic" ? (
@@ -429,6 +473,9 @@ function ProvidersTab({ config, status, onSave }: {
                 options={["alloy","echo","fable","onyx","nova","shimmer"].map(v => ({ value: v, label: v }))} />
               <RadioGroup label="Model" value={local.tts_openai_model} onChange={set("tts_openai_model")}
                 options={[{ value: "tts-1", label: "tts-1 (fast)" }, { value: "tts-1-hd", label: "tts-1-hd (quality)" }]} />
+              <Field label="Azure Speech voice override" value={local.azure_speech_voice}
+                onChange={set("azure_speech_voice")} placeholder="en-US-AndrewNeural"
+                hint="Used first for speech in this pipeline when Azure Speech is configured; falls back to the OpenAI voice above otherwise. Leave empty to use the env default." />
             </div>
           </div>
         ) : (
@@ -451,11 +498,17 @@ function ProvidersTab({ config, status, onSave }: {
                       { value: "deepgram",       label: "Deepgram" },
                       { value: "openai_whisper", label: "OpenAI Whisper" },
                     ]} />
-                  {local.stt_provider === "openai_whisper" && (
+                  {local.stt_provider === "openai_whisper" ? (
                     <Notice>
                       Whisper is batch-only (no streaming). Each utterance is sent to OpenAI after silence is detected.
                       Uses the OpenAI API key configured below under LLM.
                     </Notice>
+                  ) : (
+                    <div style={{ marginTop: 14 }}>
+                      <Field label="Deepgram model override" value={local.stt_model}
+                        onChange={set("stt_model")} placeholder="nova-2"
+                        hint="Leave empty to use the env/config.yaml default." />
+                    </div>
                   )}
                 </div>
                 <div>
@@ -465,8 +518,11 @@ function ProvidersTab({ config, status, onSave }: {
                       { value: "openai_tts", label: "OpenAI TTS" },
                     ]} />
                   {local.tts_provider === "elevenlabs" && (
-                    <div style={{ marginTop: 14 }}>
+                    <div style={{ marginTop: 14, display: "flex", flexDirection: "column", gap: 10 }}>
                       <ElevenLabsVoicePicker value={local.tts_elevenlabs_voice_id} onChange={set("tts_elevenlabs_voice_id")} />
+                      <Field label="Model override" value={local.tts_elevenlabs_model_id}
+                        onChange={set("tts_elevenlabs_model_id")} placeholder="eleven_turbo_v2_5"
+                        hint="Leave empty to use the env/config.yaml default." />
                     </div>
                   )}
                   {local.tts_provider === "openai_tts" && (
@@ -510,6 +566,13 @@ function ProvidersTab({ config, status, onSave }: {
           </div>
         )}
 
+        {azureWillRunInstead && (
+          <Field label="Azure deployment override" value={local.azure_openai_deployment}
+            onChange={set("azure_openai_deployment")}
+            placeholder={azure?.deployment || "gpt-4.1-mini"}
+            hint="Leave empty to use the AZURE_OPENAI_DEPLOYMENT env var shown above. Set this to change the model Azure actually calls, without a redeploy." />
+        )}
+
         {local.llm_provider === "ollama" ? (
           <Field label="Model name" value={local.llm_model} onChange={set("llm_model")}
             placeholder="llama3.2" hint="Any model pulled in Ollama (ollama list)." />
@@ -547,6 +610,36 @@ function ProvidersTab({ config, status, onSave }: {
         <LlmTestButton provider={azureWillRunInstead ? "azure_openai" : local.llm_provider} model={local.llm_model}
           unsaved={local.llm_provider !== config.llm_provider || local.llm_model !== config.llm_model ||
                    local.llm_api_key !== config.llm_api_key || local.llm_base_url !== config.llm_base_url} />
+      </Section>
+
+      <Section title="Advanced model overrides">
+        <Notice>
+          These rarely need to change - each defaults to the env var / config.yaml value already in use.
+          Set one here to change what a live call actually uses without a redeploy.
+        </Notice>
+        <div style={{ marginTop: 14, display: "flex", flexDirection: "column", gap: 4 }}>
+          <Field label="Azure embedding deployment" value={local.azure_openai_embedding_deployment}
+            onChange={set("azure_openai_embedding_deployment")} placeholder="text-embedding-3-small"
+            hint="Used for agent/user knowledge-base embeddings when Azure OpenAI is configured." />
+          <Field label="Azure transcribe deployment" value={local.azure_openai_transcribe_deployment}
+            onChange={set("azure_openai_transcribe_deployment")} placeholder="gpt-4o-transcribe"
+            hint="Used by the OpenAI Whisper STT path when Azure OpenAI is configured." />
+        </div>
+      </Section>
+
+      <Section title="Call retry">
+        <Notice>
+          Applies to standalone HR interview calls and seeds the default for newly created HR campaigns
+          (existing campaigns keep whatever retry settings they were created with).
+        </Notice>
+        <div style={{ marginTop: 14, display: "flex", flexDirection: "column", gap: 4 }}>
+          <Field label="Retry interval (minutes)" value={local.call_retry_interval_minutes}
+            onChange={set("call_retry_interval_minutes")} placeholder="3"
+            hint="How long to wait before redialing an unanswered call." />
+          <Field label="Max attempts" value={local.call_retry_max_attempts}
+            onChange={set("call_retry_max_attempts")} placeholder="5"
+            hint="Total dial attempts (including the first) before giving up." />
+        </div>
       </Section>
 
       {err && <p style={{ color: "var(--danger)", fontSize: 13, marginBottom: 12 }}>{err}</p>}
@@ -803,6 +896,334 @@ function StatusTab() {
   );
 }
 
+// ── Call Analytics Tab ───────────────────────────────────────────────────────
+const FAILED_CALL_STATUSES = new Set(["failed", "busy", "no_answer"]);
+
+function sentimentPill(s: string | null | undefined): { cls: string; label: string } {
+  if (s === "POSITIVE") return { cls: "pill-success", label: "Positive" };
+  if (s === "NEGATIVE") return { cls: "pill-danger", label: "Negative" };
+  return { cls: "pill-neutral", label: "Neutral" };
+}
+
+function callStatusPill(s: string | null | undefined): { cls: string; label: string } {
+  if (s === "failed") return { cls: "pill-danger", label: "Failed" };
+  if (s === "busy") return { cls: "pill-warning", label: "Busy" };
+  if (s === "no_answer") return { cls: "pill-warning", label: "No answer" };
+  if (s === "no_response") return { cls: "pill-warning", label: "No conversation" };
+  if (s === "in_progress") return { cls: "pill-accent", label: "In progress" };
+  if (s === "ringing") return { cls: "pill-accent", label: "Ringing" };
+  return { cls: "pill-success", label: "Completed" };
+}
+
+function formatDuration(seconds: number | null | undefined): string {
+  if (seconds == null) return "Unknown";
+  if (seconds < 60) return `${seconds}s`;
+  const m = Math.floor(seconds / 60), s = seconds % 60;
+  return s > 0 ? `${m}m ${s}s` : `${m} min`;
+}
+
+function CallDetailView({ account, conv, onBack }: {
+  account: CallAccount; conv: AdminConversation; onBack: () => void;
+}) {
+  const [msgs, setMsgs] = useState<AdminMessage[]>([]);
+  const [qa, setQa] = useState<AdminConversationQA | null>(null);
+  const [loading, setLoading] = useState(true);
+  const cPill = callStatusPill(conv.call_status);
+  const sPill = sentimentPill(conv.sentiment);
+  const failed = FAILED_CALL_STATUSES.has(conv.call_status ?? "");
+
+  useEffect(() => {
+    api<AdminMessage[]>(`/api/admin/call-accounts/${account.user_id}/conversations/${conv.id}/messages`)
+      .then(m => { setMsgs(m); setLoading(false); }).catch(() => setLoading(false));
+    api<AdminConversationQA>(`/api/admin/call-accounts/${account.user_id}/conversations/${conv.id}/qa`)
+      .then(setQa).catch(() => setQa(null));
+  }, [account.user_id, conv.id]);
+
+  return (
+    <div style={{ maxWidth: 1100 }}>
+      <button className="back-link" onClick={onBack}><ArrowLeft size={14} />{account.email}</button>
+      <div className="view-head">
+        <div><h1 className="view-title" style={{ fontSize: 20 }}>{conv.title}</h1></div>
+      </div>
+
+      {failed && (
+        <div className="fail-banner">
+          <X size={16} />
+          <div>
+            <b>Call {cPill.label.toLowerCase()}</b>
+            <p>{conv.failure_reason || "No further details were recorded for this call."}</p>
+          </div>
+        </div>
+      )}
+
+      <div className="session-layout">
+        <div className="session-main">
+          {conv.summary && (
+            <div className="conv-card">
+              <div className="conv-card-head"><h3>Call summary</h3></div>
+              <div className="conv-card-body"><p style={{ fontSize: 14, lineHeight: 1.5 }}>{conv.summary}</p></div>
+            </div>
+          )}
+
+          {qa && qa.questions.length > 0 && (
+            <div className="conv-card">
+              <div className="conv-card-head">
+                <h3>Questions asked</h3>
+                <span className="conv-card-meta">
+                  {qa.questions.filter(q => q.answered).length}/{qa.questions.length} answered
+                </span>
+              </div>
+              <div className="conv-card-body">
+                <div className="detail-rows">
+                  {qa.questions.map((q, i) => (
+                    <div key={i} className="detail-row" style={{ alignItems: "flex-start" }}>
+                      {q.answered ? <CheckCircle2 size={15} /> : <X size={15} />}
+                      <div>
+                        <div className="detail-label">{q.question}</div>
+                        <div className="detail-value">
+                          {q.answered ? q.answer : <em style={{ color: "var(--ink-faint)" }}>Not answered</em>}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+
+          <div className="conv-card accent">
+            <div className="conv-card-head">
+              <h3>Conversation</h3>
+              {!loading && <span className="conv-card-meta">{msgs.length} message{msgs.length !== 1 ? "s" : ""}</span>}
+            </div>
+            <div className="conv-card-body">
+              {loading ? (
+                <p style={{ fontSize: 13.5, color: "var(--ink-faint)" }}>Loading transcript...</p>
+              ) : msgs.length === 0 ? (
+                <div className="empty"><p>No messages in this session.</p></div>
+              ) : (
+                <div className="transcript">
+                  {msgs.map((m, i) => (
+                    <div key={i} className={`bubble-row ${m.role === "user" ? "user" : "agent"}`}>
+                      <div className="bubble-col">
+                        <div className="msg-meta">
+                          <span className="msg-name">{m.role === "user" ? "Caller" : "Agent"}</span>
+                          <span>{new Date(m.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+                        </div>
+                        <div className="bubble">{m.content}</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        <div className="session-sidebar">
+          <div className="conv-card">
+            <div className="conv-card-head"><h3>Details</h3></div>
+            <div className="detail-rows">
+              <div className="detail-row">
+                <Phone size={15} />
+                <div><div className="detail-label">Dialed number</div><div className="detail-value">{conv.to_number || "Unknown"}</div></div>
+              </div>
+              <div className="detail-row">
+                <Phone size={15} />
+                <div><div className="detail-label">From</div><div className="detail-value">{conv.from_number || "Unknown"}</div></div>
+              </div>
+              <div className="detail-row">
+                <Calendar size={15} />
+                <div><div className="detail-label">Time</div><div className="detail-value">{new Date(conv.created_at).toLocaleString()}</div></div>
+              </div>
+              <div className="detail-row">
+                <Clock size={15} />
+                <div><div className="detail-label">Duration</div><div className="detail-value">{formatDuration(conv.duration_seconds)}</div></div>
+              </div>
+              {conv.cost_usd != null && (
+                <div className="detail-row">
+                  <DollarSign size={15} />
+                  <div><div className="detail-label">Estimated cost</div><div className="detail-value">${conv.cost_usd.toFixed(4)}</div></div>
+                </div>
+              )}
+              <div className="detail-row">
+                <CheckCircle2 size={15} />
+                <div><div className="detail-label">Status</div><div><span className={`pill ${cPill.cls}`}>{cPill.label}</span></div></div>
+              </div>
+              {conv.sentiment && (
+                <div className="detail-row">
+                  <Activity size={15} />
+                  <div><div className="detail-label">Sentiment</div><div><span className={`pill ${sPill.cls}`}>{sPill.label}{conv.dominant_emotion ? ` · ${conv.dominant_emotion}` : ""}</span></div></div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+type CallFilter = "all" | "completed" | "no_response" | "failed";
+
+function AccountCallsView({ account, onBack }: { account: CallAccount; onBack: () => void }) {
+  const [convs, setConvs] = useState<AdminConversation[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [selected, setSelected] = useState<AdminConversation | null>(null);
+  const [filter, setFilter] = useState<CallFilter>("all");
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try { setConvs(await api<AdminConversation[]>(`/api/admin/call-accounts/${account.user_id}/conversations`)); }
+    catch { /* ignore */ }
+    setLoading(false);
+  }, [account.user_id]);
+
+  useEffect(() => { load(); }, [load]);
+
+  if (selected) {
+    return <CallDetailView account={account} conv={selected} onBack={() => setSelected(null)} />;
+  }
+
+  const total = convs.length;
+  const failedCount = convs.filter(c => FAILED_CALL_STATUSES.has(c.call_status ?? "")).length;
+  const completedCount = convs.filter(c => (c.call_status ?? "completed") === "completed").length;
+  const noResponseCount = convs.filter(c => c.call_status === "no_response").length;
+  const totalCost = convs.reduce((s, c) => s + (c.cost_usd ?? 0), 0);
+
+  const filtered = convs.filter(c => {
+    if (filter === "failed") return FAILED_CALL_STATUSES.has(c.call_status ?? "");
+    if (filter === "completed") return (c.call_status ?? "completed") === "completed";
+    if (filter === "no_response") return c.call_status === "no_response";
+    return true;
+  });
+
+  return (
+    <div style={{ maxWidth: 1100 }}>
+      <button className="back-link" onClick={onBack}><ArrowLeft size={14} />All accounts</button>
+      <div className="view-head">
+        <div>
+          <h1 className="view-title" style={{ fontSize: 20 }}>{account.email}</h1>
+          <p className="view-sub">Every call this account has placed or received.</p>
+        </div>
+      </div>
+
+      {!loading && total > 0 && (
+        <div className="stat-grid">
+          <div className="stat-card"><div className="stat-top"><span className="stat-label">Total calls</span></div><div className="stat-value">{total}</div></div>
+          <div className="stat-card"><div className="stat-top"><span className="stat-label">Completed</span></div><div className="stat-value">{completedCount}</div></div>
+          <div className="stat-card"><div className="stat-top"><span className="stat-label">No conversation</span></div><div className="stat-value">{noResponseCount}</div></div>
+          <div className="stat-card"><div className="stat-top"><span className="stat-label">Failed / busy / no answer</span></div><div className="stat-value">{failedCount}</div></div>
+          <div className="stat-card"><div className="stat-top"><span className="stat-label">Estimated cost</span></div><div className="stat-value">${totalCost.toFixed(2)}</div></div>
+        </div>
+      )}
+
+      {!loading && total > 0 && (
+        <div className="filter-row">
+          <div className="segmented">
+            {([["all", "All"], ["completed", "Completed"], ["no_response", "No conversation"], ["failed", "Failed"]] as [CallFilter, string][]).map(([key, label]) => (
+              <button key={key} className={filter === key ? "active" : ""} onClick={() => setFilter(key)}>{label}</button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {loading ? (
+        <p style={{ fontSize: 13.5, color: "var(--ink-faint)" }}>Loading calls...</p>
+      ) : convs.length === 0 ? (
+        <div className="empty"><div className="ic"><Phone size={20} /></div><p>No calls recorded for this account yet.</p></div>
+      ) : filtered.length === 0 ? (
+        <div className="empty"><div className="ic"><Phone size={20} /></div><p>No calls match this filter.</p></div>
+      ) : (
+        <div className="call-grid">
+          {filtered.map(conv => {
+            const cPill = callStatusPill(conv.call_status);
+            const isFailed = FAILED_CALL_STATUSES.has(conv.call_status ?? "");
+            return (
+              <button key={conv.id} className={`call-card ${isFailed ? "bad" : "ok"}`}
+                style={{ textAlign: "left", width: "100%" }} onClick={() => setSelected(conv)}>
+                <div className="call-card-top">
+                  <span className={`pill ${cPill.cls}`}>{cPill.label}</span>
+                  <span style={{ fontSize: 11.5, color: "var(--ink-faint)" }}>{new Date(conv.created_at).toLocaleString()}</span>
+                </div>
+                <p style={{ fontSize: 13.5, fontWeight: 600, marginTop: 8, color: "var(--ink)" }}>
+                  {conv.to_number || conv.title}
+                </p>
+                {conv.from_number && (
+                  <p style={{ fontSize: 12, color: "var(--ink-muted)", marginTop: 2 }}>from {conv.from_number}</p>
+                )}
+                <p style={{ fontSize: 11.5, color: "var(--ink-faint)", marginTop: 8 }}>
+                  {formatDuration(conv.duration_seconds)}
+                  {conv.cost_usd != null && ` · $${conv.cost_usd.toFixed(4)}`}
+                </p>
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CallAnalyticsTab() {
+  const [accounts, setAccounts] = useState<CallAccount[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [account, setAccount] = useState<CallAccount | null>(null);
+  const [search, setSearch] = useState("");
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try { setAccounts(await api<CallAccount[]>("/api/admin/call-accounts")); }
+    catch { /* ignore */ }
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  if (account) {
+    return <AccountCallsView account={account} onBack={() => setAccount(null)} />;
+  }
+
+  const filtered = accounts.filter(a => a.email.toLowerCase().includes(search.toLowerCase()));
+
+  return (
+    <div style={{ maxWidth: 1100 }}>
+      <div style={{ display: "flex", gap: 10, marginBottom: 16, alignItems: "center" }}>
+        <div style={{ position: "relative", flex: 1, maxWidth: 360 }}>
+          <Search size={14} style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", color: "var(--ink-faint)" }} />
+          <input className="input" style={{ paddingLeft: 32 }} placeholder="Search by email..."
+            value={search} onChange={e => setSearch(e.target.value)} />
+        </div>
+        <button className="icon-btn" aria-label="Refresh" onClick={load}><RefreshCw size={15} /></button>
+      </div>
+
+      {loading ? (
+        <p style={{ fontSize: 13.5, textAlign: "center", padding: "32px 0", color: "var(--ink-muted)" }}>Loading accounts...</p>
+      ) : accounts.length === 0 ? (
+        <div className="empty"><div className="ic"><Phone size={20} /></div><p>No accounts have made any calls yet.</p></div>
+      ) : filtered.length === 0 ? (
+        <div className="empty"><p>No accounts match &quot;{search}&quot;.</p></div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {filtered.map(a => (
+            <button key={a.user_id} className="card" onClick={() => setAccount(a)}
+              style={{ padding: "14px 16px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, textAlign: "left", width: "100%", cursor: "pointer" }}>
+              <div>
+                <p style={{ fontSize: 13.5, fontWeight: 600, color: "var(--ink)" }}>{a.email}</p>
+                <p style={{ fontSize: 12, color: "var(--ink-muted)", marginTop: 2 }}>Last call {new Date(a.last_call_at).toLocaleString()}</p>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <span className="pill pill-accent">{a.call_count} call{a.call_count !== 1 ? "s" : ""}</span>
+                <ChevronRight size={16} style={{ color: "var(--ink-faint)" }} />
+              </div>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Main Admin Page ───────────────────────────────────────────────────────────
 export default function AdminPage() {
   const [loggedIn,  setLoggedIn]  = useState(false);
@@ -912,6 +1333,7 @@ export default function AdminPage() {
 
   const tabMeta: Record<Tab, { title: string; sub: string }> = {
     providers: { title: "Provider settings", sub: "Choose which speech and language providers power every agent." },
+    calls:     { title: "Call analytics",    sub: "Pick an account to see every call it has placed or received, who it dialed, and the conversation." },
     status:    { title: "System status",      sub: "What's actually configured and what the next call will use." },
     storage:   { title: "Storage limits",     sub: "Set how much document storage users and agents can use." },
     kb:        { title: "Knowledge base access", sub: "Review requests and manage who can use the global Knowledge Base." },
@@ -975,6 +1397,7 @@ export default function AdminPage() {
 
             {config && tab === "providers" && <ProvidersTab config={config} status={status} onSave={saveConfig} />}
             {config && tab === "storage"   && <StorageTab   config={config} onSave={saveConfig} />}
+            {tab === "calls" && <CallAnalyticsTab />}
             {tab === "status" && <StatusTab />}
             {tab === "kb" && <KbAccessTab />}
           </div>

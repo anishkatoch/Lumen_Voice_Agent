@@ -49,8 +49,18 @@ function agentInitials(name: string) {
   return (parts[0][0] + parts[1][0]).toUpperCase();
 }
 
+function formatCallDuration(seconds: number | null | undefined): string | null {
+  if (seconds == null) return null;
+  if (seconds < 60) return `${seconds}s`;
+  const m = Math.floor(seconds / 60), s = seconds % 60;
+  return s > 0 ? `${m}m ${s}s` : `${m} min`;
+}
+
 function hrStatusPill(status: string): { cls: string; label: string } {
   if (status === "completed") return { cls: "pill-success", label: status };
+  if (status === "no_response") return { cls: "pill-warning", label: "No conversation" };
+  if (status === "busy") return { cls: "pill-warning", label: "Busy" };
+  if (status === "no_answer") return { cls: "pill-warning", label: "No answer" };
   if (status === "failed") return { cls: "pill-danger", label: status };
   if (status === "cancelled") return { cls: "pill-neutral", label: status };
   if (status === "calling") return { cls: "pill-accent", label: status };
@@ -172,13 +182,14 @@ function useConsoleMode() {
    Navigation shell: Rail (desktop), TabBar (mobile), Topbar, Account modal
 --------------------------------------------------------------------------- */
 
-type View = "agents" | "knowledge-base" | "sessions" | "phone-numbers";
+type View = "agents" | "knowledge-base" | "sessions" | "phone-numbers" | "integrations";
 
 const NAV_ITEMS: { id: View; label: string; shortLabel: string; icon: string }[] = [
   { id: "agents", label: "Agents", shortLabel: "Agents", icon: "grid" },
   { id: "knowledge-base", label: "Knowledge Base", shortLabel: "Docs", icon: "book" },
   { id: "sessions", label: "Call Analytics", shortLabel: "Calls", icon: "activity" },
   { id: "phone-numbers", label: "Phone Numbers", shortLabel: "Numbers", icon: "phone" },
+  { id: "integrations", label: "Integrations", shortLabel: "Connect", icon: "zap" },
 ];
 
 function Rail({ view, onView, agentCount, userEmail, userName, onOpenAccount }: {
@@ -900,6 +911,9 @@ function AgentHRSection({ agentId, hrInstructions, onHrInstructionsChange }: {
                               <span className={`pill ${s.cls}`}>{s.label}</span>
                               <span style={{ fontSize: 12, color: "var(--ink-2)", fontWeight: 500 }}>{new Date(iv.scheduled_at).toLocaleString()}</span>
                               <span style={{ fontSize: 11, color: "var(--ink-muted)" }}>calls {iv.call_lead_minutes} min before</span>
+                              {formatCallDuration(iv.call_duration_seconds) && (
+                                <span style={{ fontSize: 11, color: "var(--ink-muted)" }}>· {formatCallDuration(iv.call_duration_seconds)}</span>
+                              )}
                             </div>
                             {iv.specific_questions && (
                               <div style={{ fontSize: 11, color: "var(--ink-muted)", marginTop: 2 }}>
@@ -1017,12 +1031,13 @@ function AgentHRSection({ agentId, hrInstructions, onHrInstructionsChange }: {
    Agent Detail
 --------------------------------------------------------------------------- */
 
-function AgentDetail({ agent, onBack, onUpdate, onDuplicate, onGoToKb }: {
+function AgentDetail({ agent, onBack, onUpdate, onDuplicate, onGoToKb, onGoToIntegrations }: {
   agent: Agent;
   onBack: () => void;
   onUpdate: (a: Agent) => void;
   onDuplicate: (a: Agent) => void;
   onGoToKb: () => void;
+  onGoToIntegrations: () => void;
 }) {
   const [name, setName] = useState(agent.name);
   const [prompt, setPrompt] = useState(agent.system_prompt ?? DEFAULT_SYSTEM_PROMPT);
@@ -1033,6 +1048,16 @@ function AgentDetail({ agent, onBack, onUpdate, onDuplicate, onGoToKb }: {
   const [firstMsg, setFirstMsg] = useState(agent.first_message ?? "");
   const [saving, setSaving] = useState(false);
   const [saveMsg, setSaveMsg] = useState("");
+
+  const [meetingEnabled, setMeetingEnabled] = useState(agent.meeting_booking_enabled ?? false);
+  const [meetingDuration, setMeetingDuration] = useState(agent.meeting_duration_minutes ?? 30);
+  const [meetingBuffer, setMeetingBuffer] = useState(agent.meeting_buffer_minutes ?? 0);
+  const [meetingTz, setMeetingTz] = useState(agent.meeting_timezone ?? "UTC");
+  const [bookingStart, setBookingStart] = useState(agent.booking_hours_start ?? "09:00");
+  const [bookingEnd, setBookingEnd] = useState(agent.booking_hours_end ?? "17:00");
+  const [meetingInstructions, setMeetingInstructions] = useState(agent.meeting_instructions ?? "");
+  const [calendarConnected, setCalendarConnected] = useState<boolean | null>(null);
+  const [calendarEmail, setCalendarEmail] = useState<string | null>(null);
 
   const [selectedDocIds, setSelectedDocIds] = useState<string[]>(agent.selected_kb_doc_ids ?? []);
   const [userKbDocs, setUserKbDocs] = useState<import("@/lib/api").UserDocument[]>([]);
@@ -1054,6 +1079,16 @@ function AgentDetail({ agent, onBack, onUpdate, onDuplicate, onGoToKb }: {
     setFillerPhrases(agent.filler_phrases ?? "");
     setFirstMsgEnabled(agent.first_message_enabled); setFirstMsg(agent.first_message ?? "");
     setSelectedDocIds(agent.selected_kb_doc_ids ?? []);
+    setMeetingEnabled(agent.meeting_booking_enabled ?? false);
+    setMeetingDuration(agent.meeting_duration_minutes ?? 30);
+    setMeetingBuffer(agent.meeting_buffer_minutes ?? 0);
+    setMeetingTz(agent.meeting_timezone ?? "UTC");
+    setBookingStart(agent.booking_hours_start ?? "09:00");
+    setBookingEnd(agent.booking_hours_end ?? "17:00");
+    setMeetingInstructions(agent.meeting_instructions ?? "");
+    API.googleCalendarStatus()
+      .then(s => { setCalendarConnected(s.connected); setCalendarEmail(s.email); })
+      .catch(() => setCalendarConnected(null));
     loadUserKb(); loadFuncs();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agent.id]);
@@ -1089,6 +1124,13 @@ function AgentDetail({ agent, onBack, onUpdate, onDuplicate, onGoToKb }: {
         first_message_enabled: firstMsgEnabled,
         first_message: firstMsg || null,
         selected_kb_doc_ids: selectedDocIds,
+        meeting_booking_enabled: meetingEnabled,
+        meeting_duration_minutes: Number(meetingDuration) >= 5 ? Number(meetingDuration) : 30,
+        meeting_buffer_minutes: Number(meetingBuffer) > 0 ? Number(meetingBuffer) : 0,
+        meeting_timezone: meetingTz.trim() || "UTC",
+        booking_hours_start: bookingStart || "09:00",
+        booking_hours_end: bookingEnd || "17:00",
+        meeting_instructions: meetingInstructions || null,
       });
       onUpdate(updated); setSaveMsg("Saved"); pushToast("Agent saved");
       setTimeout(() => setSaveMsg(""), 2000);
@@ -1472,6 +1514,90 @@ Confident, not pushy
             />
           </Section>
 
+          <Section title="Meeting booking">
+            <div style={{ fontSize: 12, color: "var(--ink-muted)", marginBottom: 12 }}>
+              Let this agent check your Google Calendar and book meetings for callers, with a Meet
+              link and an emailed invite.
+            </div>
+
+            {calendarConnected === true && (
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+                <span className="pill pill-success"><span className="dot" />Google Calendar connected</span>
+                {calendarEmail && <span style={{ fontSize: 12.5, color: "var(--ink-muted)" }}>{calendarEmail}</span>}
+              </div>
+            )}
+
+            <div className="field">
+              <label>Booking</label>
+              <select className="select" value={meetingEnabled ? "on" : "off"} onChange={e => setMeetingEnabled(e.target.value === "on")}>
+                <option value="off">Disabled</option>
+                <option value="on">Enabled</option>
+              </select>
+            </div>
+
+            {meetingEnabled && calendarConnected === false && (
+              <div className="card" style={{ padding: "10px 14px", marginBottom: 14, borderColor: "var(--warning)" }}>
+                <div style={{ fontSize: 12.5, color: "var(--ink)" }}>
+                  No Google Calendar connected yet. Booking stays off on calls until you connect one.
+                </div>
+                <button className="link-btn" style={{ marginTop: 6 }} onClick={onGoToIntegrations}>
+                  Connect Google Calendar in Integrations
+                </button>
+              </div>
+            )}
+
+            {meetingEnabled && (
+              <>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 14 }}>
+                  <div className="field">
+                    <label>Meeting length (minutes)</label>
+                    <input className="input" type="number" min={5} max={240} value={meetingDuration}
+                      onChange={e => setMeetingDuration(e.target.value === "" ? ("" as unknown as number) : parseInt(e.target.value))}
+                      onBlur={e => { const v = parseInt(e.target.value); if (isNaN(v) || v < 5) setMeetingDuration(30); else setMeetingDuration(Math.min(v, 240)); }} />
+                  </div>
+                  <div className="field">
+                    <label>Buffer between meetings (minutes)</label>
+                    <input className="input" type="number" min={0} max={120} value={meetingBuffer}
+                      onChange={e => setMeetingBuffer(e.target.value === "" ? ("" as unknown as number) : parseInt(e.target.value))}
+                      onBlur={e => { const v = parseInt(e.target.value); if (isNaN(v) || v < 0) setMeetingBuffer(0); else setMeetingBuffer(Math.min(v, 120)); }} />
+                  </div>
+                  <div className="field">
+                    <label>Timezone</label>
+                    <input className="input" list="meeting-tz-options" value={meetingTz}
+                      onChange={e => setMeetingTz(e.target.value)} placeholder="UTC" />
+                    <datalist id="meeting-tz-options">
+                      <option value="UTC" />
+                      <option value="Asia/Kolkata" />
+                      <option value="America/New_York" />
+                      <option value="America/Los_Angeles" />
+                      <option value="Europe/London" />
+                      <option value="Europe/Berlin" />
+                      <option value="Asia/Dubai" />
+                      <option value="Asia/Singapore" />
+                      <option value="Australia/Sydney" />
+                    </datalist>
+                  </div>
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+                  <div className="field">
+                    <label>Bookable from</label>
+                    <input className="input" type="time" value={bookingStart} onChange={e => setBookingStart(e.target.value)} />
+                  </div>
+                  <div className="field">
+                    <label>Bookable until</label>
+                    <input className="input" type="time" value={bookingEnd} onChange={e => setBookingEnd(e.target.value)} />
+                  </div>
+                </div>
+                <div className="field" style={{ marginBottom: 0 }}>
+                  <label>Booking rules (optional)</label>
+                  <textarea className="textarea" style={{ minHeight: 60 }} value={meetingInstructions}
+                    onChange={e => setMeetingInstructions(e.target.value)}
+                    placeholder="e.g. Only book product demos. Always ask what the meeting is about first." />
+                </div>
+              </>
+            )}
+          </Section>
+
           {agent.name === "HR Support Agent" && (
             <AgentHRSection agentId={agent.id} hrInstructions={hrInstructions} onHrInstructionsChange={setHrInstructions} />
           )}
@@ -1639,7 +1765,7 @@ interface ConvDetail {
   sentiment?: "POSITIVE" | "NEGATIVE" | "NEUTRAL" | null;
   dominant_emotion?: string | null;
   sentiment_score?: number | null;
-  call_status?: "ringing" | "in_progress" | "completed" | "failed" | "busy" | "no_answer" | null;
+  call_status?: "ringing" | "in_progress" | "completed" | "no_response" | "failed" | "busy" | "no_answer" | null;
   failure_reason?: string | null;
   summary?: string | null;
 }
@@ -1654,6 +1780,7 @@ function callStatusPill(s: string | null | undefined): { cls: string; label: str
   if (s === "failed") return { cls: "pill-danger", label: "Failed" };
   if (s === "busy") return { cls: "pill-warning", label: "Busy" };
   if (s === "no_answer") return { cls: "pill-warning", label: "No answer" };
+  if (s === "no_response") return { cls: "pill-warning", label: "No conversation" };
   if (s === "in_progress") return { cls: "pill-accent", label: "In progress" };
   if (s === "ringing") return { cls: "pill-accent", label: "Ringing" };
   return { cls: "pill-success", label: "Completed" };
@@ -1856,7 +1983,7 @@ function SessionDetail({ conv, agents, onBack }: {
   );
 }
 
-type CallFilter = "all" | "completed" | "failed";
+type CallFilter = "all" | "completed" | "no_response" | "failed";
 
 function SessionsView({ agents }: { agents: Agent[] }) {
   const [convs, setConvs] = useState<ConvDetail[]>([]);
@@ -1883,6 +2010,7 @@ function SessionsView({ agents }: { agents: Agent[] }) {
     if (agentFilter !== "all" && c.agent_id !== agentFilter) return false;
     if (filter === "failed") return FAILED_CALL_STATUSES.has(c.call_status ?? "");
     if (filter === "completed") return (c.call_status ?? "completed") === "completed";
+    if (filter === "no_response") return c.call_status === "no_response";
     return true;
   });
 
@@ -1910,7 +2038,7 @@ function SessionsView({ agents }: { agents: Agent[] }) {
       {!loading && total > 0 && (
         <div className="filter-row">
           <div className="segmented">
-            {([["all", "All"], ["completed", "Completed"], ["failed", "Failed"]] as [CallFilter, string][]).map(([key, label]) => (
+            {([["all", "All"], ["completed", "Completed"], ["no_response", "No conversation"], ["failed", "Failed"]] as [CallFilter, string][]).map(([key, label]) => (
               <button key={key} className={filter === key ? "active" : ""} onClick={() => setFilter(key)}>{label}</button>
             ))}
           </div>
@@ -2804,6 +2932,117 @@ function PhoneNumbersView({ agents }: { agents: Agent[] }) {
 }
 
 /* ---------------------------------------------------------------------------
+   Integrations view (Google Calendar connection, mirrors the provider-card
+   style of the Twilio/Plivo sections in PhoneNumbersView)
+--------------------------------------------------------------------------- */
+
+function IntegrationsView() {
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
+  const [connected, setConnected] = useState(false);
+  const [email, setEmail] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [confirmDisconnect, setConfirmDisconnect] = useState(false);
+
+  useEffect(() => { load(); }, []);
+
+  const load = async () => {
+    setLoading(true); setLoadError(false);
+    try {
+      const s = await API.googleCalendarStatus();
+      setConnected(s.connected); setEmail(s.email);
+    } catch {
+      setLoadError(true);
+    }
+    setLoading(false);
+  };
+
+  const handleConnect = async () => {
+    setBusy(true);
+    try {
+      const { auth_url } = await API.googleCalendarConnect();
+      window.location.href = auth_url;
+    } catch (e: unknown) {
+      pushToast(e instanceof Error ? e.message : "Could not start Google sign-in", "error");
+      setBusy(false);
+    }
+  };
+
+  const handleDisconnect = async () => {
+    setBusy(true);
+    try {
+      await API.googleCalendarDisconnect();
+      setConnected(false); setEmail(null); setConfirmDisconnect(false);
+      pushToast("Google Calendar disconnected");
+    } catch (e: unknown) {
+      pushToast(e instanceof Error ? e.message : "Could not disconnect", "error");
+    }
+    setBusy(false);
+  };
+
+  return (
+    <div className="view">
+      <div className="view-head">
+        <div>
+          <h1 className="view-title">Integrations</h1>
+          <p className="view-sub">Connect external services your agents can use on calls.</p>
+        </div>
+      </div>
+
+      <div style={{ fontSize: 12, fontWeight: 600, color: "var(--ink-faint)", textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 8 }}>
+        Calendar
+      </div>
+      <div className="card provider-card" style={{ padding: 18 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <div className="provider-ic">G</div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div className="nm">Google Calendar</div>
+            <div style={{ fontSize: 12, color: "var(--ink-muted)", marginTop: 2 }}>
+              {loading ? "Checking connection..."
+                : loadError ? "Could not reach the server to check the connection."
+                : connected ? <>Connected as <strong>{email ?? "your Google account"}</strong></>
+                : "Lets agents check your availability and book meetings during calls."}
+            </div>
+          </div>
+          {!loading && !loadError && (connected
+            ? <span className="pill pill-success"><span className="dot" />Connected</span>
+            : <span className="pill pill-warning">Not connected</span>)}
+        </div>
+
+        <div style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 14 }}>
+          {!loading && loadError && (
+            <button className="btn btn-ghost" onClick={load}>Retry</button>
+          )}
+          {!loading && !loadError && !connected && (
+            <button className="btn btn-primary" onClick={handleConnect} disabled={busy}>
+              {busy ? "Opening Google..." : "Connect Google Calendar"}
+            </button>
+          )}
+          {!loading && connected && (
+            confirmDisconnect ? (
+              <>
+                <button className="btn btn-ghost" onClick={() => setConfirmDisconnect(false)}>Cancel</button>
+                <button className="btn btn-danger" onClick={handleDisconnect} disabled={busy}>
+                  {busy ? "Disconnecting..." : "Yes, disconnect"}
+                </button>
+              </>
+            ) : (
+              <button className="btn btn-ghost" onClick={() => setConfirmDisconnect(true)}>Disconnect</button>
+            )
+          )}
+        </div>
+
+        {!loading && connected && (
+          <div style={{ fontSize: 12, color: "var(--ink-muted)", marginTop: 10 }}>
+            Turn on <strong>Meeting booking</strong> inside any agent to let it book into this calendar.
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------------
    Main page
 --------------------------------------------------------------------------- */
 
@@ -2823,6 +3062,19 @@ export default function AgentsPage() {
       router.replace("/signin"); return;
     }
     loadAgents();
+    // Landing back from the Google OAuth redirect: show the outcome and open
+    // the Integrations view, then clean the query string from the URL.
+    const params = new URLSearchParams(window.location.search);
+    const gcal = params.get("google_calendar");
+    if (gcal) {
+      if (gcal === "connected") pushToast("Google Calendar connected");
+      else if (gcal === "denied") pushToast("Google Calendar connection was cancelled", "error");
+      else pushToast("Google Calendar connection failed - try again", "error");
+      setView("integrations");
+      params.delete("google_calendar");
+      const qs = params.toString();
+      window.history.replaceState({}, "", window.location.pathname + (qs ? `?${qs}` : ""));
+    }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -2857,6 +3109,7 @@ export default function AgentsPage() {
 
   const crumbMap: Record<View, string> = {
     agents: "Agents", "knowledge-base": "Knowledge Base", sessions: "Call Analytics", "phone-numbers": "Phone Numbers",
+    integrations: "Integrations",
   };
 
   const goTo = (v: View) => { setView(v); setSelectedAgent(null); setQuery(""); };
@@ -2879,6 +3132,7 @@ export default function AgentsPage() {
                 onUpdate={updated => { setAgents(ag => ag.map(a => a.id === updated.id ? updated : a)); setSelectedAgent(updated); }}
                 onDuplicate={dup => { setAgents(ag => [...ag, dup]); setSelectedAgent(dup); }}
                 onGoToKb={() => { setSelectedAgent(null); setView("knowledge-base"); }}
+                onGoToIntegrations={() => { setSelectedAgent(null); setView("integrations"); }}
               />
             ) : loading ? (
               <div className="view"><div className="empty"><p>Loading agents...</p></div></div>
@@ -2890,6 +3144,7 @@ export default function AgentsPage() {
           {view === "knowledge-base" && <KnowledgeBaseView />}
           {view === "sessions" && <SessionsView agents={agents} />}
           {view === "phone-numbers" && <PhoneNumbersView agents={agents} />}
+          {view === "integrations" && <IntegrationsView />}
         </div>
       </div>
 

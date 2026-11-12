@@ -798,9 +798,13 @@ class _FakeTwilioWebSocket:
     ASGI/thread transport - deterministic, unlike racing a background
     thread's disconnect delivery against a sleep."""
 
-    def __init__(self, messages):
+    def __init__(self, messages, end_exc: Exception | None = None):
         self._messages = list(messages)
         self.sent: list[str] = []
+        # Defaults to the normal-close case (Starlette's WebSocketDisconnect,
+        # code 1000) once messages run out - pass a different exception (e.g.
+        # a plain RuntimeError) to simulate a genuine mid-call crash instead.
+        self._end_exc = end_exc if end_exc is not None else WebSocketDisconnect(code=1000)
 
     async def accept(self):
         pass
@@ -808,10 +812,7 @@ class _FakeTwilioWebSocket:
     async def receive_text(self):
         if self._messages:
             return self._messages.pop(0)
-        # Mirrors what Starlette raises when Twilio closes the stream
-        # normally (no more "stop" event follows) - str() on this renders
-        # as "(1000, '')".
-        raise WebSocketDisconnect(code=1000)
+        raise self._end_exc
 
     async def send_text(self, text):
         self.sent.append(text)
@@ -845,6 +846,70 @@ class TestNormalDisconnectNotMarkedFailed:
         args = mock_set_status.call_args.args
         assert args[1] == "completed", f"expected a normal client close to be 'completed', got {args}"
         assert args[2] is None, f"expected no failure_reason for a normal close, got {args}"
+
+
+TEST_INTERVIEW_ID = "77777777-3333-3333-3333-777777777777"
+
+
+class TestMidCallCrashMarksOutcomeFailed:
+    """Regression test for a real bug: when an interview or campaign call
+    connects and then genuinely crashes mid-stream (a non-1000/1001
+    WebSocketDisconnect, or any other exception) - as opposed to a clean
+    "stop" event or an ordinary client close - the finally block's fallback
+    used to unconditionally call mark_interview_completed/mark_candidate_completed
+    regardless of _call_failure_reason, so hr_interviews/hr_campaign_candidates
+    showed "completed" for a call Call Analytics correctly recorded as
+    "failed". This is also the ONLY path ever taken for Plivo calls (which
+    never deliver a WS "stop" event) and for the realtime pipeline on Twilio
+    (which also leaves _call_ended False), so the bug wasn't crash-only."""
+
+    async def test_interview_crash_marks_failed_not_completed(self, mocker, mock_pipeline):
+        from app.telephony.shared import CallContext
+        ctx = CallContext()
+        ctx.agent_id = TEST_AGENT_ID
+        ctx.user_id = TEST_USER_ID
+        ctx.interview_id = TEST_INTERVIEW_ID
+        mocker.patch("app.telephony.shared.resolve_call_context", return_value=ctx)
+        mocker.patch("app.conversations.conversation_repo.set_call_status")
+        mocker.patch("app.conversations.conversation_repo.set_call_duration_and_cost")
+        mock_failed = mocker.patch("app.hr_campaigns.hr_repo.mark_interview_failed")
+        mock_completed = mocker.patch("app.hr_campaigns.hr_repo.mark_interview_completed")
+
+        from app.routers.telephony_twilio import twilio_stream_endpoint
+        fake_ws = _FakeTwilioWebSocket(
+            [json.dumps({
+                "event": "start",
+                "start": {"streamSid": STREAM_SID, "callSid": "CAcrash0000000000000000000000000000",
+                          "customParameters": {"interview_id": TEST_INTERVIEW_ID}},
+            })],
+            end_exc=RuntimeError("simulated mid-call crash"),
+        )
+        await twilio_stream_endpoint(fake_ws)
+
+        mock_failed.assert_called_once_with(TEST_INTERVIEW_ID)
+        mock_completed.assert_not_called()
+
+    async def test_campaign_crash_marks_failed_not_completed(self, mocker, mock_pipeline):
+        mocker.patch("app.hr_campaigns.hr_campaign_repo.get_campaign_candidate", return_value=_campaign_candidate_row())
+        mocker.patch("app.conversations.conversation_repo.set_call_status")
+        mocker.patch("app.conversations.conversation_repo.set_call_duration_and_cost")
+        mock_status_from_sid = mocker.patch("app.hr_campaigns.hr_campaign_repo.mark_candidate_status_from_call_sid")
+        mock_completed = mocker.patch("app.hr_campaigns.hr_campaign_repo.mark_candidate_completed")
+
+        from app.routers.telephony_twilio import twilio_stream_endpoint
+        call_sid = "CAcrash1111111111111111111111111111"
+        fake_ws = _FakeTwilioWebSocket(
+            [json.dumps({
+                "event": "start",
+                "start": {"streamSid": STREAM_SID, "callSid": call_sid,
+                          "customParameters": {"campaign_candidate_id": TEST_CAMPAIGN_CAND_ID}},
+            })],
+            end_exc=RuntimeError("simulated mid-call crash"),
+        )
+        await twilio_stream_endpoint(fake_ws)
+
+        mock_status_from_sid.assert_called_once_with(call_sid, "failed")
+        mock_completed.assert_not_called()
 
 
 class TestRetrievalFiller:

@@ -27,7 +27,8 @@ async def text_to_speech_azure(text: str, voice: str | None = None) -> AsyncGene
     if not AZURE_SPEECH_KEY or not AZURE_SPEECH_REGION:
         raise RuntimeError("Azure Speech is not configured (AZURE_SPEECH_KEY/AZURE_SPEECH_REGION)")
 
-    voice_name = voice or AZURE_SPEECH_VOICE
+    from app.admin.admin_config_service import get as get_config
+    voice_name = voice or get_config("azure_speech_voice") or AZURE_SPEECH_VOICE
     ssml = (
         '<speak version="1.0" xml:lang="en-US">'
         f'<voice name="{voice_name}">{_escape_ssml(text)}</voice></speak>'

@@ -801,3 +801,60 @@ class TestCheckAndDial:
         await _check_and_dial()
 
         mock_next.assert_not_called()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  SECTION - create_campaign's retry defaults come from the admin portal
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestCreateCampaignRetryDefaults:
+    """call_retry_max_attempts/call_retry_interval_minutes (admin_config_service
+    DEFAULTS) seed a newly created campaign's own retry columns - previously
+    these were hardcoded Python defaults (4/3/5), invisible to and
+    unaffected by the admin portal."""
+
+    def _make_db(self, mocker):
+        db = mocker.MagicMock()
+        inserted = {}
+        def _insert(payload):
+            inserted.update(payload)
+            m = mocker.MagicMock()
+            m.execute.return_value.data = [{**payload, "id": "new-campaign-id"}]
+            return m
+        db.table.return_value.insert.side_effect = _insert
+        return db, inserted
+
+    def test_uses_admin_config_when_not_explicitly_provided(self, mocker):
+        db, inserted = self._make_db(mocker)
+        mocker.patch("app.hr_campaigns.hr_campaign_repo.get_supabase", return_value=db)
+        mocker.patch(
+            "app.admin.admin_config_service.get",
+            side_effect=lambda k: {"call_retry_max_attempts": "5", "call_retry_interval_minutes": "3"}[k],
+        )
+
+        from app.hr_campaigns.hr_campaign_repo import create_campaign
+        create_campaign(TEST_USER_ID, TEST_AGENT_ID, "Q4 Screening", [])
+
+        # call_retry_max_attempts=5 is "total attempts including the first" -
+        # this table's own convention is "retries after the first", hence -1.
+        assert inserted["max_retry_attempts"] == 4
+        assert inserted["retry_delay_minutes"] == 3
+        assert inserted["failed_retry_delay_minutes"] == 3
+
+    def test_explicit_values_still_override_admin_config(self, mocker):
+        db, inserted = self._make_db(mocker)
+        mocker.patch("app.hr_campaigns.hr_campaign_repo.get_supabase", return_value=db)
+        mocker.patch(
+            "app.admin.admin_config_service.get",
+            side_effect=lambda k: {"call_retry_max_attempts": "5", "call_retry_interval_minutes": "3"}[k],
+        )
+
+        from app.hr_campaigns.hr_campaign_repo import create_campaign
+        create_campaign(
+            TEST_USER_ID, TEST_AGENT_ID, "Q4 Screening", [],
+            max_retry_attempts=9, retry_delay_minutes=20, failed_retry_delay_minutes=30,
+        )
+
+        assert inserted["max_retry_attempts"] == 9
+        assert inserted["retry_delay_minutes"] == 20
+        assert inserted["failed_retry_delay_minutes"] == 30

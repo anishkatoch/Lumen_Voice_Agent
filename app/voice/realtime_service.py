@@ -8,10 +8,12 @@ transcription and response generation server-side. There is no local VAD,
 no Deepgram, no separate TTS call - none of that runs when this pipeline is
 active.
 
-Always uses the plain OPENAI_API_KEY (never Azure) - model id comes from
-REALTIME_MODEL in config.yaml; whether this pipeline is active and which
-voice it uses are live admin-panel settings (admin_config table, Providers
-tab) that callers read themselves and pass into RealtimeSession.
+Always uses the plain OPENAI_API_KEY (never Azure) - model id defaults to
+REALTIME_MODEL in config.yaml but is overridable via the admin_config table's
+"realtime_model" key (Providers tab), read in RealtimeSession.__init__ when
+no explicit model is passed in; whether this pipeline is active and which
+voice it uses are also live admin-panel settings that callers read
+themselves and pass into RealtimeSession.
 """
 import asyncio
 import base64
@@ -49,7 +51,11 @@ class RealtimeSession:
         self.tools = tools or []
         self.audio_format = audio_format
         self.voice = voice or DEFAULT_VOICE
-        self.model = model or REALTIME_MODEL
+        if model:
+            self.model = model
+        else:
+            from app.admin.admin_config_service import get as get_config
+            self.model = get_config("realtime_model") or REALTIME_MODEL
         self.bytes_per_ms = BYTES_PER_MS.get(audio_format, 48.0)
         self._ws = None
 
@@ -148,22 +154,6 @@ def build_realtime_tool(fn: dict) -> dict:
         "description": fn.get("description") or f"Call {fn['name']}",
         "parameters": {"type": "object", "properties": properties, "required": required},
     }
-
-
-KB_SEARCH_TOOL = {
-    "type": "function",
-    "name": "search_knowledge_base",
-    "description": (
-        "Search the knowledge base for information relevant to the caller's "
-        "question. Call this before answering anything you are not already "
-        "certain about."
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {"query": {"type": "string", "description": "What to search for"}},
-        "required": ["query"],
-    },
-}
 
 
 def resample_pcm16(pcm_bytes: bytes, from_rate: int, to_rate: int) -> bytes:

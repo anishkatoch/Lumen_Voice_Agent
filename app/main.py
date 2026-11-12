@@ -115,6 +115,7 @@ from app.routers import (
     admin as admin_router,
     ingest as ingest_router,
     websockets as websockets_router,
+    integrations as integrations_router,
 )
 
 app.include_router(auth_router.router)
@@ -129,6 +130,7 @@ app.include_router(user_kb_router.router)
 app.include_router(admin_router.router)
 app.include_router(ingest_router.router)
 app.include_router(websockets_router.router)
+app.include_router(integrations_router.router)
 
 
 # ─── Serve Next.js static export ────────────────────────────────────────────
@@ -181,6 +183,16 @@ if os.path.isdir(_FRONTEND):
     @app.get("/admin", include_in_schema=False)
     async def _admin_page():
         return FileResponse(os.path.join(_FRONTEND, "admin", "index.html"))
+
+    @app.get("/privacy/", include_in_schema=False)
+    @app.get("/privacy", include_in_schema=False)
+    async def _privacy_page():
+        return FileResponse(os.path.join(_FRONTEND, "privacy", "index.html"))
+
+    @app.get("/terms/", include_in_schema=False)
+    @app.get("/terms", include_in_schema=False)
+    async def _terms_page():
+        return FileResponse(os.path.join(_FRONTEND, "terms", "index.html"))
 
     @app.get("/", include_in_schema=False)
     async def _root_page():

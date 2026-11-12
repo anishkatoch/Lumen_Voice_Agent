@@ -29,7 +29,9 @@ def embed(inputs: list[str]) -> list[list[float]]:
     """Embed one or more strings in a single call, preserving input order."""
     if _azure_openai is not None:
         try:
-            response = _azure_openai.embeddings.create(model=AZURE_OPENAI_EMBEDDING_DEPLOYMENT, input=inputs)
+            from app.admin.admin_config_service import get as get_config
+            deployment = get_config("azure_openai_embedding_deployment") or AZURE_OPENAI_EMBEDDING_DEPLOYMENT
+            response = _azure_openai.embeddings.create(model=deployment, input=inputs)
             return [item.embedding for item in response.data]
         except Exception:
             pass
