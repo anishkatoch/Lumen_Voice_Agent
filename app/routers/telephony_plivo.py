@@ -560,6 +560,18 @@ async def plivo_stream_endpoint(websocket: WebSocket):
         if _kb_documents:
             _tool_functions = _tool_functions + [build_kb_search_tool(_kb_documents)]
 
+        # Meeting booking tools - gated like the KB tool above: the per-agent
+        # setting must be on AND the owner's Google Calendar actually
+        # connected (get_meeting_tool_functions). The prompt block rides in
+        # extra_system_context so both the cascade path and the Realtime
+        # bridge receive it without extra plumbing. Mirrors
+        # app/routers/telephony_twilio.py and app/routers/websockets.py.
+        from app.integrations.meeting_tools import get_meeting_tool_functions, build_meeting_system_context
+        _meeting_tools = await get_meeting_tool_functions(agent, user_id)
+        if _meeting_tools:
+            _tool_functions = _tool_functions + _meeting_tools
+            extra_system_context += build_meeting_system_context(agent)
+
         # Never inject the agent OWNER's long_term_memory into a phone call -
         # the caller on a phone call is never the account owner (unlike the
         # browser agent_websocket_endpoint, where it genuinely is), so this
@@ -738,6 +750,11 @@ async def plivo_stream_endpoint(websocket: WebSocket):
                         tool_result = await _record_answer_tool(tool_args)
                     elif fn and fn.get("kind") == "internal_kb_search":
                         tool_result = await _execute_kb_search(tool_args, user_message)
+                    elif fn and fn.get("kind") in ("internal_check_availability", "internal_book_meeting"):
+                        # Calendar HTTP calls genuinely take time - leave the
+                        # retrieval filler running so it can cover the wait.
+                        from app.integrations.meeting_tools import execute_meeting_tool
+                        tool_result = await execute_meeting_tool(fn, tool_args, agent, user_id, conversation_id)
                     elif fn:
                         tool_result = await _execute_webhook_plivo(fn, tool_args)
                     else:
@@ -862,8 +879,8 @@ async def plivo_stream_endpoint(websocket: WebSocket):
                         if _dg_stream:
                             try:
                                 await _dg_stream.finish()
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                print(f"[Plivo] Failed to close Deepgram stream on false-positive barge-in (non-fatal): {e}")
                             _dg_stream = None
                             speech_chunks = 0
                             silence_chunks = 0
@@ -969,20 +986,42 @@ async def plivo_stream_endpoint(websocket: WebSocket):
         if _dg_stream:
             try:
                 await _dg_stream.finish()
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[Plivo] Failed to close Deepgram stream during cleanup (non-fatal): {e}")
+        # Always mark interview done on any exit path. Plivo reports call-end
+        # via an HTTP status callback, never a WS "stop" event (see the
+        # comment on the "stop" branch above), so _call_ended is effectively
+        # NEVER True here - this fallback is the primary path for every
+        # single Plivo HR/campaign call, not just crashes. _call_failure_reason
+        # is already final by this point, so branch on it instead of always
+        # marking "completed" regardless of what actually happened.
         if interview_id and not _call_ended:
             try:
-                from app.hr_campaigns.hr_repo import mark_interview_completed
-                await asyncio.to_thread(mark_interview_completed, interview_id)
-            except Exception:
-                pass
+                if _call_failure_reason:
+                    from app.hr_campaigns.hr_repo import mark_interview_failed
+                    await asyncio.to_thread(mark_interview_failed, interview_id)
+                else:
+                    from app.hr_campaigns.hr_repo import mark_interview_completed
+                    await asyncio.to_thread(mark_interview_completed, interview_id)
+            except Exception as e:
+                print(f"[Plivo] Failed to record interview outcome for interview_id={interview_id}: {e}")
         if campaign_candidate_id and not _call_ended:
             try:
-                from app.hr_campaigns.hr_campaign_repo import mark_candidate_completed
-                await asyncio.to_thread(mark_candidate_completed, campaign_id, campaign_candidate_id)
-            except Exception:
-                pass
+                if _call_failure_reason and plivo_call_uuid:
+                    from app.hr_campaigns.hr_campaign_repo import mark_candidate_status_from_call_sid
+                    await asyncio.to_thread(mark_candidate_status_from_call_sid, plivo_call_uuid, "failed")
+                elif _call_failure_reason:
+                    print(f"[Plivo] Call for campaign_candidate_id={campaign_candidate_id} failed "
+                          f"({_call_failure_reason!r}) but no call_sid was captured - "
+                          f"falling back to marking it completed, since there is no way to "
+                          f"target the update without one.")
+                    from app.hr_campaigns.hr_campaign_repo import mark_candidate_completed
+                    await asyncio.to_thread(mark_candidate_completed, campaign_id, campaign_candidate_id)
+                else:
+                    from app.hr_campaigns.hr_campaign_repo import mark_candidate_completed
+                    await asyncio.to_thread(mark_candidate_completed, campaign_id, campaign_candidate_id)
+            except Exception as e:
+                print(f"[Plivo] Failed to record campaign candidate outcome for campaign_candidate_id={campaign_candidate_id}: {e}")
         if conversation_id:
             from app.telephony.shared import finalize_call_outcome
             final_status, history = await finalize_call_outcome(conversation_id, _call_failure_reason)
@@ -1000,5 +1039,5 @@ async def plivo_stream_endpoint(websocket: WebSocket):
                 print(f"[Plivo] Call summary generation failed (non-fatal): {e}")
         try:
             await websocket.close()
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[Plivo] websocket.close() raised during cleanup (likely already closed): {e}")

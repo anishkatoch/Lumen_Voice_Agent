@@ -76,7 +76,9 @@ def _gap_elapsed(campaign: dict) -> bool:
     from datetime import datetime, timezone
     try:
         last_ended_dt = datetime.fromisoformat(last_ended.replace("Z", "+00:00"))
-    except Exception:
+    except Exception as e:
+        print(f"[HR Campaign Dialer] Could not parse last_call_ended_at ({last_ended!r}) for campaign "
+              f"{campaign.get('id')} - treating the call gap as elapsed: {e}")
         return True
     elapsed_minutes = (datetime.now(timezone.utc) - last_ended_dt).total_seconds() / 60
     return elapsed_minutes >= campaign["call_gap_minutes"]

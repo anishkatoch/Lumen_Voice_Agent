@@ -30,6 +30,20 @@ DEFAULTS: dict[str, str] = {
     #   realtime       - OpenAI Realtime API, speech-to-speech, no separate STT/LLM/TTS steps
     "voice_pipeline":    "cascade",
     "realtime_voice":    "marin",       # marin | cedar | alloy | ash | ballad | coral | echo | sage | shimmer | verse
+    # Model/deployment name overrides - empty string = use the env/config.yaml
+    # default (app.core.config) unchanged. Lets an admin change the model a
+    # live call actually uses without a redeploy.
+    "azure_openai_deployment":            "",  # overrides AZURE_OPENAI_DEPLOYMENT (the real primary chat model when Azure is configured)
+    "azure_openai_embedding_deployment":  "",  # overrides AZURE_OPENAI_EMBEDDING_DEPLOYMENT
+    "azure_openai_transcribe_deployment": "",  # overrides AZURE_OPENAI_TRANSCRIBE_DEPLOYMENT
+    "stt_model":           "",          # overrides STT_MODEL (Deepgram model, e.g. nova-2)
+    "tts_elevenlabs_model_id": "",      # overrides TTS_MODEL_ID (ElevenLabs model, e.g. eleven_turbo_v2_5)
+    "azure_speech_voice":  "",          # overrides AZURE_SPEECH_VOICE
+    "realtime_model":      "",          # overrides REALTIME_MODEL
+    # Call retry on no-answer/failure - standalone HR interviews and new HR
+    # campaigns' default retry settings both read these.
+    "call_retry_interval_minutes": "3",
+    "call_retry_max_attempts":     "5",
 }
 
 

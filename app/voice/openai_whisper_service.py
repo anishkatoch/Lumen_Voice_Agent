@@ -32,8 +32,10 @@ async def _transcribe(file_tuple: tuple) -> str | None:
     Azure-first pattern as app/voice/llm_service.py and app/core/embeddings.py."""
     if _azure_openai is not None:
         try:
+            from app.admin.admin_config_service import get as get_config
+            deployment = get_config("azure_openai_transcribe_deployment") or AZURE_OPENAI_TRANSCRIBE_DEPLOYMENT
             resp = await _azure_openai.audio.transcriptions.create(
-                model=AZURE_OPENAI_TRANSCRIBE_DEPLOYMENT, file=file_tuple, language="en",
+                model=deployment, file=file_tuple, language="en",
             )
             text = resp.text.strip()
             return text if text else None

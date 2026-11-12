@@ -115,6 +115,7 @@ from app.routers import (
     admin as admin_router,
     ingest as ingest_router,
     websockets as websockets_router,
+    integrations as integrations_router,
 )
 
 app.include_router(auth_router.router)
@@ -129,6 +130,7 @@ app.include_router(user_kb_router.router)
 app.include_router(admin_router.router)
 app.include_router(ingest_router.router)
 app.include_router(websockets_router.router)
+app.include_router(integrations_router.router)
 
 
 # ─── Serve Next.js static export ────────────────────────────────────────────

@@ -29,16 +29,42 @@ def get_campaign(campaign_id: str, user_id: str) -> dict | None:
     return result.data[0] if result.data else None
 
 
+def _default_retry_settings() -> tuple[int, int]:
+    """(max_retry_attempts, retry_delay_minutes) seeded from the admin-portal
+    call retry settings for a newly created campaign. call_retry_max_attempts
+    is the total number of dials (including the first) - max_retry_attempts
+    here means "retries after the first" (this table's own, pre-existing
+    convention - see requeue_eligible_retries' attempt_count > max_retry_attempts
+    exhaustion check), hence the -1."""
+    from app.admin.admin_config_service import get as get_config
+    try:
+        max_attempts_total = int(get_config("call_retry_max_attempts"))
+    except (TypeError, ValueError):
+        max_attempts_total = 5
+    try:
+        interval_minutes = int(get_config("call_retry_interval_minutes"))
+    except (TypeError, ValueError):
+        interval_minutes = 3
+    return max(0, max_attempts_total - 1), interval_minutes
+
+
 def create_campaign(
     user_id: str,
     agent_id: str,
     name: str,
     questions: list[dict],
-    max_retry_attempts: int = 4,
-    retry_delay_minutes: int = 3,
+    max_retry_attempts: int | None = None,
+    retry_delay_minutes: int | None = None,
     call_gap_minutes: int = 4,
-    failed_retry_delay_minutes: int = 5,
+    failed_retry_delay_minutes: int | None = None,
 ) -> dict:
+    _default_max_retry, _default_delay = _default_retry_settings()
+    if max_retry_attempts is None:
+        max_retry_attempts = _default_max_retry
+    if retry_delay_minutes is None:
+        retry_delay_minutes = _default_delay
+    if failed_retry_delay_minutes is None:
+        failed_retry_delay_minutes = _default_delay
     db = get_supabase()
     result = db.table("hr_campaigns").insert({
         "user_id": user_id,
@@ -340,7 +366,9 @@ def _lookup_candidate(candidate_id: str, db) -> dict:
     try:
         result = db.table("hr_candidates").select("name, phone").eq("id", candidate_id).execute()
         return result.data[0] if result.data else {}
-    except Exception:
+    except Exception as e:
+        print(f"[HR Campaign Dialer] Could not look up candidate {candidate_id} for exhaustion analytics "
+              f"(name/phone will be missing from that Call Analytics row): {e}")
         return {}
 
 

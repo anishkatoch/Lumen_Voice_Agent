@@ -48,6 +48,15 @@ interface AdminConfig {
   agent_kb_max_mb:  string;
   voice_pipeline:   string;
   realtime_voice:   string;
+  azure_openai_deployment:            string;
+  azure_openai_embedding_deployment:  string;
+  azure_openai_transcribe_deployment: string;
+  stt_model:                string;
+  tts_elevenlabs_model_id:  string;
+  azure_speech_voice:       string;
+  realtime_model:           string;
+  call_retry_interval_minutes: string;
+  call_retry_max_attempts:     string;
 }
 
 interface KbRequest {
@@ -447,6 +456,9 @@ function ProvidersTab({ config, status, onSave }: {
             <div style={{ marginTop: 14 }}>
               <RadioGroup label="Voice" value={local.realtime_voice} onChange={set("realtime_voice")}
                 options={["marin","cedar","alloy","ash","ballad","coral","echo","sage","shimmer","verse"].map(v => ({ value: v, label: v }))} />
+              <Field label="Model override" value={local.realtime_model}
+                onChange={set("realtime_model")} placeholder="gpt-realtime"
+                hint="Leave empty to use the config.yaml default." />
             </div>
           </div>
         ) : local.voice_pipeline === "openai_classic" ? (
@@ -461,6 +473,9 @@ function ProvidersTab({ config, status, onSave }: {
                 options={["alloy","echo","fable","onyx","nova","shimmer"].map(v => ({ value: v, label: v }))} />
               <RadioGroup label="Model" value={local.tts_openai_model} onChange={set("tts_openai_model")}
                 options={[{ value: "tts-1", label: "tts-1 (fast)" }, { value: "tts-1-hd", label: "tts-1-hd (quality)" }]} />
+              <Field label="Azure Speech voice override" value={local.azure_speech_voice}
+                onChange={set("azure_speech_voice")} placeholder="en-US-AndrewNeural"
+                hint="Used first for speech in this pipeline when Azure Speech is configured; falls back to the OpenAI voice above otherwise. Leave empty to use the env default." />
             </div>
           </div>
         ) : (
@@ -483,11 +498,17 @@ function ProvidersTab({ config, status, onSave }: {
                       { value: "deepgram",       label: "Deepgram" },
                       { value: "openai_whisper", label: "OpenAI Whisper" },
                     ]} />
-                  {local.stt_provider === "openai_whisper" && (
+                  {local.stt_provider === "openai_whisper" ? (
                     <Notice>
                       Whisper is batch-only (no streaming). Each utterance is sent to OpenAI after silence is detected.
                       Uses the OpenAI API key configured below under LLM.
                     </Notice>
+                  ) : (
+                    <div style={{ marginTop: 14 }}>
+                      <Field label="Deepgram model override" value={local.stt_model}
+                        onChange={set("stt_model")} placeholder="nova-2"
+                        hint="Leave empty to use the env/config.yaml default." />
+                    </div>
                   )}
                 </div>
                 <div>
@@ -497,8 +518,11 @@ function ProvidersTab({ config, status, onSave }: {
                       { value: "openai_tts", label: "OpenAI TTS" },
                     ]} />
                   {local.tts_provider === "elevenlabs" && (
-                    <div style={{ marginTop: 14 }}>
+                    <div style={{ marginTop: 14, display: "flex", flexDirection: "column", gap: 10 }}>
                       <ElevenLabsVoicePicker value={local.tts_elevenlabs_voice_id} onChange={set("tts_elevenlabs_voice_id")} />
+                      <Field label="Model override" value={local.tts_elevenlabs_model_id}
+                        onChange={set("tts_elevenlabs_model_id")} placeholder="eleven_turbo_v2_5"
+                        hint="Leave empty to use the env/config.yaml default." />
                     </div>
                   )}
                   {local.tts_provider === "openai_tts" && (
@@ -542,6 +566,13 @@ function ProvidersTab({ config, status, onSave }: {
           </div>
         )}
 
+        {azureWillRunInstead && (
+          <Field label="Azure deployment override" value={local.azure_openai_deployment}
+            onChange={set("azure_openai_deployment")}
+            placeholder={azure?.deployment || "gpt-4.1-mini"}
+            hint="Leave empty to use the AZURE_OPENAI_DEPLOYMENT env var shown above. Set this to change the model Azure actually calls, without a redeploy." />
+        )}
+
         {local.llm_provider === "ollama" ? (
           <Field label="Model name" value={local.llm_model} onChange={set("llm_model")}
             placeholder="llama3.2" hint="Any model pulled in Ollama (ollama list)." />
@@ -579,6 +610,36 @@ function ProvidersTab({ config, status, onSave }: {
         <LlmTestButton provider={azureWillRunInstead ? "azure_openai" : local.llm_provider} model={local.llm_model}
           unsaved={local.llm_provider !== config.llm_provider || local.llm_model !== config.llm_model ||
                    local.llm_api_key !== config.llm_api_key || local.llm_base_url !== config.llm_base_url} />
+      </Section>
+
+      <Section title="Advanced model overrides">
+        <Notice>
+          These rarely need to change - each defaults to the env var / config.yaml value already in use.
+          Set one here to change what a live call actually uses without a redeploy.
+        </Notice>
+        <div style={{ marginTop: 14, display: "flex", flexDirection: "column", gap: 4 }}>
+          <Field label="Azure embedding deployment" value={local.azure_openai_embedding_deployment}
+            onChange={set("azure_openai_embedding_deployment")} placeholder="text-embedding-3-small"
+            hint="Used for agent/user knowledge-base embeddings when Azure OpenAI is configured." />
+          <Field label="Azure transcribe deployment" value={local.azure_openai_transcribe_deployment}
+            onChange={set("azure_openai_transcribe_deployment")} placeholder="gpt-4o-transcribe"
+            hint="Used by the OpenAI Whisper STT path when Azure OpenAI is configured." />
+        </div>
+      </Section>
+
+      <Section title="Call retry">
+        <Notice>
+          Applies to standalone HR interview calls and seeds the default for newly created HR campaigns
+          (existing campaigns keep whatever retry settings they were created with).
+        </Notice>
+        <div style={{ marginTop: 14, display: "flex", flexDirection: "column", gap: 4 }}>
+          <Field label="Retry interval (minutes)" value={local.call_retry_interval_minutes}
+            onChange={set("call_retry_interval_minutes")} placeholder="3"
+            hint="How long to wait before redialing an unanswered call." />
+          <Field label="Max attempts" value={local.call_retry_max_attempts}
+            onChange={set("call_retry_max_attempts")} placeholder="5"
+            hint="Total dial attempts (including the first) before giving up." />
+        </div>
       </Section>
 
       {err && <p style={{ color: "var(--danger)", fontSize: 13, marginBottom: 12 }}>{err}</p>}

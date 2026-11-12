@@ -605,6 +605,18 @@ async def twilio_stream_endpoint(websocket: WebSocket):
         if _kb_documents:
             _tool_functions = _tool_functions + [build_kb_search_tool(_kb_documents)]
 
+        # Meeting booking tools - gated like the KB tool above: the per-agent
+        # setting must be on AND the owner's Google Calendar actually
+        # connected (get_meeting_tool_functions). The prompt block rides in
+        # extra_system_context so both the cascade path and the Realtime
+        # bridge receive it without extra plumbing. Mirrors
+        # app/routers/telephony_plivo.py and app/routers/websockets.py.
+        from app.integrations.meeting_tools import get_meeting_tool_functions, build_meeting_system_context
+        _meeting_tools = await get_meeting_tool_functions(agent, user_id)
+        if _meeting_tools:
+            _tool_functions = _tool_functions + _meeting_tools
+            extra_system_context += build_meeting_system_context(agent)
+
         # Never inject the agent OWNER's long_term_memory into a phone call -
         # the caller on a phone call is never the account owner (unlike the
         # browser agent_websocket_endpoint, where it genuinely is), so this
@@ -791,6 +803,11 @@ async def twilio_stream_endpoint(websocket: WebSocket):
                         tool_result = await _record_answer_tool(tool_args)
                     elif fn and fn.get("kind") == "internal_kb_search":
                         tool_result = await _execute_kb_search(tool_args, user_message)
+                    elif fn and fn.get("kind") in ("internal_check_availability", "internal_book_meeting"):
+                        # Calendar HTTP calls genuinely take time - leave the
+                        # retrieval filler running so it can cover the wait.
+                        from app.integrations.meeting_tools import execute_meeting_tool
+                        tool_result = await execute_meeting_tool(fn, tool_args, agent, user_id, conversation_id)
                     elif fn:
                         # A webhook call genuinely can be slow (an external HTTP
                         # request) - leave the retrieval filler task running so it
@@ -907,8 +924,8 @@ async def twilio_stream_endpoint(websocket: WebSocket):
                         if _dg_stream:
                             try:
                                 await _dg_stream.finish()
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                print(f"[Twilio] Failed to close Deepgram stream on false-positive barge-in (non-fatal): {e}")
                             _dg_stream = None
                             speech_chunks = 0
                             silence_chunks = 0
@@ -1026,22 +1043,43 @@ async def twilio_stream_endpoint(websocket: WebSocket):
         if _dg_stream:
             try:
                 await _dg_stream.finish()
-            except Exception:
-                pass
-        # Always mark interview done on any exit path (crash, disconnect, clean stop)
+            except Exception as e:
+                print(f"[Twilio] Failed to close Deepgram stream during cleanup (non-fatal): {e}")
+        # Always mark interview done on any exit path (crash, disconnect, clean
+        # stop). This is the ONLY path reached for the realtime pipeline (which
+        # always leaves _call_ended False, see above) and is effectively the
+        # primary path for any call that errors before a clean "stop" event -
+        # _call_failure_reason is already final by this point (set by the
+        # except blocks above, which run before finally), so branch on it
+        # instead of always marking "completed" regardless of what happened.
         if interview_id and not _call_ended:
             try:
-                from app.hr_campaigns.hr_repo import mark_interview_completed
-                await asyncio.to_thread(mark_interview_completed, interview_id)
-            except Exception:
-                pass
+                if _call_failure_reason:
+                    from app.hr_campaigns.hr_repo import mark_interview_failed
+                    await asyncio.to_thread(mark_interview_failed, interview_id)
+                else:
+                    from app.hr_campaigns.hr_repo import mark_interview_completed
+                    await asyncio.to_thread(mark_interview_completed, interview_id)
+            except Exception as e:
+                print(f"[Twilio] Failed to record interview outcome for interview_id={interview_id}: {e}")
         # Same fallback for campaign calls - mirrors the interview_id path above
         if campaign_candidate_id and not _call_ended:
             try:
-                from app.hr_campaigns.hr_campaign_repo import mark_candidate_completed
-                await asyncio.to_thread(mark_candidate_completed, campaign_id, campaign_candidate_id)
-            except Exception:
-                pass
+                if _call_failure_reason and twilio_call_sid:
+                    from app.hr_campaigns.hr_campaign_repo import mark_candidate_status_from_call_sid
+                    await asyncio.to_thread(mark_candidate_status_from_call_sid, twilio_call_sid, "failed")
+                elif _call_failure_reason:
+                    print(f"[Twilio] Call for campaign_candidate_id={campaign_candidate_id} failed "
+                          f"({_call_failure_reason!r}) but no call_sid was captured - "
+                          f"falling back to marking it completed, since there is no way to "
+                          f"target the update without one.")
+                    from app.hr_campaigns.hr_campaign_repo import mark_candidate_completed
+                    await asyncio.to_thread(mark_candidate_completed, campaign_id, campaign_candidate_id)
+                else:
+                    from app.hr_campaigns.hr_campaign_repo import mark_candidate_completed
+                    await asyncio.to_thread(mark_candidate_completed, campaign_id, campaign_candidate_id)
+            except Exception as e:
+                print(f"[Twilio] Failed to record campaign candidate outcome for campaign_candidate_id={campaign_candidate_id}: {e}")
         # Call Analytics — record the final outcome. Best-effort:
         # finalize_call_outcome swallows its own errors, and conversation_id
         # may be None if setup failed before a row was ever created (nothing
@@ -1063,5 +1101,7 @@ async def twilio_stream_endpoint(websocket: WebSocket):
                 print(f"[Twilio] Call summary generation failed (non-fatal): {e}")
         try:
             await websocket.close()
-        except Exception:
-            pass
+        except Exception as e:
+            # Expected when the client already closed the socket first - logged
+            # at this verbosity only so a genuine close failure isn't invisible.
+            print(f"[Twilio] websocket.close() raised during cleanup (likely already closed): {e}")

@@ -22,8 +22,9 @@ class StreamingTranscriber:
         self._raw_chunks: list[bytes] = []
 
     async def start(self):
+        from app.admin.admin_config_service import get as get_config
         options = LiveOptions(
-            model=STT_MODEL,
+            model=get_config("stt_model") or STT_MODEL,
             language=STT_LANGUAGE,
             smart_format=True,
             punctuate=True,
@@ -136,9 +137,10 @@ async def transcribe_audio_smart(audio_bytes: bytes) -> str | None:
 
 async def transcribe_audio(audio_bytes: bytes) -> str | None:
     """Fallback: send full WAV file to Deepgram prerecorded API."""
+    from app.admin.admin_config_service import get as get_config
     client = DeepgramClient(api_key=DEEPGRAM_API_KEY)
     options = PrerecordedOptions(
-        model=STT_MODEL,
+        model=get_config("stt_model") or STT_MODEL,
         language=STT_LANGUAGE,
         smart_format=True,
         punctuate=True,

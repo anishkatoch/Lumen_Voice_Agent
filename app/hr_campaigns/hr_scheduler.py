@@ -191,11 +191,16 @@ async def _check_and_call():
         # Optimistically mark as calling BEFORE the Twilio call to prevent double-dialing
         # (if multiple workers run or the server crashes mid-call).
         # The conditional update only succeeds if status is still 'pending'.
+        # attempt_count increments here, on every dial including the first -
+        # mirrors hr_campaign_repo.mark_calling - so mark_interview_failed/
+        # mark_interview_no_response/mark_interview_status(_by_call_sid) can
+        # decide retry-vs-exhausted against an already-current count.
         from app.core.database import get_supabase
         _db = get_supabase()
+        _new_attempt_count = (interview.get("attempt_count") or 0) + 1
         _claim = (
             _db.table("hr_interviews")
-            .update({"status": "calling"})
+            .update({"status": "calling", "attempt_count": _new_attempt_count})
             .eq("id", interview["id"])
             .eq("status", "pending")
             .execute()

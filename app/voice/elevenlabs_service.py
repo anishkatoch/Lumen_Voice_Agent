@@ -45,7 +45,7 @@ async def text_to_speech_stream(text: str):
             client.text_to_speech.convert_as_stream,
             voice_id=voice_id,
             text=text,
-            model_id=TTS_MODEL_ID,
+            model_id=get_config("tts_elevenlabs_model_id") or TTS_MODEL_ID,
             voice_settings=settings,
             output_format=TTS_OUTPUT_FORMAT,
         )

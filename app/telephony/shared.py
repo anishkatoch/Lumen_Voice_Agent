@@ -436,8 +436,13 @@ async def run_realtime_telephony_bridge(
     # doc merely being selected isn't an instruction to use it (see
     # get_eligible_kb_documents). An agent with docs attached but nothing
     # written about them there should behave as if it has no KB at all.
+    # Skip adding it when the caller's _setup_call already put it in
+    # tool_functions (both phone routers do) - otherwise the Realtime
+    # session is configured with two tools named search_knowledge_base,
+    # which the browser bridge in app/routers/websockets.py explicitly
+    # warns against.
     _kb_documents = await get_eligible_kb_documents(agent, user_id)
-    if _kb_documents:
+    if _kb_documents and not any(f.get("kind") == "internal_kb_search" for f in tool_functions):
         tools = tools + [build_realtime_tool(build_kb_search_tool(_kb_documents))]
 
     voice = await asyncio.to_thread(get_admin_config, "realtime_voice")
@@ -470,6 +475,9 @@ async def run_realtime_telephony_bridge(
             )
             _answered_question_ids.add(question_id)
             return json.dumps({"recorded": True})
+        if fn and fn.get("kind") in ("internal_check_availability", "internal_book_meeting"):
+            from app.integrations.meeting_tools import execute_meeting_tool
+            return await execute_meeting_tool(fn, args, agent, user_id, conversation_id)
         if not fn:
             return json.dumps({"error": "function not found"})
         import httpx

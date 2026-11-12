@@ -56,8 +56,10 @@ def _augment_with_azure(
     azure = _get_azure_openai()
     if azure is None:
         return [(client, provider, model)]
+    from app.admin.admin_config_service import get as get_config
+    azure_deployment = get_config("azure_openai_deployment") or AZURE_OPENAI_DEPLOYMENT
     return [
-        (azure, "azure_openai", AZURE_OPENAI_DEPLOYMENT),
+        (azure, "azure_openai", azure_deployment),
         (client, provider, LLM_FALLBACK_MODEL),
     ]
 
@@ -702,7 +704,10 @@ async def _summarize_with_fallback(prompt: str, max_tokens: int) -> str | None:
     if not chain:
         chain = [(_get_openai(), "openai", MEMORY_MODEL)]
     for try_client, try_provider, _try_model in chain:
-        use_model = AZURE_OPENAI_DEPLOYMENT if try_provider == "azure_openai" else MEMORY_MODEL
+        # azure_openai already carries the admin-overridden deployment as
+        # _try_model (see _augment_with_azure) - reuse it instead of
+        # re-deriving the env default here.
+        use_model = _try_model if try_provider == "azure_openai" else MEMORY_MODEL
         try:
             response = await try_client.chat.completions.create(
                 model=use_model,

@@ -40,8 +40,9 @@ def _get_stale_calling_interviews(grace_minutes: int = STALE_GRACE_MINUTES) -> l
             scheduled = datetime.fromisoformat(row["scheduled_at"].replace("Z", "+00:00"))
             if (now - scheduled) > timedelta(minutes=grace_minutes):
                 stale.append(row)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[Call Reconciliation] Could not parse scheduled_at for interview {row.get('id')} "
+                  f"({row.get('scheduled_at')!r}) - skipping it this sweep: {e}")
     return stale
 
 
@@ -79,8 +80,16 @@ def _reconcile_one(interview: dict) -> None:
         # The live pipeline already reached a verdict - hr_interviews just
         # never heard about it (the websocket resolved conversations but
         # couldn't resolve interview_id, or a similar race). Sync to match
-        # instead of re-deriving it independently.
-        mark_interview_status(interview_id, "completed" if call_status == "completed" else "failed")
+        # instead of re-deriving it independently. "no_response" is its own
+        # outcome (call connected, nobody spoke) distinct from "failed" - a
+        # genuine transport/pipeline error - so it must not collapse into it.
+        if call_status == "completed":
+            new_status = "completed"
+        elif call_status == "no_response":
+            new_status = "no_response"
+        else:
+            new_status = "failed"
+        mark_interview_status(interview_id, new_status)
         return
 
     msg_count_result = (
@@ -116,8 +125,9 @@ def _get_stale_calling_campaign_candidates(grace_minutes: int = STALE_GRACE_MINU
             attempt_dt = datetime.fromisoformat(last_attempt.replace("Z", "+00:00"))
             if (now - attempt_dt) > timedelta(minutes=grace_minutes):
                 stale.append(row)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[Call Reconciliation] Could not parse last_attempt_at for campaign_candidate "
+                  f"{row.get('id')} ({last_attempt!r}) - skipping it this sweep: {e}")
     return stale
 
 
@@ -165,7 +175,13 @@ def _reconcile_campaign_candidate(row: dict) -> None:
     call_status = conv.get("call_status")
 
     if call_status not in ("ringing", None):
-        _finish("completed" if call_status == "completed" else "failed")
+        # "no_response" (call connected, nobody spoke) is treated the same as
+        # "completed" here, matching the live-pipeline fallback in
+        # telephony_twilio.py/telephony_plivo.py, which also only
+        # distinguishes a genuine failure (_call_failure_reason set) from
+        # everything else - campaign candidates have no dedicated
+        # "no_response" status of their own (unlike hr_interviews).
+        _finish("completed" if call_status in ("completed", "no_response") else "failed")
         return
 
     msg_count_result = (
@@ -188,11 +204,19 @@ async def run_reconciliation_loop():
         try:
             stale = await asyncio.to_thread(_get_stale_calling_interviews)
             for interview in stale:
-                await asyncio.to_thread(_reconcile_one, interview)
+                try:
+                    await asyncio.to_thread(_reconcile_one, interview)
+                except Exception as e:
+                    # One bad row must not stop the rest of this sweep from
+                    # being reconciled - each row is independent.
+                    print(f"[Call Reconciliation] Failed to reconcile interview {interview.get('id')}: {e}")
 
             stale_candidates = await asyncio.to_thread(_get_stale_calling_campaign_candidates)
             for candidate in stale_candidates:
-                await asyncio.to_thread(_reconcile_campaign_candidate, candidate)
+                try:
+                    await asyncio.to_thread(_reconcile_campaign_candidate, candidate)
+                except Exception as e:
+                    print(f"[Call Reconciliation] Failed to reconcile campaign_candidate {candidate.get('id')}: {e}")
         except Exception as e:
             print(f"[Call Reconciliation] Error: {e}")
         await asyncio.sleep(RECONCILE_INTERVAL_S)

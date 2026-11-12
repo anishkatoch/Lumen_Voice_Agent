@@ -69,6 +69,9 @@ async def update_admin_config(request: Request, current_user: dict = Depends(get
         "llm_provider", "llm_model", "llm_api_key", "llm_base_url",
         "user_kb_max_mb", "agent_kb_max_mb",
         "voice_pipeline", "realtime_voice",
+        "azure_openai_deployment", "azure_openai_embedding_deployment", "azure_openai_transcribe_deployment",
+        "stt_model", "tts_elevenlabs_model_id", "azure_speech_voice", "realtime_model",
+        "call_retry_interval_minutes", "call_retry_max_attempts",
     }
     updates = {k: str(v) for k, v in body.items() if k in ALLOWED}
     if not updates:
@@ -94,9 +97,10 @@ async def admin_system_status(current_user: dict = Depends(get_current_user)):
     cfg = get_all()
     azure_configured = bool(AZURE_OPENAI_API_KEY and AZURE_OPENAI_ENDPOINT)
     llm_provider = cfg.get("llm_provider", "openai")
+    effective_deployment = cfg.get("azure_openai_deployment") or AZURE_OPENAI_DEPLOYMENT
 
     if llm_provider == "openai" and azure_configured:
-        effective_llm = {"provider": "azure_openai", "model": AZURE_OPENAI_DEPLOYMENT,
+        effective_llm = {"provider": "azure_openai", "model": effective_deployment,
                           "note": "Azure OpenAI is used first; plain OpenAI is only the fallback if Azure errors."}
     else:
         effective_llm = {"provider": llm_provider, "model": cfg.get("llm_model"), "note": None}
@@ -104,7 +108,7 @@ async def admin_system_status(current_user: dict = Depends(get_current_user)):
     return {
         "providers": {
             "azure_openai": {"configured": azure_configured, "endpoint": AZURE_OPENAI_ENDPOINT or None,
-                              "deployment": AZURE_OPENAI_DEPLOYMENT if azure_configured else None},
+                              "deployment": effective_deployment if azure_configured else None},
             "openai":       {"configured": bool(OPENAI_API_KEY)},
             "groq":         {"configured": bool(os.environ.get("GROQ_API_KEY"))},
             "anthropic":    {"configured": bool(os.environ.get("ANTHROPIC_API_KEY") or cfg.get("llm_api_key"))},
