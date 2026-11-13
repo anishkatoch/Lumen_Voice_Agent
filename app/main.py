@@ -144,9 +144,9 @@ if os.path.isdir(_FRONTEND):
     async def _favicon():
         return FileResponse(os.path.join(_FRONTEND, "favicon.ico"))
 
-    @app.get("/googlec771f7d6c3f83e13.html", include_in_schema=False)
+    @app.get("/google4930711495cc3e19.html", include_in_schema=False)
     async def _google_site_verification():
-        return FileResponse(os.path.join(_FRONTEND, "googlec771f7d6c3f83e13.html"))
+        return FileResponse(os.path.join(_FRONTEND, "google4930711495cc3e19.html"))
 
     @app.get("/auth/", include_in_schema=False)
     @app.get("/auth", include_in_schema=False)
