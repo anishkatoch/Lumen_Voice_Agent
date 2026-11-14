@@ -28,22 +28,26 @@ async def _initiate_outbound_call(interview: dict, settings: dict, base_url: str
     # We need a 'from' number - use the first active attached phone number for this user+agent
     from app.core.database import get_supabase
     db = get_supabase()
+    # direction='inbound' numbers are answer-only - never dialed from (same
+    # rule as twilio_repo.get_from_number / plivo_repo.get_from_number).
     from_result = (
         db.table("twilio_phone_numbers")
         .select("phone_number, twilio_account_id")
         .eq("user_id", interview["user_id"])
         .eq("agent_id", interview["agent_id"])
         .eq("is_active", True)
+        .neq("direction", "inbound")
         .limit(1)
         .execute()
     )
     if not from_result.data:
-        # Fall back to any active number for this user
+        # Fall back to any active outbound-capable number for this user
         from_result = (
             db.table("twilio_phone_numbers")
             .select("phone_number, twilio_account_id")
             .eq("user_id", interview["user_id"])
             .eq("is_active", True)
+            .neq("direction", "inbound")
             .limit(1)
             .execute()
         )
@@ -136,7 +140,7 @@ async def _initiate_outbound_call_plivo(interview: dict, plivo_settings: dict, b
             data = resp.json()
             if resp.status_code in (200, 201, 202):
                 call_uuid = data.get("request_uuid")
-                print(f"[HR Scheduler] Plivo call initiated: {call_uuid} → {to_number}")
+                print(f"[HR Scheduler] Plivo call initiated: {call_uuid} -> {to_number}")
                 return call_uuid, from_number, None
             print(f"[HR Scheduler] Plivo error {resp.status_code}: {data}")
             return None, None, "Plivo rejected the call - check the phone number and account status"

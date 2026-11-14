@@ -184,7 +184,7 @@ async def _dial_candidate(campaign: dict, candidate_row: dict):
         account_sid, auth_token, from_number, to_number, twiml_url, status_callback_url,
     )
     if call_sid:
-        print(f"[HR Campaign Dialer] Call initiated: {call_sid} → {to_number} (campaign {campaign_id})")
+        print(f"[HR Campaign Dialer] Call initiated: {call_sid} -> {to_number} (campaign {campaign_id})")
         await asyncio.to_thread(mark_calling, campaign_candidate_id, call_sid)
         # Eagerly record in Call Analytics - see the matching comment in
         # app/hr_scheduler.py for why this can't wait for the WS stream to connect.
@@ -275,7 +275,7 @@ async def _dial_candidate_plivo(campaign: dict, candidate_row: dict, from_number
 
     call_uuid, fail_reason = await _place_plivo_call(auth_id, auth_token, from_number, to_number, answer_url, hangup_url)
     if call_uuid:
-        print(f"[HR Campaign Dialer] Plivo call initiated: {call_uuid} → {to_number} (campaign {campaign_id})")
+        print(f"[HR Campaign Dialer] Plivo call initiated: {call_uuid} -> {to_number} (campaign {campaign_id})")
         await asyncio.to_thread(mark_calling, campaign_candidate_id, call_uuid)
         await _record_call_analytics(
             create_conversation, user_id, call_title,

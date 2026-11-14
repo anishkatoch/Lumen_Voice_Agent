@@ -27,13 +27,16 @@ def get_phone_number(number_id: str, user_id: str) -> dict | None:
 
 
 def get_number_by_phone(phone_number: str) -> dict | None:
-    """Look up an active number record by the E.164 phone number string."""
+    """Look up an active number record by the E.164 phone number string.
+    A number set to direction='outbound' is caller-ID-only: inbound calls to
+    it are not routed to an agent, so it is excluded here."""
     db = get_supabase()
     result = (
         db.table("plivo_phone_numbers")
         .select("*")
         .eq("phone_number", phone_number)
         .eq("is_active", True)
+        .neq("direction", "outbound")
         .limit(1)
         .execute()
     )
@@ -65,7 +68,7 @@ def create_phone_number(
 
 
 def update_phone_number(number_id: str, user_id: str, **fields) -> dict:
-    allowed = {"friendly_name", "is_active", "plivo_account_id"}
+    allowed = {"friendly_name", "is_active", "plivo_account_id", "direction"}
     update = {k: v for k, v in fields.items() if k in allowed}
     db = get_supabase()
     result = (
@@ -122,12 +125,15 @@ def get_from_number(user_id: str, agent_id: str) -> dict | None:
     app/twilio_repo.py's get_from_number for the Plivo side.
     """
     db = get_supabase()
+    # direction='inbound' numbers are answer-only and never used as the
+    # outbound caller ID; 'outbound' and 'both' qualify.
     result = (
         db.table("plivo_phone_numbers")
         .select("phone_number, plivo_account_id")
         .eq("user_id", user_id)
         .eq("agent_id", agent_id)
         .eq("is_active", True)
+        .neq("direction", "inbound")
         .limit(1)
         .execute()
     )
@@ -137,6 +143,7 @@ def get_from_number(user_id: str, agent_id: str) -> dict | None:
             .select("phone_number, plivo_account_id")
             .eq("user_id", user_id)
             .eq("is_active", True)
+            .neq("direction", "inbound")
             .limit(1)
             .execute()
         )

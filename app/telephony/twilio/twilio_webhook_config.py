@@ -36,7 +36,7 @@ async def _set_voice_url(account_sid: str, auth_token: str, number_sid: str, voi
                 data={"VoiceUrl": voice_url, "VoiceMethod": "POST"},
             )
             if resp.status_code == 200:
-                print(f"[Twilio Webhook] Configured {number_sid} → {voice_url}")
+                print(f"[Twilio Webhook] Configured {number_sid} -> {voice_url}")
                 return True
             else:
                 print(f"[Twilio Webhook] Failed to set VoiceUrl on {number_sid}: {resp.status_code} {resp.text[:200]}")

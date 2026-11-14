@@ -79,6 +79,34 @@ async def google_status(current_user: dict = Depends(get_current_user)):
     return {"connected": True, "email": integration.get("connected_email")}
 
 
+@router.post("/api/integrations/google/test")
+async def google_test(current_user: dict = Depends(get_current_user)):
+    """Live end-to-end check of the stored connection: decrypt tokens,
+    refresh if needed, and run a real free-busy read against Google. Returns
+    ok plus a short human reason on failure instead of an HTTP error, so the
+    UI can show exactly what is wrong."""
+    from datetime import datetime, timedelta, timezone
+    from app.integrations.google_calendar_service import CalendarAuthError, fetch_busy_intervals
+    from app.integrations.integrations_repo import GOOGLE_CALENDAR, get_integration
+
+    integration = await asyncio.to_thread(get_integration, current_user["sub"], GOOGLE_CALENDAR)
+    if not integration:
+        return {"ok": False, "error": "No Google Calendar is connected on this account."}
+    now = datetime.now(timezone.utc)
+    try:
+        busy = await fetch_busy_intervals(current_user["sub"], now, now + timedelta(days=1))
+        return {
+            "ok": True,
+            "email": integration.get("connected_email"),
+            "busy_events_next_24h": len(busy),
+        }
+    except CalendarAuthError:
+        return {"ok": False, "error": "Google access has expired or was revoked. Disconnect and connect again."}
+    except Exception as e:
+        print(f"[GoogleCalendar] connection test failed for user {current_user['sub']}: {e}")
+        return {"ok": False, "error": "Could not reach Google Calendar right now. Try again in a moment."}
+
+
 @router.delete("/api/integrations/google")
 async def google_disconnect(current_user: dict = Depends(get_current_user)):
     from app.integrations.google_calendar_service import revoke_tokens

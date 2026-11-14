@@ -621,7 +621,7 @@ function VoiceDock({ agentId, agentName, docIds }: { agentId: string; agentName:
   const isIdle = !connected;
   const isPaused = connected && !isMicActive;
 
-  useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [chat]);
+  useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" }); }, [chat]);
 
   useEffect(() => {
     const wrap = orbRef.current;
@@ -728,6 +728,125 @@ function VoiceDock({ agentId, agentName, docIds }: { agentId: string; agentName:
 /* ---------------------------------------------------------------------------
    HR section inside Agent Detail (candidates + scheduled calls)
 --------------------------------------------------------------------------- */
+
+/* Phone numbers attached to this agent, editable right on the agent page so
+   nobody has to discover the dropdown on the Phone Numbers tab first. Uses
+   the same attach/detach APIs as that tab; both stay in sync via the DB. */
+function AgentPhoneNumbersSection({ agentId }: { agentId: string }) {
+  type NumberRow = {
+    id: string; phone_number: string; friendly_name?: string | null;
+    agent_id?: string | null; is_active: boolean; direction?: string;
+    provider: "twilio" | "plivo";
+  };
+  const directionLabel = (d?: string) =>
+    d === "inbound" ? "Inbound only" : d === "outbound" ? "Outbound only" : "Inbound and outbound";
+  const [rows, setRows] = useState<NumberRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
+  const [selectId, setSelectId] = useState("");
+  const [busyId, setBusyId] = useState<string | null>(null);
+
+  const load = async () => {
+    setLoading(true); setLoadError(false);
+    try {
+      const [tw, pl] = await Promise.all([API.phoneNumbers(), API.plivoPhoneNumbers()]);
+      setRows([
+        ...tw.map(n => ({ id: n.id, phone_number: n.phone_number, friendly_name: n.friendly_name, agent_id: n.agent_id, is_active: n.is_active, direction: n.direction, provider: "twilio" as const })),
+        ...pl.map(n => ({ id: n.id, phone_number: n.phone_number, friendly_name: n.friendly_name, agent_id: n.agent_id, is_active: n.is_active, direction: n.direction, provider: "plivo" as const })),
+      ]);
+    } catch { setLoadError(true); }
+    setLoading(false);
+  };
+
+  useEffect(() => { load(); setSelectId("");
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [agentId]);
+
+  const attached = rows.filter(r => r.agent_id === agentId);
+  const available = rows.filter(r => r.agent_id !== agentId && r.is_active);
+
+  const setAttachment = async (row: NumberRow, attach: boolean) => {
+    setBusyId(row.id);
+    try {
+      if (row.provider === "twilio") {
+        if (attach) await API.attachPhoneNumber(row.id, agentId); else await API.detachPhoneNumber(row.id);
+      } else {
+        if (attach) await API.attachPlivoPhoneNumber(row.id, agentId); else await API.detachPlivoPhoneNumber(row.id);
+      }
+      setRows(rs => rs.map(r => r.id === row.id ? { ...r, agent_id: attach ? agentId : null } : r));
+      pushToast(attach ? `${row.phone_number} now rings this agent` : `${row.phone_number} disconnected`);
+    } catch (e: unknown) {
+      pushToast(e instanceof Error ? e.message : "Could not update the number", "error");
+    }
+    setBusyId(null); setSelectId("");
+  };
+
+  return (
+    <Section title="Phone numbers">
+      <div style={{ fontSize: 12, color: "var(--ink-muted)", marginBottom: 12 }}>
+        Calls to a connected number are answered by this agent. Add new numbers and provider
+        accounts in the Phone Numbers tab.
+      </div>
+
+      {loading ? (
+        <div style={{ fontSize: 13, color: "var(--ink-faint)" }}>Loading your numbers...</div>
+      ) : loadError ? (
+        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+          <span style={{ fontSize: 13, color: "var(--ink-muted)" }}>Could not load your phone numbers.</span>
+          <button className="btn btn-ghost btn-sm" onClick={load}>Retry</button>
+        </div>
+      ) : (
+        <>
+          {attached.length === 0 ? (
+            <div style={{ fontSize: 13, color: "var(--ink-faint)", marginBottom: 12 }}>
+              No phone number is connected, so this agent cannot receive calls yet.
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 12 }}>
+              {attached.map(row => (
+                <div key={row.id} className="card" style={{ padding: "10px 14px", display: "flex", alignItems: "center", gap: 10 }}>
+                  <span className="pill pill-success"><span className="dot" />{row.provider === "twilio" ? "Twilio" : "Plivo"}</span>
+                  <span style={{ fontSize: 14, fontWeight: 600, color: "var(--ink)" }}>
+                    {row.friendly_name || row.phone_number}
+                    {row.friendly_name && <span style={{ fontWeight: 400, color: "var(--ink-muted)", marginLeft: 8 }}>{row.phone_number}</span>}
+                  </span>
+                  <span className="pill pill-neutral">{directionLabel(row.direction)}</span>
+                  <button className="btn btn-ghost btn-sm" style={{ marginLeft: "auto" }}
+                    disabled={busyId === row.id} onClick={() => setAttachment(row, false)}>
+                    {busyId === row.id ? "Working..." : "Disconnect"}
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {available.length > 0 ? (
+            <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+              <select className="select" style={{ width: "auto", minWidth: 260 }} value={selectId}
+                onChange={e => setSelectId(e.target.value)}>
+                <option value="">Choose a number to connect...</option>
+                {available.map(row => (
+                  <option key={row.id} value={row.id}>
+                    {(row.friendly_name || row.phone_number)} ({row.provider === "twilio" ? "Twilio" : "Plivo"}
+                    {row.agent_id ? ", in use by another agent" : ""})
+                  </option>
+                ))}
+              </select>
+              <button className="btn btn-primary btn-sm" disabled={!selectId || busyId !== null}
+                onClick={() => { const row = available.find(r => r.id === selectId); if (row) setAttachment(row, true); }}>
+                Connect
+              </button>
+            </div>
+          ) : attached.length === 0 ? (
+            <div style={{ fontSize: 13, color: "var(--ink-muted)" }}>
+              You have no available numbers. Add one in the Phone Numbers tab first.
+            </div>
+          ) : null}
+        </>
+      )}
+    </Section>
+  );
+}
 
 function AgentHRSection({ agentId, hrInstructions, onHrInstructionsChange }: {
   agentId: string;
@@ -1513,6 +1632,8 @@ Confident, not pushy
               style={{ fontFamily: "var(--font-mono)" }}
             />
           </Section>
+
+          <AgentPhoneNumbersSection agentId={agent.id} />
 
           <Section title="Meeting booking">
             <div style={{ fontSize: 12, color: "var(--ink-muted)", marginBottom: 12 }}>
@@ -2691,6 +2812,18 @@ function PhoneNumbersView({ agents }: { agents: Agent[] }) {
                     <option value="">No agent</option>
                     {agents.filter(a => a.is_active).map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
                   </select>
+                  <select className="select" style={{ width: "auto" }} value={num.direction ?? "both"} title="Call direction"
+                    onChange={async e => {
+                      try {
+                        const updated = await API.updatePhoneNumber(num.id, { direction: e.target.value });
+                        setNumbers(prev => prev.map(n => n.id === num.id ? updated : n));
+                        pushToast("Call direction updated");
+                      } catch { pushToast("Could not update direction", "error"); }
+                    }}>
+                    <option value="both">Inbound and outbound</option>
+                    <option value="inbound">Inbound only</option>
+                    <option value="outbound">Outbound only</option>
+                  </select>
                   <button className="btn btn-danger btn-sm" onClick={() => handleDelete(num.id)}><Icon name="trash" size={13} />Delete</button>
                 </div>
               </div>
@@ -2885,6 +3018,18 @@ function PhoneNumbersView({ agents }: { agents: Agent[] }) {
                     <option value="">No agent</option>
                     {agents.filter(a => a.is_active).map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
                   </select>
+                  <select className="select" style={{ width: "auto" }} value={num.direction ?? "both"} title="Call direction"
+                    onChange={async e => {
+                      try {
+                        const updated = await API.updatePlivoPhoneNumber(num.id, { direction: e.target.value });
+                        setPlivoNumbers(prev => prev.map(n => n.id === num.id ? updated : n));
+                        pushToast("Call direction updated");
+                      } catch { pushToast("Could not update direction", "error"); }
+                    }}>
+                    <option value="both">Inbound and outbound</option>
+                    <option value="inbound">Inbound only</option>
+                    <option value="outbound">Outbound only</option>
+                  </select>
                   <button className="btn btn-danger btn-sm" onClick={() => handleDeletePlivo(num.id)}><Icon name="trash" size={13} />Delete</button>
                 </div>
               </div>
@@ -2943,6 +3088,8 @@ function IntegrationsView() {
   const [email, setEmail] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [confirmDisconnect, setConfirmDisconnect] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
 
   useEffect(() => { load(); }, []);
 
@@ -2972,12 +3119,31 @@ function IntegrationsView() {
     setBusy(true);
     try {
       await API.googleCalendarDisconnect();
-      setConnected(false); setEmail(null); setConfirmDisconnect(false);
-      pushToast("Google Calendar disconnected");
+      setConnected(false); setEmail(null); setConfirmDisconnect(false); setTestResult(null);
+      pushToast("Google Calendar disconnected and stored access deleted");
     } catch (e: unknown) {
       pushToast(e instanceof Error ? e.message : "Could not disconnect", "error");
     }
     setBusy(false);
+  };
+
+  const handleTest = async () => {
+    setTesting(true); setTestResult(null);
+    try {
+      const r = await API.googleCalendarTest();
+      if (r.ok) {
+        setTestResult({
+          ok: true,
+          message: `Integration working. Google Calendar responded for ${r.email || "your account"}: `
+            + `${r.busy_events_next_24h ?? 0} busy slot${(r.busy_events_next_24h ?? 0) === 1 ? "" : "s"} in the next 24 hours.`,
+        });
+      } else {
+        setTestResult({ ok: false, message: r.error || "The integration test failed." });
+      }
+    } catch (e: unknown) {
+      setTestResult({ ok: false, message: e instanceof Error ? e.message : "The integration test failed." });
+    }
+    setTesting(false);
   };
 
   return (
@@ -3021,16 +3187,40 @@ function IntegrationsView() {
           {!loading && connected && (
             confirmDisconnect ? (
               <>
+                <span style={{ fontSize: 12.5, color: "var(--ink-muted)" }}>
+                  This revokes access at Google and deletes the stored connection.
+                </span>
                 <button className="btn btn-ghost" onClick={() => setConfirmDisconnect(false)}>Cancel</button>
                 <button className="btn btn-danger" onClick={handleDisconnect} disabled={busy}>
-                  {busy ? "Disconnecting..." : "Yes, disconnect"}
+                  {busy ? "Removing..." : "Yes, disconnect and delete"}
                 </button>
               </>
             ) : (
-              <button className="btn btn-ghost" onClick={() => setConfirmDisconnect(true)}>Disconnect</button>
+              <>
+                <button className="btn btn-primary" onClick={handleTest} disabled={testing}>
+                  {testing ? "Testing..." : "Test connection"}
+                </button>
+                <button className="btn btn-ghost" onClick={() => setConfirmDisconnect(true)}>Disconnect</button>
+              </>
             )
           )}
         </div>
+
+        {testResult && (
+          <div className="card" style={{
+            marginTop: 12, padding: "10px 14px",
+            borderColor: testResult.ok ? "var(--accent)" : "var(--danger)",
+          }}>
+            <div style={{ fontSize: 13, color: testResult.ok ? "var(--ink)" : "var(--danger)" }}>
+              {testResult.ok ? "✓ " : "✕ "}{testResult.message}
+            </div>
+            {!testResult.ok && (
+              <div style={{ fontSize: 12, color: "var(--ink-muted)", marginTop: 4 }}>
+                If this keeps failing, disconnect and connect the calendar again.
+              </div>
+            )}
+          </div>
+        )}
 
         {!loading && connected && (
           <div style={{ fontSize: 12, color: "var(--ink-muted)", marginTop: 10 }}>

@@ -126,6 +126,58 @@ class TestCallback:
         assert resp.headers["location"] == "/agents?google_calendar=error"
 
 
+class TestConnectionTest:
+    async def test_working_connection_reports_ok_with_counts(self, client, auth_headers, mocker):
+        mocker.patch(
+            "app.integrations.integrations_repo.get_integration",
+            return_value={"connected_email": "owner@example.com", "refresh_token": "rt"},
+        )
+        mocker.patch(
+            "app.integrations.google_calendar_service.fetch_busy_intervals",
+            new=AsyncMock(return_value=[("s1", "e1"), ("s2", "e2")]),
+        )
+        resp = await client.post("/api/integrations/google/test", headers=auth_headers)
+        data = resp.json()
+        assert resp.status_code == 200
+        assert data["ok"] is True
+        assert data["email"] == "owner@example.com"
+        assert data["busy_events_next_24h"] == 2
+
+    async def test_not_connected_reports_clear_error(self, client, auth_headers, mocker):
+        mocker.patch("app.integrations.integrations_repo.get_integration", return_value=None)
+        resp = await client.post("/api/integrations/google/test", headers=auth_headers)
+        data = resp.json()
+        assert data["ok"] is False and "No Google Calendar" in data["error"]
+
+    async def test_revoked_grant_tells_user_to_reconnect(self, client, auth_headers, mocker):
+        from app.integrations.google_calendar_service import CalendarAuthError
+        mocker.patch(
+            "app.integrations.integrations_repo.get_integration",
+            return_value={"connected_email": "owner@example.com", "refresh_token": "rt"},
+        )
+        mocker.patch(
+            "app.integrations.google_calendar_service.fetch_busy_intervals",
+            new=AsyncMock(side_effect=CalendarAuthError("revoked")),
+        )
+        resp = await client.post("/api/integrations/google/test", headers=auth_headers)
+        data = resp.json()
+        assert data["ok"] is False and "expired or was revoked" in data["error"]
+
+    async def test_google_outage_reports_retryable_error_not_500(self, client, auth_headers, mocker):
+        mocker.patch(
+            "app.integrations.integrations_repo.get_integration",
+            return_value={"connected_email": "owner@example.com", "refresh_token": "rt"},
+        )
+        mocker.patch(
+            "app.integrations.google_calendar_service.fetch_busy_intervals",
+            new=AsyncMock(side_effect=RuntimeError("Google freeBusy failed (503)")),
+        )
+        resp = await client.post("/api/integrations/google/test", headers=auth_headers)
+        data = resp.json()
+        assert resp.status_code == 200
+        assert data["ok"] is False and "Could not reach" in data["error"]
+
+
 class TestStatusAndDisconnect:
     async def test_status_connected(self, client, auth_headers, mocker):
         mocker.patch(

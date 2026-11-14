@@ -81,7 +81,7 @@ async def _assign_app_to_number(auth_id: str, auth_token: str, phone_number: str
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.post(url, auth=(auth_id, auth_token), json={"app_id": app_id})
             if resp.status_code in (200, 202):
-                print(f"[Plivo Webhook] Configured {phone_number} → app {app_id}")
+                print(f"[Plivo Webhook] Configured {phone_number} -> app {app_id}")
                 return True
             print(f"[Plivo Webhook] Failed to assign app to {phone_number}: {resp.status_code} {resp.text[:200]}")
     except Exception as e:

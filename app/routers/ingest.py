@@ -36,10 +36,10 @@ async def _ingest_all_impl():
         try:
             chunks = await ingest_document(file_name)
             results.append({"file": file_name, "chunks": chunks, "status": "ok"})
-            print(f"[Ingest] {file_name} → {chunks} chunks")
+            print(f"[Ingest] {file_name} -> {chunks} chunks")
         except Exception as e:
             results.append({"file": file_name, "status": "error", "error": str(e)})
-            print(f"[Ingest] {file_name} → ERROR: {e}")
+            print(f"[Ingest] {file_name} -> ERROR: {e}")
 
     return {"ingested": results}
 

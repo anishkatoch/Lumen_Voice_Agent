@@ -255,7 +255,7 @@ export const API = {
   phoneNumbers: () => API.request<PhoneNumber[]>("/api/twilio/numbers"),
   addPhoneNumber: (data: { phone_number: string; friendly_name?: string; twilio_account_id?: string }) =>
     API.request<PhoneNumber>("/api/twilio/numbers", { method: "POST", body: JSON.stringify(data) }),
-  updatePhoneNumber: (numberId: string, data: { friendly_name?: string; is_active?: boolean; twilio_account_id?: string }) =>
+  updatePhoneNumber: (numberId: string, data: { friendly_name?: string; is_active?: boolean; twilio_account_id?: string; direction?: string }) =>
     API.request<PhoneNumber>(`/api/twilio/numbers/${numberId}`, { method: "PUT", body: JSON.stringify(data) }),
   attachPhoneNumber: (numberId: string, agentId: string) =>
     API.request<PhoneNumber>(`/api/twilio/numbers/${numberId}/attach`, { method: "POST", body: JSON.stringify({ agent_id: agentId }) }),
@@ -279,7 +279,7 @@ export const API = {
   plivoPhoneNumbers: () => API.request<PlivoPhoneNumber[]>("/api/plivo/numbers"),
   addPlivoPhoneNumber: (data: { phone_number: string; friendly_name?: string; plivo_account_id?: string }) =>
     API.request<PlivoPhoneNumber>("/api/plivo/numbers", { method: "POST", body: JSON.stringify(data) }),
-  updatePlivoPhoneNumber: (numberId: string, data: { friendly_name?: string; is_active?: boolean; plivo_account_id?: string }) =>
+  updatePlivoPhoneNumber: (numberId: string, data: { friendly_name?: string; is_active?: boolean; plivo_account_id?: string; direction?: string }) =>
     API.request<PlivoPhoneNumber>(`/api/plivo/numbers/${numberId}`, { method: "PUT", body: JSON.stringify(data) }),
   attachPlivoPhoneNumber: (numberId: string, agentId: string) =>
     API.request<PlivoPhoneNumber>(`/api/plivo/numbers/${numberId}/attach`, { method: "POST", body: JSON.stringify({ agent_id: agentId }) }),
@@ -306,6 +306,10 @@ export const API = {
     API.request<{ auth_url: string }>("/api/integrations/google/connect"),
   googleCalendarDisconnect: () =>
     API.request<{ connected: boolean }>("/api/integrations/google", { method: "DELETE" }),
+  googleCalendarTest: () =>
+    API.request<{ ok: boolean; email?: string | null; busy_events_next_24h?: number; error?: string }>(
+      "/api/integrations/google/test", { method: "POST" }
+    ),
   meetings: () => API.request<Meeting[]>("/api/meetings"),
 
   // Admin
@@ -541,6 +545,7 @@ export interface PhoneNumber {
   agent_id?: string | null;
   twilio_account_id?: string | null;
   is_active: boolean;
+  direction?: string;
   created_at: string;
 }
 
@@ -566,6 +571,7 @@ export interface PlivoPhoneNumber {
   agent_id?: string | null;
   plivo_account_id?: string | null;
   is_active: boolean;
+  direction?: string;
   created_at: string;
 }
 
