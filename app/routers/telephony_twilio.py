@@ -33,6 +33,7 @@ class PhoneNumberUpdate(BaseModel):
     friendly_name: Optional[str] = None
     is_active: Optional[bool] = None
     twilio_account_id: Optional[str] = None
+    direction: Optional[str] = None  # inbound | outbound | both
 
 class PhoneNumberAttach(BaseModel):
     agent_id: str
@@ -101,6 +102,8 @@ async def update_phone_number_route(
     # NULL so it clears any specific account assignment in the DB.
     if fields.get("twilio_account_id") == "":
         fields["twilio_account_id"] = None
+    if "direction" in fields and fields["direction"] not in ("inbound", "outbound", "both"):
+        raise HTTPException(status_code=400, detail="direction must be inbound, outbound, or both")
     try:
         return await asyncio.to_thread(
             update_phone_number,
@@ -433,8 +436,8 @@ async def twilio_stream_endpoint(websocket: WebSocket):
     from app.voice.deepgram_service import get_streaming_transcriber
     from app.voice.llm_service import (
         generate_response_stream, build_system_prompt,
-        pick_filler_phrase, classify_filler_category, detect_tool_call, build_openai_tool,
-        stream_tool_result_response, stream_text_as_sentences,
+        pick_filler_phrase, classify_filler_category, detect_tool_call_stream, build_openai_tool,
+        stream_tool_result_response,
     )
     from app.voice.elevenlabs_service import text_to_speech_stream
     from app.conversations.message_repo import save_message, get_session_messages
@@ -488,7 +491,7 @@ async def twilio_stream_endpoint(websocket: WebSocket):
     silence_chunks = 0
     _turn_extensions_used = 0  # how many times the heuristic has already extended this utterance's wait
     SPEECH_THRESHOLD = 3    # chunks needed to confirm speech started
-    SILENCE_THRESHOLD = 25  # ~1.5 s at 8 kHz / 20 ms chunks
+    SILENCE_THRESHOLD = 25  # ~0.5 s at 20 ms/chunk before the turn is considered over
     TURN_HEURISTIC_EXTRA_CHUNKS = 50    # extra silence tolerance per extension (~1 s at 20 ms/chunk)
     TURN_HEURISTIC_MAX_EXTENSIONS = 1   # cap so a stuck/garbled transcript can't stall the turn forever
     BARGE_IN_STREAK_NEEDED = 4  # ~80ms of sustained signal required before cancelling the agent
@@ -577,11 +580,21 @@ async def twilio_stream_endpoint(websocket: WebSocket):
                     "agent_id": agent_id,
                 }).execute()
                 return res.data[0]
-        conversation = await asyncio.to_thread(_create_conv)
+        # Everything below needs only `agent` - the conversation insert, the
+        # agent functions lookup, KB eligibility, and the meeting-tools check
+        # are four independent DB/network round trips, so run them
+        # concurrently instead of serially: this delay sits between Twilio
+        # answering and the greeting being spoken, i.e. dead air for the caller.
+        from app.telephony.shared import get_eligible_kb_documents, build_kb_search_tool
+        from app.integrations.meeting_tools import get_meeting_tool_functions, build_meeting_system_context
+        conversation, _all_fns, _kb_documents, _meeting_tools = await asyncio.gather(
+            asyncio.to_thread(_create_conv),
+            asyncio.to_thread(get_agent_functions, agent_id),
+            get_eligible_kb_documents(agent, user_id),
+            get_meeting_tool_functions(agent, user_id),
+        )
         conversation_id = conversation["id"]
 
-        # Load tool functions and memory
-        _all_fns = await asyncio.to_thread(get_agent_functions, agent_id)
         _tool_functions = [f for f in _all_fns if f.get("url") and f.get("trigger_type") == "llm_tool_call"]
 
         if call_questions:
@@ -600,8 +613,6 @@ async def twilio_stream_endpoint(websocket: WebSocket):
         # should behave as if it has no KB at all, and a second selected
         # document kb_instructions never mentions should never be searched
         # just because the first one is (see get_eligible_kb_documents).
-        from app.telephony.shared import get_eligible_kb_documents, build_kb_search_tool
-        _kb_documents = await get_eligible_kb_documents(agent, user_id)
         if _kb_documents:
             _tool_functions = _tool_functions + [build_kb_search_tool(_kb_documents)]
 
@@ -611,8 +622,6 @@ async def twilio_stream_endpoint(websocket: WebSocket):
         # extra_system_context so both the cascade path and the Realtime
         # bridge receive it without extra plumbing. Mirrors
         # app/routers/telephony_plivo.py and app/routers/websockets.py.
-        from app.integrations.meeting_tools import get_meeting_tool_functions, build_meeting_system_context
-        _meeting_tools = await get_meeting_tool_functions(agent, user_id)
         if _meeting_tools:
             _tool_functions = _tool_functions + _meeting_tools
             extra_system_context += build_meeting_system_context(agent)
@@ -641,25 +650,8 @@ async def twilio_stream_endpoint(websocket: WebSocket):
         }))
 
     async def _execute_webhook_twilio(fn: dict, args: dict) -> str:
-        import httpx
-        method = (fn.get("method") or "POST").upper()
-        url = fn["url"]
-        headers = fn.get("headers") or {}
-        timeout_s = min((fn.get("timeout_ms") or 30000) / 1000, PHONE_WEBHOOK_MAX_TIMEOUT_S)
-        try:
-            async with httpx.AsyncClient(timeout=timeout_s) as hclient:
-                if method == "GET":
-                    resp = await hclient.get(url, params=args, headers=headers)
-                elif method == "DELETE":
-                    resp = await hclient.delete(url, params=args, headers=headers)
-                else:
-                    resp = await hclient.request(method, url, json=args, headers=headers)
-            try:
-                return json.dumps(resp.json())
-            except Exception:
-                return json.dumps({"response": resp.text, "status": resp.status_code})
-        except Exception as e:
-            return json.dumps({"error": str(e)})
+        from app.telephony.shared import execute_webhook_request
+        return await execute_webhook_request(fn, args)
 
     async def _record_answer_tool(args: dict) -> str:
         """Handler for the synthesized "internal_record_answer" tool (interview
@@ -761,8 +753,15 @@ async def twilio_stream_endpoint(websocket: WebSocket):
         try:
             _retrieval_filler_task = asyncio.create_task(_cover_retrieval_delay())
 
+            # History fetch and user-message save are independent Supabase
+            # round trips - run the save in the background (the turn already
+            # has the user's text in hand) instead of paying two sequential
+            # DB round trips before the LLM is even called.
+            _save_user_task = asyncio.create_task(
+                asyncio.to_thread(save_message, conversation_id, user_id, "user", user_message)
+            )
+            _save_user_task.add_done_callback(lambda t: log_task_exception(t, "Twilio"))
             session_msgs = await asyncio.to_thread(get_session_messages, conversation_id)
-            await asyncio.to_thread(save_message, conversation_id, user_id, "user", user_message)
 
             from app.telephony.shared import build_phone_system_prompt
 
@@ -785,7 +784,25 @@ async def twilio_stream_endpoint(websocket: WebSocket):
             if _tool_functions:
                 tools = [build_openai_tool(f) for f in _tool_functions]
                 conv_msgs = history + [{"role": "user", "content": user_message}]
-                text, tool_name, tool_args, call_id = await detect_tool_call(conv_msgs, system_str, tools)
+
+                async def _consume_detect(msgs) -> tuple[str | None, dict, str | None, bool]:
+                    """Stream one tool-aware LLM call: plain reply text is
+                    spoken sentence by sentence AS IT STREAMS (the old
+                    detect_tool_call waited for the whole completion before
+                    the first word could be spoken). Returns
+                    (tool_name, tool_args, call_id, spoke_text)."""
+                    t_name, t_args, t_id = None, {}, None
+                    spoke = False
+                    async for kind, payload in detect_tool_call_stream(msgs, system_str, tools):
+                        if kind == "text":
+                            await _speak_covering_delay(payload)
+                            full_reply_parts.append(payload)
+                            spoke = True
+                        else:
+                            t_name, t_args, t_id = payload
+                    return t_name, t_args, t_id, spoke
+
+                tool_name, tool_args, call_id, _ = await _consume_detect(conv_msgs)
 
                 if tool_name:
                     from app.integrations.meeting_tools import MEETING_KINDS, execute_meeting_tool
@@ -823,22 +840,19 @@ async def twilio_stream_endpoint(websocket: WebSocket):
                     # an action it silently couldn't perform (found live
                     # 2026-11-12). Mirrors telephony_plivo.py / websockets.py.
                     executed: list[tuple] = []
-                    final_text: str | None = None
+                    spoke_after_tools = False
                     while tool_name and len(executed) < 3:
                         print(f"[Twilio] tool call {len(executed) + 1}: {tool_name}({tool_args})")
                         fn = next((f for f in _tool_functions if f["name"] == tool_name), None)
                         tool_result = await _dispatch_tool(fn, tool_args)
                         executed.append((tool_name, call_id, tool_args, tool_result))
-                        final_text, tool_name, tool_args, call_id = await detect_tool_call(
-                            conv_msgs + tool_steps_to_messages(executed), system_str, tools
+                        tool_name, tool_args, call_id, spoke_after_tools = await _consume_detect(
+                            conv_msgs + tool_steps_to_messages(executed)
                         )
-                    if not tool_name and final_text:
-                        async for sentence in stream_text_as_sentences(final_text):
-                            await _speak_covering_delay(sentence)
-                            full_reply_parts.append(sentence)
-                    else:
-                        # Step cap reached or the follow-up detect failed -
-                        # speak from the last tool result the proven way.
+                    if tool_name or not spoke_after_tools:
+                        # Step cap reached or the follow-up detect produced
+                        # nothing to say - speak from the last tool result the
+                        # proven way.
                         last_name, last_id, last_args, last_result = executed[-1]
                         async for sentence in stream_tool_result_response(
                             conv_msgs + tool_steps_to_messages(executed[:-1]),
@@ -846,17 +860,17 @@ async def twilio_stream_endpoint(websocket: WebSocket):
                         ):
                             await _speak_covering_delay(sentence)
                             full_reply_parts.append(sentence)
-                else:
-                    async for sentence in stream_text_as_sentences(text or ""):
-                        await _speak_covering_delay(sentence)
-                        full_reply_parts.append(sentence)
             else:
                 async for sentence in generate_response_stream(
                     user_message=user_message,
                     session_history=history,
                     rag_context="",
                     long_term_memory=initial_memory,
-                    system_prompt_override=agent.get("system_prompt") or None,
+                    # base_system, not agent["system_prompt"] - the phone-call
+                    # system prompt (agent name, HR interview/campaign context)
+                    # was silently dropped on this no-tools path, while the
+                    # tools path above used it via system_str.
+                    system_prompt_override=base_system or None,
                     kb_instructions=agent.get("kb_instructions") or None,
                 ):
                     await _speak_covering_delay(sentence)
@@ -864,6 +878,14 @@ async def twilio_stream_endpoint(websocket: WebSocket):
 
             full_reply = " ".join(full_reply_parts).strip()
             if full_reply:
+                # Settle the background user save first so the transcript rows
+                # can't land out of order (user after assistant) - this point
+                # is after all audio has been spoken, so waiting here costs
+                # the caller nothing.
+                try:
+                    await _save_user_task
+                except Exception:
+                    pass  # already logged by the done-callback
                 await asyncio.to_thread(save_message, conversation_id, user_id, "assistant", full_reply)
         finally:
             if _retrieval_filler_task and not _retrieval_filler_task.done():
@@ -912,6 +934,7 @@ async def twilio_stream_endpoint(websocket: WebSocket):
                         interview_id=interview_id, campaign_candidate_id=campaign_candidate_id,
                         tool_functions=_tool_functions, parse_media_payload=_parse_media_payload,
                         send_audio_frame=_send_audio_frame, send_clear=_send_clear,
+                        kb_documents=_kb_documents,
                     )
                     # Not _call_ended = True - no mark_interview/campaign_completed
                     # call happened above, so leave that to the finally block below.
@@ -949,7 +972,10 @@ async def twilio_stream_endpoint(websocket: WebSocket):
                         _barge_in_streak = 0
                         if _dg_stream:
                             try:
-                                await _dg_stream.finish()
+                                # abort(), not finish() - the transcript is not
+                                # needed, and finish() blocks the media receive
+                                # loop on the network while frames queue behind it.
+                                _dg_stream.abort()
                             except Exception as e:
                                 print(f"[Twilio] Failed to close Deepgram stream on false-positive barge-in (non-fatal): {e}")
                             _dg_stream = None
@@ -969,6 +995,11 @@ async def twilio_stream_endpoint(websocket: WebSocket):
                     is_processing = False
                     if stream_sid:
                         await websocket.send_text(json.dumps({"event": "clear", "streamSid": stream_sid}))
+                    if _dg_stream:
+                        try:
+                            _dg_stream.abort()  # close in background, was leaked open before
+                        except Exception:
+                            pass
                     _dg_stream = None
                     speech_chunks = 0
                     silence_chunks = 0

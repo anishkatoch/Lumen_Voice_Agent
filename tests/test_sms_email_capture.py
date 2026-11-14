@@ -397,7 +397,7 @@ class TestPlivoStreamEmailByText:
 
         llm_turns = []
 
-        async def fake_detect_tool_call(conv_messages, system, tools):
+        async def fake_detect_tool_call_stream(conv_messages, system, tools):
             names = [t["function"]["name"] for t in tools]
             llm_turns.append((conv_messages[-1], names))
             n = len(llm_turns)
@@ -405,13 +405,14 @@ class TestPlivoStreamEmailByText:
                 assert "request_email_by_sms" in names and "check_sms_reply" in names
                 assert "book_meeting" in names
                 assert "EMAIL BY TEXT MESSAGE" in system
-                return (None, "request_email_by_sms", {}, "call-1")
-            if n == 2:
+                yield ("tool", ("request_email_by_sms", {}, "call-1"))
+            elif n == 2:
                 assert conv_messages[-1]["role"] == "tool"
                 assert "text message was sent" in conv_messages[-1]["content"]
-                return ("A text is on its way, reply whenever you can.", None, {}, None)
-            return ("Got it, thanks.", None, {}, None)
-        mocker.patch("app.voice.llm_service.detect_tool_call", side_effect=fake_detect_tool_call)
+                yield ("text", "A text is on its way, reply whenever you can.")
+            else:
+                yield ("text", "Got it, thanks.")
+        mocker.patch("app.voice.llm_service.detect_tool_call_stream", side_effect=fake_detect_tool_call_stream)
 
         from app.main import app
         client = TestClient(app)

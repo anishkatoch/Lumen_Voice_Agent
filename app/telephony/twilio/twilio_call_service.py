@@ -153,21 +153,30 @@ async def text_to_speech_twilio(text: str):
         return
 
     # ElevenLabs - ulaw_8000 is native μ-law 8 kHz, exactly what Twilio wants
-    from elevenlabs.client import ElevenLabs
     from elevenlabs import VoiceSettings
+    from app.voice.elevenlabs_service import get_elevenlabs_client
     from app.core.config import (
-        ELEVENLABS_API_KEY, TTS_VOICE_ID, TTS_MODEL_ID,
+        TTS_VOICE_ID, TTS_MODEL_ID,
         TTS_STABILITY, TTS_SIMILARITY_BOOST, TTS_STYLE, TTS_SPEAKER_BOOST,
     )
     print(f"[TTS] Requesting ulaw_8000 for: {text[:60]}")
+    # Resolve config on the loop thread before handing off - get_config can hit
+    # the DB, and the worker thread must not do that mid-stream.
+    voice_id = get_config("tts_elevenlabs_voice_id") or TTS_VOICE_ID
+    model_id = get_config("tts_elevenlabs_model_id") or TTS_MODEL_ID
     queue: asyncio.Queue = asyncio.Queue()
+    loop = asyncio.get_event_loop()
 
     def _stream_to_queue():
-        """Run ElevenLabs sync iterator in a thread, push chunks to the async queue.
-        Client construction happens in here too - an auth/network error there
-        must also funnel into the OpenAI fallback below, not crash."""
+        """Run ElevenLabs sync iterator in a thread, push chunks to the async
+        queue via call_soon_threadsafe (put_nowait from a foreign thread is not
+        thread-safe and relied on unrelated loop activity to wake the getter).
+        Client access happens in here too - an auth/network error there must
+        also funnel into the OpenAI fallback below, not crash. The client is
+        the process-wide cached one, so sentences after the first reuse the
+        TLS connection instead of paying a fresh handshake every time."""
         try:
-            client = ElevenLabs(api_key=ELEVENLABS_API_KEY)
+            client = get_elevenlabs_client()
             settings = VoiceSettings(
                 stability=TTS_STABILITY,
                 similarity_boost=TTS_SIMILARITY_BOOST,
@@ -175,23 +184,25 @@ async def text_to_speech_twilio(text: str):
                 use_speaker_boost=TTS_SPEAKER_BOOST,
             )
             audio_stream = client.text_to_speech.convert_as_stream(
-                voice_id=get_config("tts_elevenlabs_voice_id") or TTS_VOICE_ID,
+                voice_id=voice_id,
                 text=text,
-                model_id=get_config("tts_elevenlabs_model_id") or TTS_MODEL_ID,
+                model_id=model_id,
                 voice_settings=settings,
                 output_format="ulaw_8000",
             )
             for chunk in audio_stream:
                 if chunk:
-                    queue.put_nowait(chunk)
+                    loop.call_soon_threadsafe(queue.put_nowait, chunk)
         except Exception as e:
             import traceback
             print(f"[Twilio TTS] Error: {type(e).__name__}: {e}")
             traceback.print_exc()
         finally:
-            queue.put_nowait(None)  # sentinel
+            try:
+                loop.call_soon_threadsafe(queue.put_nowait, None)  # sentinel
+            except RuntimeError:
+                pass  # loop already closed (shutdown)
 
-    loop = asyncio.get_event_loop()
     loop.run_in_executor(None, _stream_to_queue)
     got_chunk = False
     while True:

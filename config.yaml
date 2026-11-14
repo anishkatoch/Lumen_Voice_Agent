@@ -39,8 +39,10 @@ storage:
 vad:
   speech_sensitivity:    0.85   # how easily user speech triggers the pipeline
   barge_in_sensitivity:  0.20   # how easily user speech interrupts the AI mid-response
-  silence_limit_chunks:  3      # silence chunks before utterance ends (3 × 250ms = 750 ms)
-  min_speech_chunks:     1      # minimum speech chunks needed     (1 × 250ms = 250 ms)
+  # Counted in browser mic chunks - the frontend sends 100ms chunks
+  # (CHUNK_MS in frontend/hooks/useVoiceAgent.ts); keep these in sync with it.
+  silence_limit_chunks:  5      # silence chunks before utterance ends (5 × 100ms = 500 ms, matches the phone pipelines)
+  min_speech_chunks:     2      # minimum speech chunks needed     (2 × 100ms = 200 ms)
 
   # Silero threshold range - formula: min + (1 - sensitivity) × (max - min)
   silero_threshold_min:  0.20   # threshold when sensitivity = 1.0 (easiest trigger)

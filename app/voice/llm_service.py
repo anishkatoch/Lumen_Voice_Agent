@@ -13,6 +13,23 @@ from app.core.config import (
 
 _openai: AsyncOpenAI | None = None
 _azure_openai: AsyncAzureOpenAI | None = None
+# AsyncOpenAI clients keyed by (provider, api_key, base_url). Building a new
+# client per call creates a fresh httpx pool each time, so every LLM request
+# paid a full TCP+TLS handshake on the critical path of a live voice turn.
+# Keying on the credentials keeps admin-panel key/url changes working.
+_client_cache: dict[tuple, AsyncOpenAI] = {}
+
+
+def _cached_async_openai(provider: str, api_key: str, base_url: str | None = None) -> AsyncOpenAI:
+    cache_key = (provider, api_key, base_url)
+    client = _client_cache.get(cache_key)
+    if client is None:
+        if base_url:
+            client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+        else:
+            client = AsyncOpenAI(api_key=api_key)
+        _client_cache[cache_key] = client
+    return client
 
 
 def _get_openai() -> AsyncOpenAI:
@@ -102,13 +119,13 @@ def _get_llm_client() -> tuple[AsyncOpenAI | None, str, str]:
     if provider == "groq":
         import os
         key = api_key or os.environ.get("GROQ_API_KEY", "")
-        return AsyncOpenAI(api_key=key, base_url="https://api.groq.com/openai/v1"), provider, model
+        return _cached_async_openai(provider, key, "https://api.groq.com/openai/v1"), provider, model
     if provider == "ollama":
         base = base_url or "http://localhost:11434"
-        return AsyncOpenAI(api_key="ollama", base_url=f"{base.rstrip('/')}/v1"), provider, model
+        return _cached_async_openai(provider, "ollama", f"{base.rstrip('/')}/v1"), provider, model
     # Default: openai
     key = api_key or OPENAI_API_KEY
-    return AsyncOpenAI(api_key=key), provider, model
+    return _cached_async_openai(provider, key), provider, model
 
 
 async def test_llm_connection() -> dict:
@@ -604,6 +621,103 @@ async def detect_tool_call(
 
     print(f"[LLM Tool] All providers failed: {last_err}")
     return "", None, {}, None
+
+
+async def detect_tool_call_stream(
+    conv_messages: list[dict],
+    system: str,
+    tools: list[dict],
+) -> AsyncGenerator[tuple[str, object], None]:
+    """
+    Streaming replacement for detect_tool_call. One LLM call with tool
+    definitions and stream=True, yielding:
+      ("text", sentence)                - spoken reply text, sentence by sentence,
+                                          available as soon as the model streams it
+      ("tool", (name, args, call_id))   - at most once, when the model wants a tool
+
+    detect_tool_call waited for the entire completion before anything could be
+    spoken, so every agent with any tool configured (KB doc, interview,
+    campaign, meeting booking, webhook) lost LLM streaming entirely and the
+    caller sat through the full generation in silence. A plain text reply now
+    reaches TTS at the first sentence boundary instead.
+    Yields nothing at all when every provider in the chain fails (callers then
+    fall back exactly as they did for detect_tool_call's empty return).
+    """
+    client, provider, model = _get_llm_client()
+    if provider == "anthropic" or client is None:
+        # Anthropic tool calling has a different API - same no-op behavior as
+        # detect_tool_call's early return.
+        return
+
+    chain = _augment_with_azure(client, provider, model)
+    if not chain:
+        return
+
+    sentence_end = re.compile(r'(?<=[.!?;])\s+|(?<=,)\s+(?=\w{4})')
+    last_err: Exception | None = None
+    for try_client, try_provider, try_model in chain:
+        buffer = ""
+        yielded_text = False
+        tool_calls: dict[int, dict] = {}
+        try:
+            stream = await try_client.chat.completions.create(
+                model=try_model,
+                messages=[{"role": "system", "content": system}] + conv_messages,
+                tools=tools,
+                tool_choice="auto",
+                **_max_tokens_kwarg(try_model),
+                **_temperature_kwarg(try_model),
+                stream=True,
+                timeout=LLM_TIMEOUT,
+            )
+            async for chunk in stream:
+                if not chunk.choices:
+                    continue
+                delta = chunk.choices[0].delta
+                if delta.tool_calls:
+                    for tc in delta.tool_calls:
+                        entry = tool_calls.setdefault(
+                            tc.index or 0, {"id": "", "name": "", "arguments": ""}
+                        )
+                        if tc.id:
+                            entry["id"] = tc.id
+                        if tc.function and tc.function.name:
+                            entry["name"] += tc.function.name
+                        if tc.function and tc.function.arguments:
+                            entry["arguments"] += tc.function.arguments
+                    continue
+                token = delta.content or ""
+                if not token:
+                    continue
+                buffer += token
+                parts = sentence_end.split(buffer)
+                for sentence in parts[:-1]:
+                    s = sentence.strip()
+                    if s:
+                        yielded_text = True
+                        yield ("text", s)
+                buffer = parts[-1]
+
+            if tool_calls:
+                first = tool_calls[min(tool_calls)]
+                try:
+                    args = json.loads(first["arguments"]) if first["arguments"] else {}
+                except Exception:
+                    args = {}
+                yield ("tool", (first["name"], args, first["id"] or None))
+                return
+            if buffer.strip():
+                yield ("text", buffer.strip())
+            return
+        except Exception as e:
+            last_err = e
+            print(f"[LLM Tool] {try_provider} ({try_model}) stream detect error: {e} - falling back")
+            if yielded_text:
+                # Part of a reply was already spoken aloud - restarting with
+                # another provider would repeat or contradict it mid-call.
+                return
+
+    print(f"[LLM Tool] All providers failed: {last_err}")
 
 
 def tool_steps_to_messages(steps: list[tuple[str, str, dict, str]]) -> list[dict]:

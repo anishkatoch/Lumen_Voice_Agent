@@ -14,6 +14,46 @@ import re
 
 PHONE_WEBHOOK_MAX_TIMEOUT_S = 15
 
+# Shared pooled HTTP client for webhook tool calls. Webhooks fire mid-turn
+# (the caller is waiting on the line), and a fresh httpx.AsyncClient per call
+# paid a new TCP+TLS handshake every time; the pool reuses connections to
+# webhook hosts hit more than once in a call. Timeouts are per-request.
+_webhook_http_client = None
+
+
+def get_webhook_http_client():
+    global _webhook_http_client
+    if _webhook_http_client is None:
+        import httpx
+        _webhook_http_client = httpx.AsyncClient()
+    return _webhook_http_client
+
+
+async def execute_webhook_request(fn: dict, args: dict) -> str:
+    """Run one admin-configured webhook tool call and render the result as a
+    JSON string for the LLM. Never raises - errors come back as {"error": ...}
+    so a flaky webhook can't kill the live call. Shared by the Twilio, Plivo,
+    browser, and Realtime pipelines."""
+    import json
+    method = (fn.get("method") or "POST").upper()
+    url = fn["url"]
+    headers = fn.get("headers") or {}
+    timeout_s = min((fn.get("timeout_ms") or 30000) / 1000, PHONE_WEBHOOK_MAX_TIMEOUT_S)
+    try:
+        hclient = get_webhook_http_client()
+        if method == "GET":
+            resp = await hclient.get(url, params=args, headers=headers, timeout=timeout_s)
+        elif method == "DELETE":
+            resp = await hclient.delete(url, params=args, headers=headers, timeout=timeout_s)
+        else:
+            resp = await hclient.request(method, url, json=args, headers=headers, timeout=timeout_s)
+        try:
+            return json.dumps(resp.json())
+        except Exception:
+            return json.dumps({"response": resp.text, "status": resp.status_code})
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
 
 def log_task_exception(task: "asyncio.Task", label: str) -> None:
     """Done-callback for the fire-and-forget greeting/run_pipeline task.
@@ -412,6 +452,7 @@ async def run_realtime_telephony_bridge(
     send_audio_frame,             # async (b64_payload: str) -> None - relay to the caller, provider's own wire format
     send_clear,                   # async () -> None - stop whatever's currently queued for playback (barge-in)
     sms_capture=None,             # SmsCaptureContext when the email-by-text tools are on this call (Plivo only so far)
+    kb_documents: list | None = None,  # pass _setup_call's get_eligible_kb_documents result to skip refetching it here
 ) -> str | None:
     """Bridges a phone call directly to OpenAI's Realtime API - no VAD, no
     Deepgram, no llm_service, no separate TTS call. Caller audio (already
@@ -442,7 +483,10 @@ async def run_realtime_telephony_bridge(
     # session is configured with two tools named search_knowledge_base,
     # which the browser bridge in app/routers/websockets.py explicitly
     # warns against.
-    _kb_documents = await get_eligible_kb_documents(agent, user_id)
+    # kb_documents, when the caller passes it, is _setup_call's own
+    # get_eligible_kb_documents result - refetching here repeated the same
+    # DB lookups during call setup for nothing.
+    _kb_documents = kb_documents if kb_documents is not None else await get_eligible_kb_documents(agent, user_id)
     if _kb_documents and not any(f.get("kind") == "internal_kb_search" for f in tool_functions):
         tools = tools + [build_realtime_tool(build_kb_search_tool(_kb_documents))]
 
@@ -484,25 +528,7 @@ async def run_realtime_telephony_bridge(
             return await execute_sms_email_tool(fn, args, sms_capture)
         if not fn:
             return json.dumps({"error": "function not found"})
-        import httpx
-        method = (fn.get("method") or "POST").upper()
-        url = fn["url"]
-        headers = fn.get("headers") or {}
-        timeout_s = min((fn.get("timeout_ms") or 30000) / 1000, PHONE_WEBHOOK_MAX_TIMEOUT_S)
-        try:
-            async with httpx.AsyncClient(timeout=timeout_s) as hclient:
-                if method == "GET":
-                    resp = await hclient.get(url, params=args, headers=headers)
-                elif method == "DELETE":
-                    resp = await hclient.delete(url, params=args, headers=headers)
-                else:
-                    resp = await hclient.request(method, url, json=args, headers=headers)
-            try:
-                return json.dumps(resp.json())
-            except Exception:
-                return json.dumps({"response": resp.text, "status": resp.status_code})
-        except Exception as e:
-            return json.dumps({"error": str(e)})
+        return await execute_webhook_request(fn, args)
 
     async def _drain_realtime_events():
         nonlocal _active_item_id, _failure_reason
@@ -614,26 +640,31 @@ async def retrieve_phone_rag_context(
 
     doc_ids = agent.get("selected_kb_doc_ids") or []
     rag_ctx = ""
-    if doc_ids:
-        raw = await asyncio.to_thread(
-            retrieve_agent_context, user_message, agent_id, user_id, ["personal", "global"]
-        )
-        rag_ctx = format_agent_context(raw)
-
-    # Restrict to docs this agent has selected, intersected with docs this
-    # account actually owns - previously this queried ALL of the account's
-    # documents regardless of what was selected on this agent, making the
-    # per-agent KB selector cosmetic.
     kb_ctx = ""
     if doc_ids:
+        # Restrict to docs this agent has selected, intersected with docs this
+        # account actually owns - previously this queried ALL of the account's
+        # documents regardless of what was selected on this agent, making the
+        # per-agent KB selector cosmetic.
         if restrict_doc_ids is not None:
             selected_owned_ids = restrict_doc_ids
         else:
             owned_ids = {d["id"] for d in await asyncio.to_thread(get_user_documents, user_id)}
             selected_owned_ids = [d for d in doc_ids if d in owned_ids]
+
+        # Both lookups embed the same query and hit different tables - they
+        # are independent, so run them concurrently instead of paying two
+        # sequential embedding + pgvector round trips on a live call turn.
+        agent_task = asyncio.to_thread(
+            retrieve_agent_context, user_message, agent_id, user_id, ["personal", "global"]
+        )
         if selected_owned_ids:
-            kb_rag = await asyncio.to_thread(retrieve_user_kb_context, user_message, selected_owned_ids)
+            kb_task = asyncio.to_thread(retrieve_user_kb_context, user_message, selected_owned_ids)
+            raw, kb_rag = await asyncio.gather(agent_task, kb_task)
             kb_ctx = format_user_kb_context(kb_rag) if kb_rag else ""
+        else:
+            raw = await agent_task
+        rag_ctx = format_agent_context(raw)
 
     full_rag = "\n\n".join(filter(None, [rag_ctx, kb_ctx]))
     return full_rag, bool(doc_ids)

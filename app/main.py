@@ -22,43 +22,46 @@ app = FastAPI(title="Voice Agent API")
 async def _prewarm():
     """Pre-warm OpenAI and ElevenLabs TCP connections so first user call is fast."""
     async def _warm_openai():
-        from app.core.config import AZURE_OPENAI_API_KEY, AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_VERSION, AZURE_OPENAI_DEPLOYMENT
-        if AZURE_OPENAI_API_KEY and AZURE_OPENAI_ENDPOINT:
-            try:
-                from openai import AsyncAzureOpenAI
-                c = AsyncAzureOpenAI(
-                    api_key=AZURE_OPENAI_API_KEY,
-                    azure_endpoint=AZURE_OPENAI_ENDPOINT,
-                    api_version=AZURE_OPENAI_API_VERSION,
-                )
-                await c.chat.completions.create(
-                    model=AZURE_OPENAI_DEPLOYMENT, messages=[{"role": "user", "content": "hi"}], max_tokens=1
-                )
-                print("[Prewarm] Azure OpenAI ✓")
-                return
-            except Exception as e:
-                print(f"[Prewarm] Azure OpenAI failed: {e}")
-
+        # Warm the SAME cached clients live calls resolve through
+        # (llm_service._get_llm_chain), not throwaway instances - a throwaway
+        # client's TLS connection dies with it and the first real call still
+        # paid the cold handshake.
         try:
-            from openai import AsyncOpenAI
-            from app.core.config import OPENAI_API_KEY
-            c = AsyncOpenAI(api_key=OPENAI_API_KEY)
-            await c.chat.completions.create(
-                model="gpt-4o-mini", messages=[{"role": "user", "content": "hi"}], max_tokens=1
-            )
-            print("[Prewarm] OpenAI ✓")
+            from app.voice.llm_service import _get_llm_chain, _max_tokens_kwarg
+            chain = await asyncio.to_thread(_get_llm_chain)
+            for client, provider, model in chain:
+                try:
+                    await client.chat.completions.create(
+                        model=model, messages=[{"role": "user", "content": "hi"}], **_max_tokens_kwarg(model)
+                    )
+                    print(f"[Prewarm] LLM OK ({provider}/{model})")
+                    return
+                except Exception as e:
+                    print(f"[Prewarm] LLM {provider} failed: {e}")
         except Exception as e:
-            print(f"[Prewarm] OpenAI failed: {e}")
+            print(f"[Prewarm] LLM chain failed: {e}")
 
     async def _warm_elevenlabs():
         try:
-            from elevenlabs.client import ElevenLabs
-            from app.core.config import ELEVENLABS_API_KEY
-            client = ElevenLabs(api_key=ELEVENLABS_API_KEY)
+            # The same process-wide cached client every TTS sentence uses -
+            # this primes its connection pool for the first real call.
+            from app.voice.elevenlabs_service import get_elevenlabs_client
+            client = get_elevenlabs_client()
             await asyncio.to_thread(client.voices.get_all)
-            print("[Prewarm] ElevenLabs ✓")
+            print("[Prewarm] ElevenLabs OK")
         except Exception as e:
             print(f"[Prewarm] ElevenLabs failed: {e}")
+
+    async def _warm_vad():
+        # Silero loads via torch.hub on the first detect_speech call - without
+        # this the first caller's first frames pay the model load (hundreds of
+        # ms) inside the live media loop.
+        try:
+            from app.voice.vad_service import detect_speech
+            await detect_speech(b"\x00\x00" * 512, 0.5)
+            print("[Prewarm] Silero VAD OK")
+        except Exception as e:
+            print(f"[Prewarm] Silero VAD failed: {e}")
 
     async def _warm_deepgram():
         # Without this, the FIRST live StreamingTranscriber connection in a fresh
@@ -71,13 +74,14 @@ async def _prewarm():
             await st.start()
             await st.send(b"\x00\x00" * 320)  # one silent 20ms frame
             await st.finish()
-            print("[Prewarm] Deepgram ✓")
+            print("[Prewarm] Deepgram OK")
         except Exception as e:
             print(f"[Prewarm] Deepgram failed: {e}")
 
     asyncio.create_task(_warm_openai())
     asyncio.create_task(_warm_elevenlabs())
     asyncio.create_task(_warm_deepgram())
+    asyncio.create_task(_warm_vad())
 
     # HR outbound call scheduler - checks every 60s for due interviews
     from app.hr_campaigns.hr_scheduler import run_scheduler

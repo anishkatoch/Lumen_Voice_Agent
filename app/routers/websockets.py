@@ -666,20 +666,23 @@ async def agent_websocket_endpoint(websocket: WebSocket, agent_id: str, token: s
     _realtime_active = await asyncio.to_thread(get_admin_config, "voice_pipeline") == "realtime"
 
     async def _execute_webhook(fn: dict, args: dict) -> str:
-        """Call the configured webhook and return its response as a JSON string."""
-        import httpx
+        """Call the configured webhook and return its response as a JSON string.
+        Uses the shared pooled client, but keeps the browser's uncapped
+        per-function timeout (phone calls cap at PHONE_WEBHOOK_MAX_TIMEOUT_S
+        because a caller is waiting on a live line; a browser session isn't)."""
+        from app.telephony.shared import get_webhook_http_client
         method = (fn.get("method") or "POST").upper()
         url = fn["url"]
         headers = fn.get("headers") or {}
         timeout_s = (fn.get("timeout_ms") or 30000) / 1000
         try:
-            async with httpx.AsyncClient(timeout=timeout_s) as hclient:
-                if method == "GET":
-                    resp = await hclient.get(url, params=args, headers=headers)
-                elif method == "DELETE":
-                    resp = await hclient.delete(url, params=args, headers=headers)
-                else:
-                    resp = await hclient.request(method, url, json=args, headers=headers)
+            hclient = get_webhook_http_client()
+            if method == "GET":
+                resp = await hclient.get(url, params=args, headers=headers, timeout=timeout_s)
+            elif method == "DELETE":
+                resp = await hclient.delete(url, params=args, headers=headers, timeout=timeout_s)
+            else:
+                resp = await hclient.request(method, url, json=args, headers=headers, timeout=timeout_s)
             try:
                 return json.dumps(resp.json())
             except Exception:
@@ -829,8 +832,8 @@ async def agent_websocket_endpoint(websocket: WebSocket, agent_id: str, token: s
 
             from app.voice.llm_service import (
                 build_system_prompt, build_openai_tool,
-                detect_tool_call, stream_tool_result_response,
-                stream_text_as_sentences, pick_filler_phrase, classify_filler_category,
+                detect_tool_call_stream, stream_tool_result_response,
+                pick_filler_phrase, classify_filler_category,
             )
 
             full_reply_parts: list[str] = []
@@ -937,9 +940,29 @@ async def agent_websocket_endpoint(websocket: WebSocket, agent_id: str, token: s
                 if _tool_functions:
                     # ── Tool-call path ──────────────────────────────────────────
                     tools = [build_openai_tool(f) for f in _tool_functions]
-                    text, tool_name, tool_args, call_id = await detect_tool_call(
-                        conv_messages, system_str, tools
-                    )
+
+                    async def _consume_detect(msgs) -> tuple[str | None, dict, str | None, bool]:
+                        """Stream one tool-aware LLM call: plain reply text is
+                        spoken sentence by sentence AS IT STREAMS (the old
+                        detect_tool_call waited for the whole completion before
+                        the first word could be spoken). Returns
+                        (tool_name, tool_args, call_id, spoke_text)."""
+                        t_name, t_args, t_id = None, {}, None
+                        spoke = False
+
+                        async def _sentences():
+                            nonlocal t_name, t_args, t_id, spoke
+                            async for kind, payload in detect_tool_call_stream(msgs, system_str, tools):
+                                if kind == "text":
+                                    spoke = True
+                                    yield payload
+                                else:
+                                    t_name, t_args, t_id = payload
+
+                        await _tts_stream_sentences(_sentences())
+                        return t_name, t_args, t_id, spoke
+
+                    tool_name, tool_args, call_id, _ = await _consume_detect(conv_messages)
                     if tool_name and call_id:
                         from app.integrations.meeting_tools import MEETING_KINDS, execute_meeting_tool
                         from app.voice.llm_service import tool_steps_to_messages
@@ -962,18 +985,19 @@ async def agent_websocket_endpoint(websocket: WebSocket, agent_id: str, token: s
                         # Up to 3 chained tool calls per user turn - mirrors
                         # app/routers/telephony_twilio.py (see the comment there).
                         executed: list[tuple] = []
-                        final_text: str | None = None
+                        spoke_after_tools = False
                         while tool_name and len(executed) < 3:
                             print(f"[Agent Pipeline] Tool call: {tool_name}({tool_args})")
                             fn = next((f for f in _tool_functions if f["name"] == tool_name), None)
                             tool_result = await _dispatch_tool(fn, tool_args)
                             executed.append((tool_name, call_id, tool_args, tool_result))
-                            final_text, tool_name, tool_args, call_id = await detect_tool_call(
-                                conv_messages + tool_steps_to_messages(executed), system_str, tools
+                            tool_name, tool_args, call_id, spoke_after_tools = await _consume_detect(
+                                conv_messages + tool_steps_to_messages(executed)
                             )
-                        if not tool_name and final_text:
-                            await _tts_stream_sentences(stream_text_as_sentences(final_text))
-                        else:
+                        if tool_name or not spoke_after_tools:
+                            # Step cap reached or the follow-up detect produced
+                            # nothing to say - speak from the last tool result
+                            # the proven way.
                             last_name, last_id, last_args, last_result = executed[-1]
                             await _tts_stream_sentences(
                                 stream_tool_result_response(
@@ -981,11 +1005,8 @@ async def agent_websocket_endpoint(websocket: WebSocket, agent_id: str, token: s
                                     system_str, last_name, last_id, last_args, last_result
                                 )
                             )
-                    else:
-                        # LLM chose to answer directly without calling any tool
-                        await _tts_stream_sentences(
-                            stream_text_as_sentences(text or "")
-                        )
+                    # else: the LLM answered directly without calling a tool -
+                    # _consume_detect already streamed that reply through TTS.
                 else:
                     # ── Normal streaming path (no tools configured) ─────────────
                     await _tts_stream_sentences(

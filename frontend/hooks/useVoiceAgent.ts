@@ -14,7 +14,11 @@ export interface ChatEntry {
 }
 
 const SAMPLE_RATE = 16000;
-const CHUNK_MS = 250;
+// 100ms mic chunks (was 250ms): the backend ends the caller's turn after
+// silence_limit_chunks consecutive silent chunks, so smaller chunks mean the
+// agent notices the end of speech sooner (config.yaml vad settings are
+// counted in these chunks and must stay in sync with this value).
+const CHUNK_MS = 100;
 const CHUNK_SAMPLES = SAMPLE_RATE * (CHUNK_MS / 1000);
 
 
@@ -36,12 +40,17 @@ export function useVoiceAgent() {
   const workletRef = useRef<AudioWorkletNode | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
 
-  // Playback
+  // Playback - PCM chunks are scheduled on the AudioContext timeline the
+  // moment they arrive, so the reply starts playing as soon as the first
+  // chunk lands instead of waiting for a whole sentence of audio to buffer
+  // (the old batch-per-sentence approach added the full sentence's TTS
+  // generation time to perceived latency on every single turn).
   const playCtxRef = useRef<AudioContext | null>(null);
-  const activeSourceRef = useRef<AudioBufferSourceNode | null>(null);
-  const mp3ChunksRef = useRef<Uint8Array[]>([]);       // current batch of chunks
-  const playQueueRef = useRef<Uint8Array[][]>([]);      // queue of batches to play
+  const activeSourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
+  const nextStartRef = useRef(0);          // ctx time where the next chunk is scheduled
+  const pendingByteRef = useRef<Uint8Array | null>(null); // odd-byte carry (int16 alignment)
   const isPlayingRef = useRef(false);
+  const serverDoneRef = useRef(false);     // server said the reply's audio is complete
 
   const addChat = useCallback((role: "user" | "assistant", text: string) => {
     setChat(prev => [...prev, { id: crypto.randomUUID(), role, text, ts: Date.now() }]);
@@ -49,32 +58,18 @@ export function useVoiceAgent() {
 
   // ── Stop all audio immediately ──────────────────────────────────────
   const stopAudio = useCallback(() => {
-    if (activeSourceRef.current) {
-      try { activeSourceRef.current.stop(); } catch { /* already ended */ }
-      activeSourceRef.current = null;
-    }
-    mp3ChunksRef.current = [];
-    playQueueRef.current = [];
+    activeSourcesRef.current.forEach(src => {
+      try { src.onended = null; src.stop(); } catch { /* already ended */ }
+    });
+    activeSourcesRef.current.clear();
+    nextStartRef.current = 0;
+    pendingByteRef.current = null;
     isPlayingRef.current = false;
+    serverDoneRef.current = false;
   }, []);
 
-  // ── Play one batch (one sentence worth of raw PCM chunks) ─────────
-  const playNextBatch = useCallback(async () => {
-    if (isPlayingRef.current) return;
-    isPlayingRef.current = true;
-
-    const batch = playQueueRef.current.shift();
-    if (!batch || batch.length === 0) {
-      isPlayingRef.current = false;
-      return;
-    }
-
-    // Merge all chunks into one buffer
-    const totalLen = batch.reduce((n, c) => n + c.byteLength, 0);
-    const merged = new Uint8Array(totalLen);
-    let offset = 0;
-    for (const c of batch) { merged.set(c, offset); offset += c.byteLength; }
-
+  // ── Schedule one incoming PCM chunk for gapless playback ────────────
+  const scheduleChunk = useCallback(async (bytes: Uint8Array) => {
     try {
       if (!playCtxRef.current || playCtxRef.current.state === "closed") {
         playCtxRef.current = new AudioContext({ sampleRate: 16000 });
@@ -82,48 +77,73 @@ export function useVoiceAgent() {
       const ctx = playCtxRef.current;
       if (ctx.state === "suspended") await ctx.resume();
 
+      // Keep int16 alignment across chunk boundaries
+      let data = bytes;
+      const carry = pendingByteRef.current;
+      if (carry) {
+        const merged = new Uint8Array(carry.byteLength + bytes.byteLength);
+        merged.set(carry, 0);
+        merged.set(bytes, carry.byteLength);
+        data = merged;
+        pendingByteRef.current = null;
+      }
+      if (data.byteLength % 2 === 1) {
+        pendingByteRef.current = data.slice(data.byteLength - 1);
+        data = data.slice(0, data.byteLength - 1);
+      }
+      if (data.byteLength === 0) return;
+
       // PCM is raw 16-bit signed integers at 16kHz - decode manually, no codec needed
-      const pcm = new Int16Array(merged.buffer);
+      const pcm = new Int16Array(data.buffer, data.byteOffset, data.byteLength / 2);
       const audioBuffer = ctx.createBuffer(1, pcm.length, 16000);
       const channelData = audioBuffer.getChannelData(0);
       for (let i = 0; i < pcm.length; i++) {
         channelData[i] = pcm[i] / 32768.0;
       }
-      console.log("[Audio] PCM decoded:", audioBuffer.duration.toFixed(2), "s", totalLen, "bytes");
 
+      // Back-to-back scheduling: each chunk starts exactly where the previous
+      // one ends; a small lead-in only when starting from idle.
+      const startAt = Math.max(nextStartRef.current, ctx.currentTime + 0.05);
       const src = ctx.createBufferSource();
       src.buffer = audioBuffer;
       src.connect(ctx.destination);
-      activeSourceRef.current = src;
-
-      wsRef.current?.send(JSON.stringify({ type: "playback_started" }));
-
-      src.start();
+      activeSourcesRef.current.add(src);
       src.onended = () => {
-        activeSourceRef.current = null;
-        isPlayingRef.current = false;
-        if (playQueueRef.current.length > 0) {
-          playNextBatch();
-        } else {
+        activeSourcesRef.current.delete(src);
+        // Only report playback_ended once the server has said the reply is
+        // complete AND everything scheduled has finished - a brief gap while
+        // the next sentence's TTS is still arriving must NOT end the turn
+        // (the backend flips the session back to LISTENING on this message).
+        if (serverDoneRef.current && activeSourcesRef.current.size === 0 && isPlayingRef.current) {
+          isPlayingRef.current = false;
+          nextStartRef.current = 0;
           wsRef.current?.send(JSON.stringify({ type: "playback_ended" }));
         }
       };
+      src.start(startAt);
+      nextStartRef.current = startAt + audioBuffer.duration;
+      serverDoneRef.current = false;
+      if (!isPlayingRef.current) {
+        isPlayingRef.current = true;
+        wsRef.current?.send(JSON.stringify({ type: "playback_started" }));
+      }
     } catch (err) {
-      console.error("[Playback] PCM decode error:", err);
-      isPlayingRef.current = false;
-      wsRef.current?.send(JSON.stringify({ type: "playback_ended" }));
+      console.error("[Playback] PCM schedule error:", err);
       setError("Failed to play audio response");
     }
   }, []);
 
-  // ── Flush current chunk buffer as a sentence batch ─────────────────
-  const flushCurrentBatch = useCallback(() => {
-    if (mp3ChunksRef.current.length === 0) return;
-    const batch = [...mp3ChunksRef.current];
-    mp3ChunksRef.current = [];
-    playQueueRef.current.push(batch);
-    playNextBatch();
-  }, [playNextBatch]);
+  // ── Server finished sending this reply's audio ──────────────────────
+  const markServerDone = useCallback(() => {
+    serverDoneRef.current = true;
+    // Nothing scheduled (e.g. TTS produced no audio): report ended now so
+    // the backend doesn't stay stuck in SPEAKING waiting for it.
+    if (activeSourcesRef.current.size === 0) {
+      isPlayingRef.current = false;
+      nextStartRef.current = 0;
+      wsRef.current?.send(JSON.stringify({ type: "playback_ended" }));
+    }
+  }, []);
 
   const setRagScope = useCallback((scope: RagScope) => {
     setRagScopeState(scope);
@@ -201,7 +221,7 @@ export function useVoiceAgent() {
 
     ws.onmessage = (ev) => {
       if (ev.data instanceof ArrayBuffer) {
-        mp3ChunksRef.current.push(new Uint8Array(ev.data));
+        scheduleChunk(new Uint8Array(ev.data));
         return;
       }
 
@@ -226,10 +246,10 @@ export function useVoiceAgent() {
             addChat("assistant", msg.text);
             break;
           case "sentence_end":
-            flushCurrentBatch();
+            // Audio now streams chunk by chunk; sentence boundaries need no action.
             break;
           case "audio_end":
-            flushCurrentBatch();
+            markServerDone();
             break;
           case "stop_audio":
             stopAudio();
@@ -245,9 +265,7 @@ export function useVoiceAgent() {
       wsRef.current = null;
       stopMicInternal();
       // Reset playback state so next session can play audio
-      mp3ChunksRef.current = [];
-      playQueueRef.current = [];
-      isPlayingRef.current = false;
+      stopAudio();
       if (ev.code === 4001) {
         setError("Session expired. Please sign in again.");
       }
@@ -260,7 +278,7 @@ export function useVoiceAgent() {
       setState("IDLE");
       setError("Could not connect to server. Please try again.");
     };
-  }, [addChat, flushCurrentBatch, stopAudio]);
+  }, [addChat, scheduleChunk, markServerDone, stopAudio]);
 
   const disconnect = useCallback(() => {
     stopMicInternal();

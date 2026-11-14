@@ -2,7 +2,15 @@
 Admin configuration service.
 Stores provider/limit settings in the admin_config table.
 In-memory cache with 5-second TTL so changes propagate to new sessions quickly.
+
+Stale-while-revalidate: once the cache has been filled, a stale read returns
+the cached values immediately and refreshes in a background thread. get() is
+called synchronously from async hot paths on every live call turn (LLM client
+resolution, TTS, STT setup), where a blocking Supabase round trip used to
+stall the event loop - and with it the audio receive loop of every active
+call - each time the 5s TTL expired.
 """
+import threading
 import time
 from datetime import datetime, timezone
 from app.core.database import get_supabase
@@ -10,6 +18,8 @@ from app.core.database import get_supabase
 _cache: dict[str, str] = {}
 _cache_time: float = 0.0
 CACHE_TTL = 5.0
+_refresh_lock = threading.Lock()
+_refreshing = False
 
 # Defaults used when a key has no DB row
 DEFAULTS: dict[str, str] = {
@@ -62,9 +72,28 @@ def _load() -> None:
     _cache_time = time.monotonic()
 
 
-def get_all() -> dict[str, str]:
-    if time.monotonic() - _cache_time > CACHE_TTL or not _cache:
+def _refresh_in_background() -> None:
+    global _refreshing
+    try:
         _load()
+    finally:
+        with _refresh_lock:
+            _refreshing = False
+
+
+def get_all() -> dict[str, str]:
+    global _refreshing
+    if not _cache:
+        # First read in the process: nothing to serve stale, load inline.
+        _load()
+    elif time.monotonic() - _cache_time > CACHE_TTL:
+        start = False
+        with _refresh_lock:
+            if not _refreshing:
+                _refreshing = True
+                start = True
+        if start:
+            threading.Thread(target=_refresh_in_background, daemon=True).start()
     return dict(_cache)
 
 

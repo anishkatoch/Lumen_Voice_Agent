@@ -7,36 +7,61 @@ import numpy as np
 from openai import AsyncOpenAI
 from app.core.config import OPENAI_API_KEY
 
+# One cached client (connection pool) for all TTS calls - building a new
+# AsyncOpenAI per call paid a TCP+TLS handshake on every spoken sentence.
+_client: AsyncOpenAI | None = None
+
+
+def _get_client() -> AsyncOpenAI:
+    global _client
+    if _client is None:
+        _client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+    return _client
+
 
 async def text_to_speech_openai(
     text: str,
     voice: str = "alloy",
     model: str = "tts-1",
 ) -> AsyncGenerator[bytes, None]:
-    """Yields raw PCM chunks (16 kHz, 16-bit signed, mono)."""
-    client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+    """Yields raw PCM chunks (16 kHz, 16-bit signed, mono).
+
+    Streams as the audio is generated: each HTTP chunk is resampled and
+    yielded immediately, so the first audible chunk goes out as soon as
+    OpenAI starts responding instead of after the full response has been
+    collected (which added the entire generation time to first-audio
+    latency on every sentence that used this path)."""
+    client = _get_client()
     print(f"[OpenAI TTS] voice={voice} model={model} text={text[:60]}")
     try:
-        # Collect the full PCM-24kHz response then resample
-        raw_chunks: list[bytes] = []
+        count = 0
+        # Carry bytes between chunks so each resampled block is a whole
+        # multiple of 3 input samples (24k -> 16k is a 3:2 ratio) - keeps
+        # the output sample-aligned without buffering the whole response.
+        pending = b""
         async with client.audio.speech.with_streaming_response.create(
             model=model,
             voice=voice,
             input=text,
             response_format="pcm",  # raw 16-bit signed PCM at 24 kHz
         ) as response:
-            async for chunk in response.iter_bytes(chunk_size=8192):
-                if chunk:
-                    raw_chunks.append(chunk)
-
-        pcm_24k = b"".join(raw_chunks)
-        pcm_16k = _resample(pcm_24k, from_rate=24000, to_rate=16000)
-
-        CHUNK = 8192
-        count = 0
-        for i in range(0, len(pcm_16k), CHUNK):
-            yield pcm_16k[i:i + CHUNK]
-            count += 1
+            async for chunk in response.iter_bytes(chunk_size=4096):
+                if not chunk:
+                    continue
+                pending += chunk
+                usable = len(pending) - (len(pending) % 6)
+                if not usable:
+                    continue
+                block, pending = pending[:usable], pending[usable:]
+                out = _resample(block, from_rate=24000, to_rate=16000)
+                if out:
+                    count += 1
+                    yield out
+        if len(pending) >= 2:
+            out = _resample(pending[: len(pending) - (len(pending) % 2)], from_rate=24000, to_rate=16000)
+            if out:
+                count += 1
+                yield out
         print(f"[OpenAI TTS] Done - {count} chunks")
     except Exception as e:
         import traceback

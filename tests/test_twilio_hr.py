@@ -830,6 +830,7 @@ class TestInitiateOutboundCall:
         db = mocker.MagicMock()
         chain = mocker.MagicMock()
         chain.eq.return_value = chain
+        chain.neq.return_value = chain  # direction filter (migration 0030)
         chain.limit.return_value = chain
         chain.execute.return_value.data = [{"phone_number": phone}]
         db.table.return_value.select.return_value = chain
@@ -840,6 +841,7 @@ class TestInitiateOutboundCall:
         db = mocker.MagicMock()
         chain = mocker.MagicMock()
         chain.eq.return_value = chain
+        chain.neq.return_value = chain  # direction filter (migration 0030)
         chain.limit.return_value = chain
         chain.execute.return_value.data = []
         db.table.return_value.select.return_value = chain
@@ -1037,7 +1039,7 @@ class TestTwilioTTS:
         mock_client.text_to_speech.convert_as_stream.return_value = iter([fake_mulaw])
 
         with patch("app.admin.admin_config_service.get", return_value=None), \
-             patch("elevenlabs.client.ElevenLabs", return_value=mock_client), \
+             patch("app.voice.elevenlabs_service.get_elevenlabs_client", return_value=mock_client), \
              patch("elevenlabs.VoiceSettings"):
             from app.telephony.twilio.twilio_call_service import text_to_speech_twilio
             chunks = [c async for c in text_to_speech_twilio("Hello there")]
@@ -1053,7 +1055,7 @@ class TestTwilioTTS:
         mock_client.text_to_speech.convert_as_stream.return_value = iter([b"", fake_mulaw, b""])
 
         with patch("app.admin.admin_config_service.get", return_value=None), \
-             patch("elevenlabs.client.ElevenLabs", return_value=mock_client), \
+             patch("app.voice.elevenlabs_service.get_elevenlabs_client", return_value=mock_client), \
              patch("elevenlabs.VoiceSettings"):
             from app.telephony.twilio.twilio_call_service import text_to_speech_twilio
             chunks = [c async for c in text_to_speech_twilio("Skip empties")]

@@ -72,6 +72,11 @@ class StreamingWhisperTranscriber:
     async def send(self, audio_bytes: bytes):
         self._chunks.append(audio_bytes)
 
+    def abort(self) -> None:
+        """Discard the buffered utterance without transcribing - same interface
+        as deepgram_service.StreamingTranscriber.abort()."""
+        self._chunks = []
+
     async def finish(self) -> str | None:
         if not self._chunks:
             return None

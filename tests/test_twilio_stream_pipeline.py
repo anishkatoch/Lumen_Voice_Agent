@@ -288,11 +288,11 @@ class TestCampaignCallLiveToolRecording:
             return call_count["n"] <= 5
         mocker.patch("app.voice.vad_service.detect_speech", side_effect=fake_detect_speech)
 
-        async def fake_detect_tool_call(conv_messages, system, tools):
+        async def fake_detect_tool_call_stream(conv_messages, system, tools):
             tool_names = [t["function"]["name"] for t in tools]
             assert "record_answer" in tool_names, "record_answer tool was not offered to the LLM"
-            return (None, "record_answer", {"question_id": "q1", "answer": "I really enjoy this kind of work"}, "call-1")
-        mocker.patch("app.voice.llm_service.detect_tool_call", side_effect=fake_detect_tool_call)
+            yield ("tool", ("record_answer", {"question_id": "q1", "answer": "I really enjoy this kind of work"}, "call-1"))
+        mocker.patch("app.voice.llm_service.detect_tool_call_stream", side_effect=fake_detect_tool_call_stream)
 
         async def fake_stream_tool_result_response(conv_messages, system, tool_name, call_id, tool_args, tool_result):
             assert '"recorded": true' in tool_result.lower() or '"recorded":true' in tool_result.replace(" ", "").lower()
@@ -356,9 +356,9 @@ class TestCampaignCallLiveToolRecording:
             return call_count["n"] <= 5
         mocker.patch("app.voice.vad_service.detect_speech", side_effect=fake_detect_speech)
 
-        async def fake_detect_tool_call(conv_messages, system, tools):
-            return (None, "record_answer", {"question_id": "not-a-real-id", "answer": "some answer"}, "call-1")
-        mocker.patch("app.voice.llm_service.detect_tool_call", side_effect=fake_detect_tool_call)
+        async def fake_detect_tool_call_stream(conv_messages, system, tools):
+            yield ("tool", ("record_answer", {"question_id": "not-a-real-id", "answer": "some answer"}, "call-1"))
+        mocker.patch("app.voice.llm_service.detect_tool_call_stream", side_effect=fake_detect_tool_call_stream)
 
         captured_result = {}
         async def fake_stream_tool_result_response(conv_messages, system, tool_name, call_id, tool_args, tool_result):

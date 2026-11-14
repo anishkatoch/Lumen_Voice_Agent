@@ -17,6 +17,11 @@ class StreamingTranscriber:
         self._transcript = ""
         self._last_partial = ""
         self._done = asyncio.Event()
+        # Set on every final (is_final) result - finish() waits on this after
+        # sending Finalize instead of on the SDK's connection teardown, which
+        # contains a fixed 0.5s sleep (_signal_exit) that used to be paid on
+        # the critical path of every single turn.
+        self._final_event = asyncio.Event()
         # Buffered alongside streaming to Deepgram so finish() can fall back
         # to OpenAI Whisper on the same audio if the live transcript is empty.
         self._raw_chunks: list[bytes] = []
@@ -36,6 +41,11 @@ class StreamingTranscriber:
         self._connection = self._client.listen.asynclive.v("1")
 
         async def on_transcript(_, result, **__):
+            # Signal finals even when the transcript text is empty - the
+            # flush response to a Finalize message is often an empty final,
+            # and finish() must not sit out its whole timeout waiting on it.
+            if getattr(result, "is_final", False):
+                self._final_event.set()
             alt = result.channel.alternatives[0]
             if not alt.transcript:
                 return
@@ -77,13 +87,47 @@ class StreamingTranscriber:
         if self._connection and self._connected:
             await self._connection.send(pcm_bytes)
 
-    async def finish(self) -> str | None:
-        if self._connection:
-            await self._connection.finish()
+    async def _close_connection(self, conn) -> None:
+        """Tear the websocket down off the critical path. The SDK's finish()
+        includes a fixed 0.5s sleep before closing the socket - nothing after
+        finalize needs the connection, so that cost must not be paid inline."""
+        try:
+            await conn.finish()
+        except Exception as e:
+            print(f"[Deepgram Stream] Background close error (non-fatal): {e}")
+
+    def abort(self) -> None:
+        """Discard this utterance: close the connection in the background
+        without waiting for any transcript. For false-positive speech where
+        finish() would block the media receive loop for nothing."""
+        conn = self._connection
+        self._connection = None
+        self._raw_chunks = []
+        if conn:
             try:
-                await asyncio.wait_for(self._done.wait(), timeout=STT_TIMEOUT)
-            except asyncio.TimeoutError:
+                asyncio.get_running_loop().create_task(self._close_connection(conn))
+            except RuntimeError:
                 pass
+
+    async def finish(self) -> str | None:
+        conn = self._connection
+        self._connection = None
+        if conn:
+            if self._connected:
+                try:
+                    # Finalize makes Deepgram flush its remaining audio into a
+                    # final result immediately. Waiting for that result (not
+                    # for the connection teardown) is what gets the transcript
+                    # back fastest; the 2s cap is a safety bound, the flush
+                    # normally lands well under 500ms.
+                    self._final_event.clear()
+                    await conn.finalize()
+                    await asyncio.wait_for(self._final_event.wait(), timeout=2.0)
+                except asyncio.TimeoutError:
+                    print("[Deepgram Stream] Finalize flush timed out - using transcript so far")
+                except Exception as e:
+                    print(f"[Deepgram Stream] Finalize failed (non-fatal): {e}")
+            asyncio.create_task(self._close_connection(conn))
         result = self._transcript.strip()
         if result:
             print(f"[Deepgram] Live transcript: {result}")
