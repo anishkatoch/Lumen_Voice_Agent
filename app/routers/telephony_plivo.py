@@ -394,9 +394,15 @@ async def plivo_voice_webhook(request: Request):
     # The number must be percent-encoded - a raw "+" in a query string is
     # parsed back as a space, which silently broke the inbound number lookup.
     ws_url = f"wss://{host}/plivo/stream?to={quote(to_number)}&from={quote(from_number)}"
+    # The raw "&" joining the two query params is a bare XML entity delimiter
+    # and must be escaped to "&amp;" inside the <Stream> text content, or the
+    # response isn't valid XML and Plivo fails the call outright (busy tone,
+    # no voice at all) - the campaign/interview variants above only ever have
+    # one query param so they never hit this.
+    ws_url_xml = ws_url.replace("&", "&amp;")
     xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Stream bidirectional="true" keepCallAlive="true" contentType="audio/x-mulaw;rate=8000">{ws_url}</Stream>
+  <Stream bidirectional="true" keepCallAlive="true" contentType="audio/x-mulaw;rate=8000">{ws_url_xml}</Stream>
 </Response>"""
     return Response(content=xml, media_type="application/xml")
 
