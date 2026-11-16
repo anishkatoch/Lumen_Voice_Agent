@@ -964,8 +964,14 @@ function AgentHRSection({ agentId, hrInstructions, onHrInstructionsChange }: {
     }
   };
   const cancelInt = async (id: string) => {
-    const u = await API.updateInterview(id, { status: "cancelled" });
-    setInterviews(is => is.map(i => i.id === u.id ? u : i));
+    if (!confirm("Cancel this scheduled call? No further call attempts will be made.")) return;
+    try {
+      const u = await API.updateInterview(id, { status: "cancelled" });
+      setInterviews(is => is.map(i => i.id === u.id ? u : i));
+      pushToast("Scheduled call cancelled");
+    } catch (e: unknown) {
+      pushToast(e instanceof Error ? e.message : "Failed to cancel - the call may still be retried");
+    }
   };
 
   return (

@@ -131,11 +131,20 @@ async def resolve_call_context(
         # One question per line - each non-empty line is tracked separately
         # (answered/not answered + the actual answer) via the record_answer
         # tool below, same mechanism campaign calls already use.
-        ctx.questions = [
+        all_questions = [
             {"id": f"q{i+1}", "text": line.strip()}
             for i, line in enumerate(questions_raw.splitlines())
             if line.strip()
         ]
+        # A retry (no-answer/failed on a prior attempt) reuses this same
+        # interview_id, and prior attempts' answers are already recorded in
+        # hr_interview_answers - drop those so a retry doesn't re-ask
+        # questions the candidate already answered on an earlier attempt.
+        from app.hr_campaigns.hr_repo import list_interview_answers
+        already_answered = {
+            a["question_id"] for a in await asyncio.to_thread(list_interview_answers, interview_id)
+        }
+        ctx.questions = [q for q in all_questions if q["id"] not in already_answered]
         call_lead = interview.get("call_lead_minutes", 30)
         sched_at_raw = interview.get("scheduled_at", "")
         sched_formatted = ""
@@ -191,7 +200,15 @@ async def resolve_call_context(
         c_resume = candidate.get("resume_text", "")
         c_notes = candidate.get("notes", "")
         c_phone = candidate.get("phone", "")
-        questions_list = ctx.campaign_data.get("questions") or []
+        all_questions_list = ctx.campaign_data.get("questions") or []
+        # Same retry-dedup as the interview branch above - this
+        # campaign_candidate_id is reused across retries, and earlier
+        # attempts' answers are already in hr_campaign_answers.
+        from app.hr_campaigns.hr_campaign_repo import list_campaign_answers
+        already_answered = {
+            a["question_id"] for a in await asyncio.to_thread(list_campaign_answers, campaign_candidate_id)
+        }
+        questions_list = [q for q in all_questions_list if q.get("id") not in already_answered]
         ctx.questions = [
             {"id": q.get("id"), "text": q.get("text", "")}
             for q in questions_list if q.get("text")
