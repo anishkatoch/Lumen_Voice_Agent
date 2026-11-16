@@ -1,5 +1,13 @@
 from datetime import datetime, timezone
-from app.core.database import get_supabase
+
+
+def get_supabase():
+    """Local import, not a module-level `from app.core.database import
+    get_supabase`, so every call re-reads the current attribute instead of
+    freezing whatever it was the first time this module got imported - see
+    the admin_config_service case in CLAUDE.md for the bug this avoids."""
+    from app.core.database import get_supabase as _get_supabase
+    return _get_supabase()
 
 
 # ── Candidates ────────────────────────────────────────────────────────────────
