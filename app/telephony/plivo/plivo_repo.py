@@ -27,14 +27,20 @@ def get_phone_number(number_id: str, user_id: str) -> dict | None:
 
 
 def get_number_by_phone(phone_number: str) -> dict | None:
-    """Look up an active number record by the E.164 phone number string.
+    """Look up an active number record by phone number string.
     A number set to direction='outbound' is caller-ID-only: inbound calls to
-    it are not routed to an agent, so it is excluded here."""
+    it are not routed to an agent, so it is excluded here.
+
+    Numbers are stored in E.164 (with a leading '+', enforced by the add-number
+    form), but Plivo's inbound voice webhook posts "To" without the leading
+    '+' - an exact match against the stored value would never hit, so both
+    forms are tried here."""
     db = get_supabase()
+    candidates = {phone_number, phone_number.lstrip("+"), "+" + phone_number.lstrip("+")}
     result = (
         db.table("plivo_phone_numbers")
         .select("*")
-        .eq("phone_number", phone_number)
+        .in_("phone_number", list(candidates))
         .eq("is_active", True)
         .neq("direction", "outbound")
         .limit(1)
