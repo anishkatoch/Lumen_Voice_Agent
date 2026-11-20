@@ -70,6 +70,24 @@ def _parse_hhmm(value: str, default: tuple[int, int]) -> tuple[int, int]:
     return default
 
 
+def _slot_is_on_grid(
+    start: datetime, duration: timedelta,
+    day_start: tuple[int, int], day_end: tuple[int, int],
+    step_minutes: int = 30,
+) -> bool:
+    """True when `start` sits on the same grid check_availability offers:
+    inside the day's booking hours, the meeting fitting before close, and
+    aligned to a step_minutes boundary from day_start. Without this, nothing
+    stops book_meeting from accepting a stray time like 9:13 that no
+    check_availability slot would ever return."""
+    day_open = start.replace(hour=day_start[0], minute=day_start[1], second=0, microsecond=0)
+    day_close = start.replace(hour=day_end[0], minute=day_end[1], second=0, microsecond=0)
+    if start < day_open or start + duration > day_close:
+        return False
+    offset_minutes = (start - day_open).total_seconds() / 60
+    return offset_minutes % step_minutes == 0
+
+
 def compute_free_slots(
     busy: list[tuple[datetime, datetime]],
     window_start: datetime,
@@ -77,7 +95,7 @@ def compute_free_slots(
     duration_minutes: int,
     buffer_minutes: int = 0,
     day_start: tuple[int, int] = (9, 0),
-    day_end: tuple[int, int] = (17, 0),
+    day_end: tuple[int, int] = (21, 0),
     step_minutes: int = 30,
     earliest: datetime | None = None,
     max_slots: int = MAX_SLOTS_SPOKEN,
@@ -227,7 +245,7 @@ def build_meeting_system_context(agent: dict) -> str:
     now = datetime.now(tz)
     duration = int(agent.get("meeting_duration_minutes") or 30)
     hours_start = (agent.get("booking_hours_start") or "09:00").strip()
-    hours_end = (agent.get("booking_hours_end") or "17:00").strip()
+    hours_end = (agent.get("booking_hours_end") or "21:00").strip()
     extra = (agent.get("meeting_instructions") or "").strip()
     tz_label = getattr(tz, "key", None) or "UTC"
     return (
@@ -281,7 +299,7 @@ def _booking_window(agent: dict, from_date) -> tuple:
     at from_date (a date in the agent's timezone)."""
     tz = _agent_tz(agent)
     day_start = _parse_hhmm(agent.get("booking_hours_start") or "09:00", (9, 0))
-    day_end = _parse_hhmm(agent.get("booking_hours_end") or "17:00", (17, 0))
+    day_end = _parse_hhmm(agent.get("booking_hours_end") or "21:00", (21, 0))
     window_start = datetime(from_date.year, from_date.month, from_date.day, tzinfo=tz)
     window_end = window_start + timedelta(days=SEARCH_DAYS)
     return window_start, window_end, day_start, day_end, tz
@@ -443,6 +461,15 @@ async def _reschedule_meeting(args: dict, agent: dict, user_id: str) -> str:
     buffer = timedelta(minutes=int(agent.get("meeting_buffer_minutes") or 0))
     new_end = new_start + duration
 
+    day_start = _parse_hhmm(agent.get("booking_hours_start") or "09:00", (9, 0))
+    day_end = _parse_hhmm(agent.get("booking_hours_end") or "21:00", (21, 0))
+    if not _slot_is_on_grid(new_start, duration, day_start, day_end):
+        return (
+            f"The {_spoken_time(new_start)} time is not a bookable slot - it is outside "
+            "business hours or off the half-hour grid. Call check_availability for that day "
+            "and offer the caller one of the returned times instead."
+        )
+
     # Conflict check for the new slot, ignoring the meeting's own current
     # block on the calendar - otherwise moving a meeting 15 minutes later
     # would falsely collide with itself.
@@ -507,6 +534,15 @@ async def _book_meeting(args: dict, agent: dict, user_id: str, conversation_id: 
     duration = timedelta(minutes=int(agent.get("meeting_duration_minutes") or 30))
     buffer = timedelta(minutes=int(agent.get("meeting_buffer_minutes") or 0))
     end = start + duration
+
+    day_start = _parse_hhmm(agent.get("booking_hours_start") or "09:00", (9, 0))
+    day_end = _parse_hhmm(agent.get("booking_hours_end") or "21:00", (21, 0))
+    if not _slot_is_on_grid(start, duration, day_start, day_end):
+        return (
+            f"The {start.strftime('%A, %B %d at %I:%M %p')} time is not a bookable slot - it is "
+            "outside business hours or off the half-hour grid. Call check_availability for that "
+            "day and offer the caller one of the returned times instead."
+        )
 
     # Re-check the slot right before writing - the caller may have spent
     # minutes talking since check_availability, and another call (or the

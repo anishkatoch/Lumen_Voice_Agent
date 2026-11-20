@@ -74,7 +74,7 @@ class TestComputeFreeSlots:
     def test_duration_must_fit_before_day_end(self):
         from app.integrations.meeting_tools import compute_free_slots
         slots = compute_free_slots([], DAY, DAY + timedelta(days=1), 60, max_slots=100)
-        assert slots[-1] == _slot(16)  # 16:00 + 60min == 17:00 close
+        assert slots[-1] == _slot(20)  # 20:00 + 60min == 21:00 close
 
     def test_earliest_filters_past_slots(self):
         from app.integrations.meeting_tools import compute_free_slots
@@ -83,7 +83,7 @@ class TestComputeFreeSlots:
 
     def test_fully_booked_day_spills_into_next_day(self):
         from app.integrations.meeting_tools import compute_free_slots
-        busy = [(_slot(9), _slot(17))]
+        busy = [(_slot(9), _slot(21))]
         slots = compute_free_slots(busy, DAY, DAY + timedelta(days=2), 30)
         assert slots[0] == (DAY + timedelta(days=1)).replace(hour=9)
 
@@ -262,6 +262,32 @@ class TestBookMeeting:
             AGENT, USER_ID,
         )
         assert "just taken" in result
+        create.assert_not_called()
+        save.assert_not_called()
+
+    async def test_off_grid_minute_is_rejected(self, mocker):
+        """A caller (or a confused model) asking for 9:13 instead of a real
+        half-hour slot must be refused, not silently booked."""
+        from app.integrations.meeting_tools import build_book_meeting_tool, execute_meeting_tool
+        _, create, save = self._mocks(mocker)
+        result = await execute_meeting_tool(
+            build_book_meeting_tool(),
+            {"start_time": "2030-01-07T09:13", "attendee_name": "Alice"},
+            AGENT, USER_ID,
+        )
+        assert "not a bookable slot" in result
+        create.assert_not_called()
+        save.assert_not_called()
+
+    async def test_time_outside_booking_hours_is_rejected(self, mocker):
+        from app.integrations.meeting_tools import build_book_meeting_tool, execute_meeting_tool
+        _, create, save = self._mocks(mocker)
+        result = await execute_meeting_tool(
+            build_book_meeting_tool(),
+            {"start_time": "2030-01-07T22:00", "attendee_name": "Alice"},
+            AGENT, USER_ID,
+        )
+        assert "not a bookable slot" in result
         create.assert_not_called()
         save.assert_not_called()
 
@@ -445,6 +471,17 @@ class TestRescheduleMeeting:
             AGENT, USER_ID,
         )
         assert "past" in result
+        patch_ev.assert_not_awaited()
+
+    async def test_off_grid_new_time_is_refused(self, mocker):
+        from app.integrations.meeting_tools import build_reschedule_meeting_tool, execute_meeting_tool
+        patch_ev, _ = self._mocks(mocker)
+        result = await execute_meeting_tool(
+            build_reschedule_meeting_tool(),
+            {"attendee_email": "alice@example.com", "new_start_time": "2030-01-07T15:07"},
+            AGENT, USER_ID,
+        )
+        assert "not a bookable slot" in result
         patch_ev.assert_not_awaited()
 
 
