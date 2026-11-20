@@ -22,6 +22,7 @@ NEW_MODEL_KEYS = [
     "stt_model", "tts_elevenlabs_model_id", "azure_speech_voice", "realtime_model",
 ]
 NEW_RETRY_KEYS = ["call_retry_interval_minutes", "call_retry_max_attempts"]
+TURN_HEURISTIC_KEY = "turn_heuristic_enabled"
 
 
 def admin_token() -> str:
@@ -63,6 +64,13 @@ class TestAdminConfigDefaults:
         from app.admin.admin_config_service import DEFAULTS
         assert DEFAULTS["call_retry_interval_minutes"] == "3"
         assert DEFAULTS["call_retry_max_attempts"] == "5"
+
+    def test_turn_heuristic_enabled_defaults_to_true(self):
+        """Nothing changes in production for an existing deployment until an
+        admin explicitly turns it off - matches today's hardcoded-True
+        behavior (app/core/config.py's TURN_HEURISTIC_ENABLED)."""
+        from app.admin.admin_config_service import DEFAULTS
+        assert DEFAULTS[TURN_HEURISTIC_KEY] == "true"
 
     def test_get_all_falls_back_to_defaults_on_db_error(self, mocker):
         mocker.patch("app.admin.admin_config_service.get_supabase", side_effect=RuntimeError("db down"))
@@ -111,6 +119,40 @@ class TestAdminConfigRoute:
 
     async def test_put_requires_admin(self, client):
         resp = await client.put("/api/admin/config", headers=_user_auth(), json={"llm_model": "gpt-4o"})
+        assert resp.status_code == 403
+
+    async def test_put_accepts_turn_heuristic_enabled(self, client, mocker):
+        mock_save = mocker.patch("app.admin.admin_config_service.save")
+        mocker.patch("app.admin.admin_config_service.get_all", return_value={"ok": True})
+
+        resp = await client.put("/api/admin/config", headers=_admin_auth(),
+                                 json={TURN_HEURISTIC_KEY: "false"})
+
+        assert resp.status_code == 200
+        assert mock_save.call_args.args[0][TURN_HEURISTIC_KEY] == "false"
+
+
+# ── GET /api/admin/turn-heuristics ──────────────────────────────────────────
+
+class TestTurnHeuristicsRoute:
+    """The admin panel's read-only display of what the phone-call turn-taking
+    heuristic actually looks for (app/voice/turn_heuristics.py) - must read
+    the real module constants, never a hand-maintained second copy."""
+
+    async def test_returns_the_real_word_lists(self, client):
+        from app.voice.turn_heuristics import FILLER_WORDS, CONNECTOR_PHRASES, NUMBER_WORDS
+
+        resp = await client.get("/api/admin/turn-heuristics", headers=_admin_auth())
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert set(body["filler_words"]) == FILLER_WORDS
+        assert set(body["connector_phrases"]) == set(CONNECTOR_PHRASES)
+        assert set(body["number_words"]) == NUMBER_WORDS
+        assert body["filler_words"] == sorted(body["filler_words"])
+
+    async def test_requires_admin(self, client):
+        resp = await client.get("/api/admin/turn-heuristics", headers=_user_auth())
         assert resp.status_code == 403
 
 

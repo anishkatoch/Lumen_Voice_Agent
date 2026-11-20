@@ -57,6 +57,13 @@ interface AdminConfig {
   realtime_model:           string;
   call_retry_interval_minutes: string;
   call_retry_max_attempts:     string;
+  turn_heuristic_enabled: string;
+}
+
+interface TurnHeuristicWords {
+  filler_words: string[];
+  connector_phrases: string[];
+  number_words: string[];
 }
 
 interface KbRequest {
@@ -406,6 +413,50 @@ function LlmTestButton({ provider, model, unsaved }: { provider: string; model: 
   );
 }
 
+function WordChips({ words }: { words: string[] }) {
+  return (
+    <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+      {words.map(w => (
+        <span key={w} style={{
+          fontSize: 12, fontFamily: "var(--font-mono)", padding: "3px 8px",
+          borderRadius: "var(--r-sm)", background: "var(--surface-2)", color: "var(--ink-muted)",
+        }}>{w}</span>
+      ))}
+    </div>
+  );
+}
+
+function TurnHeuristicWordsPanel() {
+  const [words, setWords] = useState<TurnHeuristicWords | null>(null);
+  const [err, setErr] = useState("");
+
+  useEffect(() => {
+    api<TurnHeuristicWords>("/api/admin/turn-heuristics")
+      .then(setWords)
+      .catch(e => setErr(e instanceof Error ? e.message : "Failed to load"));
+  }, []);
+
+  if (err) return <Notice>{err}</Notice>;
+  if (!words) return <p style={{ fontSize: 12.5, color: "var(--ink-faint)" }}>Loading…</p>;
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      <div>
+        <p style={{ fontSize: 12, color: "var(--ink-muted)", marginBottom: 6 }}>Filler sounds</p>
+        <WordChips words={words.filler_words} />
+      </div>
+      <div>
+        <p style={{ fontSize: 12, color: "var(--ink-muted)", marginBottom: 6 }}>Trailing connector phrases</p>
+        <WordChips words={words.connector_phrases} />
+      </div>
+      <div>
+        <p style={{ fontSize: 12, color: "var(--ink-muted)", marginBottom: 6 }}>Numbers (any trailing digit or number word)</p>
+        <WordChips words={words.number_words} />
+      </div>
+    </div>
+  );
+}
+
 // ── Providers Tab ─────────────────────────────────────────────────────────────
 function ProvidersTab({ config, status, onSave }: {
   config: AdminConfig; status: SystemStatus | null; onSave: (updates: Partial<AdminConfig>) => Promise<void>;
@@ -639,6 +690,22 @@ function ProvidersTab({ config, status, onSave }: {
           <Field label="Max attempts" value={local.call_retry_max_attempts}
             onChange={set("call_retry_max_attempts")} placeholder="5"
             hint="Total dial attempts (including the first) before giving up." />
+        </div>
+      </Section>
+
+      <Section title="Turn-taking (phone calls)">
+        <Notice>
+          On Twilio/Plivo calls, a caller going quiet ends their turn after a short silence
+          window. When their last words look unfinished (one of the signals below), this grants
+          one short extension instead of cutting them off mid-sentence or mid-number.
+        </Notice>
+        <div style={{ marginTop: 14 }}>
+          <RadioGroup label="Smart turn-end detection" value={local.turn_heuristic_enabled}
+            onChange={set("turn_heuristic_enabled")}
+            options={[{ value: "true", label: "On" }, { value: "false", label: "Off" }]} />
+        </div>
+        <div style={{ marginTop: 14, paddingTop: 14, borderTop: "1px solid var(--border)" }}>
+          <TurnHeuristicWordsPanel />
         </div>
       </Section>
 

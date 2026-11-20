@@ -446,7 +446,7 @@ async def plivo_stream_endpoint(websocket: WebSocket):
     from app.voice.deepgram_service import transcribe_audio_smart
     from app.voice.vad_service import build_wav_bytes
     from app.voice.turn_heuristics import sounds_unfinished
-    from app.core.config import TURN_HEURISTIC_ENABLED
+    from app.core.config import TURN_HEURISTIC_ENABLED as _TURN_HEURISTIC_ENABLED_DEFAULT
     import json, base64
 
     await websocket.accept()
@@ -497,6 +497,10 @@ async def plivo_stream_endpoint(websocket: WebSocket):
     SILENCE_THRESHOLD = 25
     TURN_HEURISTIC_EXTRA_CHUNKS = 50
     TURN_HEURISTIC_MAX_EXTENSIONS = 1
+    # Re-read live from the admin panel once the call starts (below) instead of
+    # this frozen config.yaml value, so an admin's on/off toggle takes effect
+    # without a redeploy.
+    TURN_HEURISTIC_ENABLED = _TURN_HEURISTIC_ENABLED_DEFAULT
     BARGE_IN_STREAK_NEEDED = 4
     RETRIEVAL_FILLER_DELAY_SECONDS = 1.2
 
@@ -912,6 +916,7 @@ async def plivo_stream_endpoint(websocket: WebSocket):
                 print(f"[Plivo] Call started - stream {stream_id}, agent {agent['name']}")
 
                 from app.admin.admin_config_service import get as get_admin_config
+                TURN_HEURISTIC_ENABLED = (await asyncio.to_thread(get_admin_config, "turn_heuristic_enabled")) != "false"
                 if await asyncio.to_thread(get_admin_config, "voice_pipeline") == "realtime":
                     from app.telephony.shared import run_realtime_telephony_bridge
 

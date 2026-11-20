@@ -234,6 +234,92 @@ class TestPipelineFunctionSignatures:
         assert assistant_args[2] == "assistant"
 
 
+class TestTurnHeuristicToggle:
+    """
+    The admin "Turn-taking" toggle (turn_heuristic_enabled, read live from
+    app.admin.admin_config_service - see app/routers/telephony_twilio.py)
+    must actually change pipeline behavior, not just be stored. sounds_unfinished
+    is forced to always return True (its own word-matching logic has separate
+    unit coverage in test_turn_heuristics.py) so these tests isolate exactly
+    the ENABLED flag's effect: does the turn-end wait actually get extended.
+    """
+
+    def _drive(self, mocker, mock_pipeline, *, enabled: bool, transcript="nine"):
+        transcriber = _FakeStreamingTranscriber(transcript=transcript)
+        mocker.patch("app.voice.deepgram_service.get_streaming_transcriber", return_value=transcriber)
+        mocker.patch("app.voice.turn_heuristics.sounds_unfinished", return_value=True)
+
+        def fake_admin_get(key):
+            if key == "turn_heuristic_enabled":
+                return "true" if enabled else "false"
+            return "cascade"  # voice_pipeline and anything else - stay off the realtime branch
+
+        mocker.patch("app.admin.admin_config_service.get", side_effect=fake_admin_get)
+
+        call_count = {"n": 0}
+
+        async def fake_detect_speech(audio_bytes, sensitivity=0.5):
+            call_count["n"] += 1
+            return call_count["n"] <= 5  # 5 speech chunks, then silence forever
+
+        mocker.patch("app.voice.vad_service.detect_speech", side_effect=fake_detect_speech)
+
+        from app.main import app
+        return TestClient(app)
+
+    def test_disabled_ignores_unfinished_signal_and_finalizes_at_plain_threshold(self, mocker, mock_pipeline):
+        """SILENCE_THRESHOLD=25: with the toggle off, the turn must finalize
+        right at 5 speech + 25 silence chunks even though sounds_unfinished
+        says it looks unfinished."""
+        client = self._drive(mocker, mock_pipeline, enabled=False)
+        with client.websocket_connect("/twilio/stream") as ws:
+            ws.send_text(json.dumps({
+                "event": "start",
+                "start": {"streamSid": STREAM_SID, "customParameters": {"to": TEST_PHONE}},
+            }))
+            for _ in range(5 + 25):
+                ws.send_text(_mulaw_media_event())
+            # Wait for the background run_pipeline task to actually finish
+            # BEFORE sending "stop" - the connection-teardown finally block
+            # cancels any still-in-flight active task (see comment there), so
+            # sending stop first would race that cancellation instead of
+            # testing finalization at all.
+            _wait_until(lambda: len(mock_pipeline["save_message_calls"]) >= 2)
+            ws.send_text(json.dumps({"event": "stop", "streamSid": STREAM_SID}))
+
+        calls = mock_pipeline["save_message_calls"]
+        assert len(calls) >= 2, f"expected the turn to finalize with the toggle off, got {calls}"
+        assert "nine" in calls[1][0][3]
+
+    def test_enabled_extends_wait_then_still_finalizes(self, mocker, mock_pipeline):
+        """With the toggle on, the same trailing-number signal must hold the
+        turn open past the plain 25-chunk threshold (one ~50-chunk extension,
+        capped at TURN_HEURISTIC_MAX_EXTENSIONS=1), then still finalize once
+        that extended budget (75 silence chunks) is actually exhausted."""
+        client = self._drive(mocker, mock_pipeline, enabled=True)
+        with client.websocket_connect("/twilio/stream") as ws:
+            ws.send_text(json.dumps({
+                "event": "start",
+                "start": {"streamSid": STREAM_SID, "customParameters": {"to": TEST_PHONE}},
+            }))
+            for _ in range(5 + 30):  # past the plain 25-chunk threshold, nowhere near the 75-chunk extended one
+                ws.send_text(_mulaw_media_event())
+            not_yet = _wait_until(lambda: len(mock_pipeline["save_message_calls"]) >= 2, timeout=0.5)
+            assert not not_yet, "turn finalized before the extended budget was exhausted"
+            assert len(mock_pipeline["save_message_calls"]) == 1  # just the greeting so far
+
+            for _ in range(45):  # brings total silence chunks to 75
+                ws.send_text(_mulaw_media_event())
+            # Wait for completion before "stop" - see comment in the disabled
+            # test above.
+            _wait_until(lambda: len(mock_pipeline["save_message_calls"]) >= 2)
+            ws.send_text(json.dumps({"event": "stop", "streamSid": STREAM_SID}))
+
+        calls = mock_pipeline["save_message_calls"]
+        assert len(calls) >= 2, f"expected the turn to eventually finalize once extended, got {calls}"
+        assert "nine" in calls[1][0][3]
+
+
 TEST_CAMPAIGN_ID = "ffffffff-1111-1111-1111-ffffffffffff"
 TEST_CAMPAIGN_CAND_ID = "eeeeeeee-2222-2222-2222-eeeeeeeeeeee"
 

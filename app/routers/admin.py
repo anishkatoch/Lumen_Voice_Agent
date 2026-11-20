@@ -72,6 +72,7 @@ async def update_admin_config(request: Request, current_user: dict = Depends(get
         "azure_openai_deployment", "azure_openai_embedding_deployment", "azure_openai_transcribe_deployment",
         "stt_model", "tts_elevenlabs_model_id", "azure_speech_voice", "realtime_model",
         "call_retry_interval_minutes", "call_retry_max_attempts",
+        "turn_heuristic_enabled",
     }
     updates = {k: str(v) for k, v in body.items() if k in ALLOWED}
     if not updates:
@@ -79,6 +80,19 @@ async def update_admin_config(request: Request, current_user: dict = Depends(get
     from app.admin.admin_config_service import save, get_all
     save(updates)
     return get_all()
+
+@router.get("/api/admin/turn-heuristics")
+async def admin_get_turn_heuristics(current_user: dict = Depends(get_current_user)):
+    """Read-only: the actual word/phrase lists the phone-call turn-taking
+    heuristic (app/voice/turn_heuristics.py) looks for, so the admin panel
+    never hardcodes a second copy that could drift out of sync with the code."""
+    _require_admin(current_user)
+    from app.voice.turn_heuristics import FILLER_WORDS, CONNECTOR_PHRASES, NUMBER_WORDS
+    return {
+        "filler_words": sorted(FILLER_WORDS),
+        "connector_phrases": sorted(CONNECTOR_PHRASES),
+        "number_words": sorted(NUMBER_WORDS),
+    }
 
 @router.get("/api/admin/status")
 async def admin_system_status(current_user: dict = Depends(get_current_user)):
