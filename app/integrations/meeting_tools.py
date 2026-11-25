@@ -136,9 +136,11 @@ def build_check_availability_tool() -> dict:
         "name": "check_availability",
         "kind": KIND_CHECK_AVAILABILITY,
         "description": (
-            "Check the calendar for open meeting slots on or after a date. "
-            "Always call this before offering or confirming any meeting time - "
-            "never invent availability from memory."
+            "Check the calendar for open meeting slots on or after a date. Call this once to "
+            "get a day's open slots - never invent availability from memory. Do NOT call it "
+            "again just to re-verify a time you already offered the caller in this same "
+            "conversation: if they pick one of the times you already read out, that is "
+            "decided - confirm it and move on, do not look it up again."
         ),
         "parameters": [
             {"name": "date", "type": "string",
@@ -253,10 +255,17 @@ def build_meeting_system_context(agent: dict) -> str:
         f"\nYou can book meetings on the calendar. Right now it is {now.strftime('%A, %B %d, %Y at %I:%M %p')} "
         f"({tz_label}). All meeting times you say or book are in this timezone."
         f"\nMeetings are {duration} minutes long, bookable between {hours_start} and {hours_end}."
-        "\nFlow: ask what day works for them, call check_availability for that day, offer a few "
-        "of the returned open times, then confirm the chosen time, the caller's name, and their "
-        "email address (spell the email back to them) before calling book_meeting. If they do "
-        "not want an email invite, book without one."
+        "\nFlow: ask what day works for them, call check_availability for that day ONCE, offer a "
+        "few of the returned open times, then confirm the chosen time, the caller's name, and "
+        "their email address (spell the email back to them) before calling book_meeting. If they "
+        "do not want an email invite, book without one."
+        "\nAs soon as the caller names one of the times you just offered (or otherwise clearly "
+        "agrees to a specific time), that is decided - repeat it back once in one short sentence "
+        "and move straight to asking for their name. Do NOT call check_availability again for "
+        "that day, do NOT ask them to repeat or reconfirm the time, and do NOT read out another "
+        "list of alternative times once they have picked one - that makes you sound like you "
+        "forgot what they just said. Only call check_availability again if they ask for a "
+        "different day or explicitly want other options."
         "\nNever promise a time check_availability did not return, and never claim a meeting is "
         "booked unless book_meeting confirmed it."
         "\nTo cancel or move an existing meeting you need the email address it was booked under. "
