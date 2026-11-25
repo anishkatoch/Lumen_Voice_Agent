@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { API, Agent, AgentFunction, FunctionParameter, PhoneNumber, TwilioAccount, PlivoPhoneNumber, PlivoAccount, HRCandidate, HRInterview } from "@/lib/api";
 import { getUser, clearTokens } from "@/lib/auth";
 import { useVoiceAgent } from "@/hooks/useVoiceAgent";
+import { suggestKbInstructions } from "./suggestKbInstructions";
 
 /* ---------------------------------------------------------------------------
    Helpers
@@ -593,10 +594,16 @@ function FunctionForm({ agentId, initial, onSave, onCancel }: {
    Collapsible section card
 --------------------------------------------------------------------------- */
 
-function Section({ title, children, extra }: { title: string; children: React.ReactNode; extra?: React.ReactNode }) {
+function Section({ title, children, extra, overflowVisible }: { title: string; children: React.ReactNode; extra?: React.ReactNode; overflowVisible?: boolean }) {
   const [collapsed, setCollapsed] = useState(false);
   return (
-    <div className={`section${collapsed ? " collapsed" : ""}`}>
+    // .section has overflow:hidden (globals.css) so its own rounded corners
+    // clip cleanly - but that also clips any absolutely-positioned popover a
+    // child renders (e.g. the KB document dropdown), cutting it off instead
+    // of letting it float over the content below. overflowVisible opts a
+    // specific Section out of that clipping via inline style (higher
+    // specificity than the class rule) without touching every other Section.
+    <div className={`section${collapsed ? " collapsed" : ""}`} style={overflowVisible ? { overflow: "visible" } : undefined}>
       <div className="section-head" role="button" tabIndex={0} onClick={() => setCollapsed(c => !c)}>
         <h3>{title}</h3>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -1179,7 +1186,7 @@ function AgentDetail({ agent, onBack, onUpdate, onDuplicate, onGoToKb, onGoToInt
   const [meetingBuffer, setMeetingBuffer] = useState(agent.meeting_buffer_minutes ?? 0);
   const [meetingTz, setMeetingTz] = useState(agent.meeting_timezone ?? "UTC");
   const [bookingStart, setBookingStart] = useState(agent.booking_hours_start ?? "09:00");
-  const [bookingEnd, setBookingEnd] = useState(agent.booking_hours_end ?? "17:00");
+  const [bookingEnd, setBookingEnd] = useState(agent.booking_hours_end ?? "21:00");
   const [meetingInstructions, setMeetingInstructions] = useState(agent.meeting_instructions ?? "");
   const [calendarConnected, setCalendarConnected] = useState<boolean | null>(null);
   const [calendarEmail, setCalendarEmail] = useState<string | null>(null);
@@ -1189,6 +1196,11 @@ function AgentDetail({ agent, onBack, onUpdate, onDuplicate, onGoToKb, onGoToInt
   const [kbLoading, setKbLoading] = useState(false);
   const [kbOpen, setKbOpen] = useState(false);
   const kbDropRef = useRef<HTMLDivElement>(null);
+  // Tracks the last auto-generated kbInstructions text so the effect below
+  // can tell "still whatever we suggested" apart from "the person edited
+  // it" - only the former is safe to silently replace when the document
+  // selection changes again.
+  const autoKbInstructionsRef = useRef<string | null>(null);
 
   const [functions, setFunctions] = useState<AgentFunction[]>([]);
   const [funcsLoading, setFuncsLoading] = useState(false);
@@ -1204,12 +1216,13 @@ function AgentDetail({ agent, onBack, onUpdate, onDuplicate, onGoToKb, onGoToInt
     setFillerPhrases(agent.filler_phrases ?? "");
     setFirstMsgEnabled(agent.first_message_enabled); setFirstMsg(agent.first_message ?? "");
     setSelectedDocIds(agent.selected_kb_doc_ids ?? []);
+    autoKbInstructionsRef.current = null;
     setMeetingEnabled(agent.meeting_booking_enabled ?? false);
     setMeetingDuration(agent.meeting_duration_minutes ?? 30);
     setMeetingBuffer(agent.meeting_buffer_minutes ?? 0);
     setMeetingTz(agent.meeting_timezone ?? "UTC");
     setBookingStart(agent.booking_hours_start ?? "09:00");
-    setBookingEnd(agent.booking_hours_end ?? "17:00");
+    setBookingEnd(agent.booking_hours_end ?? "21:00");
     setMeetingInstructions(agent.meeting_instructions ?? "");
     API.googleCalendarStatus()
       .then(s => { setCalendarConnected(s.connected); setCalendarEmail(s.email); })
@@ -1225,6 +1238,26 @@ function AgentDetail({ agent, onBack, onUpdate, onDuplicate, onGoToKb, onGoToInt
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
   }, []);
+
+  // Auto-fills KB instructions with a suggestion naming the newly attached
+  // document(s) (see suggestKbInstructions) whenever the selection changes
+  // and the box is empty or still holds a previous auto-suggestion - never
+  // touches text the person actually wrote themselves. Waits for userKbDocs
+  // to have loaded the selected ids before computing anything, so a fresh
+  // agent load doesn't briefly suggest an empty/partial document list.
+  useEffect(() => {
+    if (selectedDocIds.length === 0) return;
+    const picked = selectedDocIds
+      .map(id => userKbDocs.find(d => d.id === id))
+      .filter((d): d is import("@/lib/api").UserDocument => !!d);
+    if (picked.length !== selectedDocIds.length) return;
+    const suggestion = suggestKbInstructions(picked);
+    if (kbInstructions.trim() === "" || kbInstructions === autoKbInstructionsRef.current) {
+      setKbInstructions(suggestion);
+    }
+    autoKbInstructionsRef.current = suggestion;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedDocIds, userKbDocs]);
 
   const loadUserKb = async () => {
     setKbLoading(true);
@@ -1254,7 +1287,7 @@ function AgentDetail({ agent, onBack, onUpdate, onDuplicate, onGoToKb, onGoToInt
         meeting_buffer_minutes: Number(meetingBuffer) > 0 ? Number(meetingBuffer) : 0,
         meeting_timezone: meetingTz.trim() || "UTC",
         booking_hours_start: bookingStart || "09:00",
-        booking_hours_end: bookingEnd || "17:00",
+        booking_hours_end: bookingEnd || "21:00",
         meeting_instructions: meetingInstructions || null,
       });
       onUpdate(updated); setSaveMsg("Saved"); pushToast("Agent saved");
@@ -1528,7 +1561,7 @@ Confident, not pushy
             )}
           </Section>
 
-          <Section title="Knowledge base">
+          <Section title="Knowledge base" overflowVisible>
             <div style={{ marginBottom: 14 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
                 <label style={{ fontSize: 12.5, fontWeight: 600, color: "var(--ink-2)" }}>Select documents from your knowledge base</label>
@@ -1600,9 +1633,28 @@ Confident, not pushy
             </div>
 
             <div className="field" style={{ marginBottom: 0 }}>
-              <label>KB instructions</label>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                <label style={{ marginBottom: 0 }}>KB instructions</label>
+                {selectedDocIds.length > 0 && (
+                  <button type="button" className="link-btn" onClick={() => {
+                    const picked = selectedDocIds
+                      .map(id => userKbDocs.find(d => d.id === id))
+                      .filter((d): d is import("@/lib/api").UserDocument => !!d);
+                    const suggestion = suggestKbInstructions(picked);
+                    autoKbInstructionsRef.current = suggestion;
+                    setKbInstructions(suggestion);
+                  }}>
+                    {kbInstructions.trim() === "" ? "Suggest instructions" : "Regenerate from attached documents"}
+                  </button>
+                )}
+              </div>
               <textarea className="textarea" style={{ minHeight: 70 }} value={kbInstructions} onChange={e => setKbInstructions(e.target.value)}
                 placeholder="Instructions for how the agent should use knowledge base results..." />
+              {selectedDocIds.length > 0 && kbInstructions === autoKbInstructionsRef.current && (
+                <div style={{ fontSize: 11.5, color: "var(--ink-faint)", marginTop: 4 }}>
+                  Auto-filled based on the attached document{selectedDocIds.length > 1 ? "s" : ""} - edit freely, callers will hear whatever is here.
+                </div>
+              )}
             </div>
           </Section>
 

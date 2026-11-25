@@ -233,7 +233,7 @@ def duplicate_agent(agent_id: str, user_id: str) -> dict:
         "meeting_buffer_minutes": src.get("meeting_buffer_minutes", 0),
         "meeting_timezone": src.get("meeting_timezone", "UTC"),
         "booking_hours_start": src.get("booking_hours_start", "09:00"),
-        "booking_hours_end": src.get("booking_hours_end", "17:00"),
+        "booking_hours_end": src.get("booking_hours_end", "21:00"),
         "meeting_instructions": src.get("meeting_instructions"),
     }).execute()
     if not result.data:

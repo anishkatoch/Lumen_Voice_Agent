@@ -54,6 +54,16 @@ DEFAULTS: dict[str, str] = {
     # campaigns' default retry settings both read these.
     "call_retry_interval_minutes": "3",
     "call_retry_max_attempts":     "5",
+    # Phone calls only (Twilio/Plivo) - lets a stalled turn (caller mid-number,
+    # "um", trailing connector phrase) get a short extension instead of being
+    # cut off. "false" disables the extension outright, so every turn ends on
+    # the plain silence timer alone. See app/voice/turn_heuristics.py.
+    "turn_heuristic_enabled": "true",
+    # Spoken filler phrases ("let me check that for you") played while a call
+    # is waiting on a knowledge-base lookup or a slow LLM turn, so the caller
+    # doesn't hear dead air. "false" turns this off for every agent, existing
+    # and future, regardless of that agent's own filler_phrases field.
+    "filler_phrases_enabled": "true",
 }
 
 

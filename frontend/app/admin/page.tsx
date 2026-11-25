@@ -57,6 +57,14 @@ interface AdminConfig {
   realtime_model:           string;
   call_retry_interval_minutes: string;
   call_retry_max_attempts:     string;
+  turn_heuristic_enabled: string;
+  filler_phrases_enabled: string;
+}
+
+interface TurnHeuristicWords {
+  filler_words: string[];
+  connector_phrases: string[];
+  number_words: string[];
 }
 
 interface KbRequest {
@@ -406,6 +414,50 @@ function LlmTestButton({ provider, model, unsaved }: { provider: string; model: 
   );
 }
 
+function WordChips({ words }: { words: string[] }) {
+  return (
+    <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+      {words.map(w => (
+        <span key={w} style={{
+          fontSize: 12, fontFamily: "var(--font-mono)", padding: "3px 8px",
+          borderRadius: "var(--r-sm)", background: "var(--surface-2)", color: "var(--ink-muted)",
+        }}>{w}</span>
+      ))}
+    </div>
+  );
+}
+
+function TurnHeuristicWordsPanel() {
+  const [words, setWords] = useState<TurnHeuristicWords | null>(null);
+  const [err, setErr] = useState("");
+
+  useEffect(() => {
+    api<TurnHeuristicWords>("/api/admin/turn-heuristics")
+      .then(setWords)
+      .catch(e => setErr(e instanceof Error ? e.message : "Failed to load"));
+  }, []);
+
+  if (err) return <Notice>{err}</Notice>;
+  if (!words) return <p style={{ fontSize: 12.5, color: "var(--ink-faint)" }}>Loading…</p>;
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      <div>
+        <p style={{ fontSize: 12, color: "var(--ink-muted)", marginBottom: 6 }}>Filler sounds</p>
+        <WordChips words={words.filler_words} />
+      </div>
+      <div>
+        <p style={{ fontSize: 12, color: "var(--ink-muted)", marginBottom: 6 }}>Trailing connector phrases</p>
+        <WordChips words={words.connector_phrases} />
+      </div>
+      <div>
+        <p style={{ fontSize: 12, color: "var(--ink-muted)", marginBottom: 6 }}>Numbers (any trailing digit or number word)</p>
+        <WordChips words={words.number_words} />
+      </div>
+    </div>
+  );
+}
+
 // ── Providers Tab ─────────────────────────────────────────────────────────────
 function ProvidersTab({ config, status, onSave }: {
   config: AdminConfig; status: SystemStatus | null; onSave: (updates: Partial<AdminConfig>) => Promise<void>;
@@ -437,7 +489,7 @@ function ProvidersTab({ config, status, onSave }: {
   const azureWillRunInstead = local.llm_provider === "openai" && azure?.configured;
 
   return (
-    <div style={{ maxWidth: 980 }}>
+    <div>
       <Section title="Voice pipeline">
         <RadioGroup label="Pipeline" value={local.voice_pipeline} onChange={set("voice_pipeline")}
           options={[
@@ -642,6 +694,36 @@ function ProvidersTab({ config, status, onSave }: {
         </div>
       </Section>
 
+      <Section title="Turn-taking (phone calls)">
+        <Notice>
+          On Twilio/Plivo calls, a caller going quiet ends their turn after a short silence
+          window. When their last words look unfinished (one of the signals below), this grants
+          one short extension instead of cutting them off mid-sentence or mid-number.
+        </Notice>
+        <div style={{ marginTop: 14 }}>
+          <RadioGroup label="Smart turn-end detection" value={local.turn_heuristic_enabled}
+            onChange={set("turn_heuristic_enabled")}
+            options={[{ value: "true", label: "On" }, { value: "false", label: "Off" }]} />
+        </div>
+        <div style={{ marginTop: 14, paddingTop: 14, borderTop: "1px solid var(--border)" }}>
+          <TurnHeuristicWordsPanel />
+        </div>
+      </Section>
+
+      <Section title="Filler phrases (phone + browser calls)">
+        <Notice>
+          While a call is waiting on a knowledge-base lookup or a slow LLM turn, the agent speaks a
+          short filler phrase (&quot;let me check that for you&quot;) so the caller doesn&apos;t hear dead air.
+          Turning this off applies to every agent - existing and future - regardless of what any
+          agent&apos;s own filler phrases field is set to.
+        </Notice>
+        <div style={{ marginTop: 14 }}>
+          <RadioGroup label="Spoken filler phrases" value={local.filler_phrases_enabled}
+            onChange={set("filler_phrases_enabled")}
+            options={[{ value: "true", label: "On" }, { value: "false", label: "Off" }]} />
+        </div>
+      </Section>
+
       {err && <p style={{ color: "var(--danger)", fontSize: 13, marginBottom: 12 }}>{err}</p>}
       <SaveButton saving={saving} saved={saved} onClick={handleSave} label="Save provider settings" />
     </div>
@@ -687,7 +769,7 @@ function StorageTab({ config, onSave }: { config: AdminConfig; onSave: (u: Parti
   }
 
   return (
-    <div style={{ maxWidth: 980 }}>
+    <div>
       <Section title="Knowledge base storage limits">
         <StorageField label="User KB limit (MB per user)"
           hint="Max total document storage each user can upload to their personal Knowledge Base."
@@ -728,7 +810,7 @@ function KbAccessTab() {
   const resolved = requests.filter(r => r.status !== "pending");
 
   return (
-    <div style={{ maxWidth: 1100 }}>
+    <div>
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 18 }}>
         <div className="segmented">
           {(["requests","users"] as const).map(t => (
@@ -836,7 +918,7 @@ function StatusTab() {
   const ap = status.active_pipeline;
 
   return (
-    <div style={{ maxWidth: 1100 }}>
+    <div>
       <Section title="Right now, a new call would use">
         {ap.voice_pipeline === "realtime" ? (
           <div className="status-grid">
@@ -940,7 +1022,7 @@ function CallDetailView({ account, conv, onBack }: {
   }, [account.user_id, conv.id]);
 
   return (
-    <div style={{ maxWidth: 1100 }}>
+    <div>
       <button className="back-link" onClick={onBack}><ArrowLeft size={14} />{account.email}</button>
       <div className="view-head">
         <div><h1 className="view-title" style={{ fontSize: 20 }}>{conv.title}</h1></div>
@@ -1099,7 +1181,7 @@ function AccountCallsView({ account, onBack }: { account: CallAccount; onBack: (
   });
 
   return (
-    <div style={{ maxWidth: 1100 }}>
+    <div>
       <button className="back-link" onClick={onBack}><ArrowLeft size={14} />All accounts</button>
       <div className="view-head">
         <div>
@@ -1187,7 +1269,7 @@ function CallAnalyticsTab() {
   const filtered = accounts.filter(a => a.email.toLowerCase().includes(search.toLowerCase()));
 
   return (
-    <div style={{ maxWidth: 1100 }}>
+    <div>
       <div style={{ display: "flex", gap: 10, marginBottom: 16, alignItems: "center" }}>
         <div style={{ position: "relative", flex: 1, maxWidth: 360 }}>
           <Search size={14} style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", color: "var(--ink-faint)" }} />
