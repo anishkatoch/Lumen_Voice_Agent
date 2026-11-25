@@ -58,6 +58,7 @@ interface AdminConfig {
   call_retry_interval_minutes: string;
   call_retry_max_attempts:     string;
   turn_heuristic_enabled: string;
+  filler_phrases_enabled: string;
 }
 
 interface TurnHeuristicWords {
@@ -488,7 +489,7 @@ function ProvidersTab({ config, status, onSave }: {
   const azureWillRunInstead = local.llm_provider === "openai" && azure?.configured;
 
   return (
-    <div style={{ maxWidth: 980 }}>
+    <div>
       <Section title="Voice pipeline">
         <RadioGroup label="Pipeline" value={local.voice_pipeline} onChange={set("voice_pipeline")}
           options={[
@@ -709,6 +710,20 @@ function ProvidersTab({ config, status, onSave }: {
         </div>
       </Section>
 
+      <Section title="Filler phrases (phone + browser calls)">
+        <Notice>
+          While a call is waiting on a knowledge-base lookup or a slow LLM turn, the agent speaks a
+          short filler phrase (&quot;let me check that for you&quot;) so the caller doesn&apos;t hear dead air.
+          Turning this off applies to every agent - existing and future - regardless of what any
+          agent&apos;s own filler phrases field is set to.
+        </Notice>
+        <div style={{ marginTop: 14 }}>
+          <RadioGroup label="Spoken filler phrases" value={local.filler_phrases_enabled}
+            onChange={set("filler_phrases_enabled")}
+            options={[{ value: "true", label: "On" }, { value: "false", label: "Off" }]} />
+        </div>
+      </Section>
+
       {err && <p style={{ color: "var(--danger)", fontSize: 13, marginBottom: 12 }}>{err}</p>}
       <SaveButton saving={saving} saved={saved} onClick={handleSave} label="Save provider settings" />
     </div>
@@ -754,7 +769,7 @@ function StorageTab({ config, onSave }: { config: AdminConfig; onSave: (u: Parti
   }
 
   return (
-    <div style={{ maxWidth: 980 }}>
+    <div>
       <Section title="Knowledge base storage limits">
         <StorageField label="User KB limit (MB per user)"
           hint="Max total document storage each user can upload to their personal Knowledge Base."
@@ -795,7 +810,7 @@ function KbAccessTab() {
   const resolved = requests.filter(r => r.status !== "pending");
 
   return (
-    <div style={{ maxWidth: 1100 }}>
+    <div>
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 18 }}>
         <div className="segmented">
           {(["requests","users"] as const).map(t => (
@@ -903,7 +918,7 @@ function StatusTab() {
   const ap = status.active_pipeline;
 
   return (
-    <div style={{ maxWidth: 1100 }}>
+    <div>
       <Section title="Right now, a new call would use">
         {ap.voice_pipeline === "realtime" ? (
           <div className="status-grid">
@@ -1007,7 +1022,7 @@ function CallDetailView({ account, conv, onBack }: {
   }, [account.user_id, conv.id]);
 
   return (
-    <div style={{ maxWidth: 1100 }}>
+    <div>
       <button className="back-link" onClick={onBack}><ArrowLeft size={14} />{account.email}</button>
       <div className="view-head">
         <div><h1 className="view-title" style={{ fontSize: 20 }}>{conv.title}</h1></div>
@@ -1166,7 +1181,7 @@ function AccountCallsView({ account, onBack }: { account: CallAccount; onBack: (
   });
 
   return (
-    <div style={{ maxWidth: 1100 }}>
+    <div>
       <button className="back-link" onClick={onBack}><ArrowLeft size={14} />All accounts</button>
       <div className="view-head">
         <div>
@@ -1254,7 +1269,7 @@ function CallAnalyticsTab() {
   const filtered = accounts.filter(a => a.email.toLowerCase().includes(search.toLowerCase()));
 
   return (
-    <div style={{ maxWidth: 1100 }}>
+    <div>
       <div style={{ display: "flex", gap: 10, marginBottom: 16, alignItems: "center" }}>
         <div style={{ position: "relative", flex: 1, maxWidth: 360 }}>
           <Search size={14} style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", color: "var(--ink-faint)" }} />

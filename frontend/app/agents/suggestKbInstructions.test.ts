@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { suggestKbInstructions } from "./page";
+import { suggestKbInstructions } from "./suggestKbInstructions";
 
 describe("suggestKbInstructions", () => {
   it("returns empty string with no documents attached", () => {

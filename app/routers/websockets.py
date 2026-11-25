@@ -664,6 +664,7 @@ async def agent_websocket_endpoint(websocket: WebSocket, agent_id: str, token: s
 
     from app.admin.admin_config_service import get as get_admin_config
     _realtime_active = await asyncio.to_thread(get_admin_config, "voice_pipeline") == "realtime"
+    FILLER_PHRASES_ENABLED = (await asyncio.to_thread(get_admin_config, "filler_phrases_enabled")) != "false"
 
     async def _execute_webhook(fn: dict, args: dict) -> str:
         """Call the configured webhook and return its response as a JSON string.
@@ -870,7 +871,8 @@ async def agent_websocket_endpoint(websocket: WebSocket, agent_id: str, token: s
                 if _retrieval_filler_task and not _retrieval_filler_task.done():
                     _retrieval_filler_task.cancel()
 
-            _retrieval_filler_task = asyncio.create_task(_cover_retrieval_delay())
+            if FILLER_PHRASES_ENABLED:
+                _retrieval_filler_task = asyncio.create_task(_cover_retrieval_delay())
 
             t1 = time.time()
             # No eager agent-KB fetch here - when the agent has eligible KB

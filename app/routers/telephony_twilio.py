@@ -500,6 +500,10 @@ async def twilio_stream_endpoint(websocket: WebSocket):
     TURN_HEURISTIC_ENABLED = _TURN_HEURISTIC_ENABLED_DEFAULT
     BARGE_IN_STREAK_NEEDED = 4  # ~80ms of sustained signal required before cancelling the agent
     RETRIEVAL_FILLER_DELAY_SECONDS = 1.2  # speak a filler if RAG/LLM hasn't produced anything by then
+    # Re-read live from the admin panel once the call starts (below), same as
+    # TURN_HEURISTIC_ENABLED, so an admin's on/off toggle takes effect without
+    # a redeploy, for every agent, regardless of that agent's own filler_phrases field.
+    FILLER_PHRASES_ENABLED = True
 
     async def _setup_call(custom_params: dict, twilio_call_sid: str | None) -> bool:
         """Resolve agent/user/conversation from the Twilio 'start' event's
@@ -755,7 +759,8 @@ async def twilio_stream_endpoint(websocket: WebSocket):
             await _speak(text, gen)
 
         try:
-            _retrieval_filler_task = asyncio.create_task(_cover_retrieval_delay())
+            if FILLER_PHRASES_ENABLED:
+                _retrieval_filler_task = asyncio.create_task(_cover_retrieval_delay())
 
             # History fetch and user-message save are independent Supabase
             # round trips - run the save in the background (the turn already
@@ -916,6 +921,7 @@ async def twilio_stream_endpoint(websocket: WebSocket):
 
                 from app.admin.admin_config_service import get as get_admin_config
                 TURN_HEURISTIC_ENABLED = (await asyncio.to_thread(get_admin_config, "turn_heuristic_enabled")) != "false"
+                FILLER_PHRASES_ENABLED = (await asyncio.to_thread(get_admin_config, "filler_phrases_enabled")) != "false"
                 if await asyncio.to_thread(get_admin_config, "voice_pipeline") == "realtime":
                     from app.telephony.shared import run_realtime_telephony_bridge
 
