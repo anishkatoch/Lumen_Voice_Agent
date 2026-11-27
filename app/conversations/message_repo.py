@@ -47,14 +47,23 @@ def get_conversation_history(conversation_id: str) -> list[dict]:
     return result.data
 
 
-def get_session_messages(conversation_id: str, limit: int = 20) -> list[dict]:
+def get_session_messages(conversation_id: str, limit: int = 40) -> list[dict]:
     """Return last `limit` messages formatted for LLM context.
 
     Queries only the last `limit` rows directly instead of fetching the
     conversation's entire history and slicing in Python - this runs on
     every single turn of every live call, so without the DB-side limit, cost
     grows with total conversation length (O(n) per turn, O(n^2) over a long
-    call) instead of staying constant."""
+    call) instead of staying constant.
+
+    40 rather than a smaller window: a call with a lot of short back-and-forth
+    (confirming a misheard name, spelling an email letter by letter, a noisy
+    line producing extra one-word turns) can otherwise roll a fact established
+    earlier in the SAME call - like the day/time already agreed on - out of
+    the model's context, so it ends up asking the caller to repeat themselves
+    (seen live 2026-11-25: a booking's day/time, agreed early, was gone from
+    context by the time email spelling finished, and the agent asked for it
+    again)."""
     result = _execute_with_retry(lambda: get_supabase().table("messages")
         .select("role, content, created_at")
         .eq("conversation_id", conversation_id)

@@ -28,13 +28,21 @@ def get_phone_number(number_id: str, user_id: str) -> dict | None:
 
 def get_number_by_phone(phone_number: str) -> dict | None:
     """Look up an active number record by phone number string.
-    A number set to direction='outbound' is caller-ID-only: inbound calls to
-    it are not routed to an agent, so it is excluded here.
+    A number set to direction='outbound' is caller-ID-only, and direction='none'
+    is not used by Lumen at all (freeing the number up for another agent) -
+    inbound calls to either are not routed to an agent, so both are excluded here.
 
     Numbers are stored in E.164 (with a leading '+', enforced by the add-number
     form), but Plivo's inbound voice webhook posts "To" without the leading
     '+' - an exact match against the stored value would never hit, so both
-    forms are tried here."""
+    forms are tried here.
+
+    Nothing stops the same phone_number string from existing in more than one
+    row (e.g. re-adding a number and attaching it to a different agent leaves
+    the old row behind instead of replacing it) - ordered by created_at desc
+    so the most recently (re)assigned row wins instead of whichever one the
+    database happened to return first, which was silently routing live calls
+    to a stale agent (found live 2026-11-27)."""
     db = get_supabase()
     candidates = {phone_number, phone_number.lstrip("+"), "+" + phone_number.lstrip("+")}
     result = (
@@ -43,6 +51,8 @@ def get_number_by_phone(phone_number: str) -> dict | None:
         .in_("phone_number", list(candidates))
         .eq("is_active", True)
         .neq("direction", "outbound")
+        .neq("direction", "none")
+        .order("created_at", desc=True)
         .limit(1)
         .execute()
     )
@@ -131,8 +141,9 @@ def get_from_number(user_id: str, agent_id: str) -> dict | None:
     app/twilio_repo.py's get_from_number for the Plivo side.
     """
     db = get_supabase()
-    # direction='inbound' numbers are answer-only and never used as the
-    # outbound caller ID; 'outbound' and 'both' qualify.
+    # direction='inbound' numbers are answer-only and direction='none' numbers
+    # aren't used by Lumen at all, so neither is ever used as the outbound
+    # caller ID; 'outbound' and 'both' qualify.
     result = (
         db.table("plivo_phone_numbers")
         .select("phone_number, plivo_account_id")
@@ -140,6 +151,7 @@ def get_from_number(user_id: str, agent_id: str) -> dict | None:
         .eq("agent_id", agent_id)
         .eq("is_active", True)
         .neq("direction", "inbound")
+        .neq("direction", "none")
         .limit(1)
         .execute()
     )
@@ -150,6 +162,7 @@ def get_from_number(user_id: str, agent_id: str) -> dict | None:
             .eq("user_id", user_id)
             .eq("is_active", True)
             .neq("direction", "inbound")
+            .neq("direction", "none")
             .limit(1)
             .execute()
         )
@@ -159,7 +172,8 @@ def get_from_number(user_id: str, agent_id: str) -> dict | None:
 def get_number_for_agent(user_id: str, agent_id: str) -> dict | None:
     """Active Plivo number attached specifically to this agent (no
     user-wide fallback) - used to decide, additively, whether an outbound
-    HR call should go out over Plivo instead of Twilio."""
+    HR call should go out over Plivo instead of Twilio. direction='none'
+    numbers aren't used by Lumen at all, so they're excluded here too."""
     db = get_supabase()
     result = (
         db.table("plivo_phone_numbers")
@@ -167,6 +181,7 @@ def get_number_for_agent(user_id: str, agent_id: str) -> dict | None:
         .eq("user_id", user_id)
         .eq("agent_id", agent_id)
         .eq("is_active", True)
+        .neq("direction", "none")
         .limit(1)
         .execute()
     )

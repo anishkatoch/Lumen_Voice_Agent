@@ -198,6 +198,16 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
 
             if session.state == AgentState.SPEAKING:
                 await manager.send_json(websocket, {"type": "audio_end"})
+                # Back to LISTENING on the normal success path - without this
+                # the session state stays SPEAKING forever (nothing else ever
+                # resets it here), so every later text_input is silently
+                # dropped (it requires state == LISTENING) and real mic audio
+                # is never processed into a new turn either. Only the
+                # exception handler below used to do this, so the very first
+                # successful reply of a session already broke every turn
+                # after it (found live 2026-11-27).
+                session.state = AgentState.LISTENING
+                await manager.send_json(websocket, {"type": "state", "state": "LISTENING"})
             else:
                 await manager.send_json(websocket, {"type": "stop_audio"})
 
@@ -1034,6 +1044,16 @@ async def agent_websocket_endpoint(websocket: WebSocket, agent_id: str, token: s
 
             if session.state == AgentState.SPEAKING:
                 await manager.send_json(websocket, {"type": "audio_end"})
+                # Back to LISTENING on the normal success path - without this
+                # the session state stays SPEAKING forever (nothing else ever
+                # resets it here), so every later text_input is silently
+                # dropped (it requires state == LISTENING) and real mic audio
+                # is never processed into a new turn either. Only the
+                # exception handler below used to do this, so the very first
+                # successful reply of a session already broke every turn
+                # after it (found live 2026-11-27).
+                session.state = AgentState.LISTENING
+                await manager.send_json(websocket, {"type": "state", "state": "LISTENING"})
             else:
                 await manager.send_json(websocket, {"type": "stop_audio"})
 

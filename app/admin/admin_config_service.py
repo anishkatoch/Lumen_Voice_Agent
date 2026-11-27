@@ -64,6 +64,12 @@ DEFAULTS: dict[str, str] = {
     # doesn't hear dead air. "false" turns this off for every agent, existing
     # and future, regardless of that agent's own filler_phrases field.
     "filler_phrases_enabled": "true",
+    # Lets the model end a phone call itself (the end_call tool, offered on
+    # every call by default - see app.telephony.shared.build_end_call_tool)
+    # once the conversation has genuinely finished. "false" is an instant
+    # kill switch for every agent, existing and future, if anything about
+    # automatic hangups misbehaves in production.
+    "end_call_tool_enabled": "true",
 }
 
 

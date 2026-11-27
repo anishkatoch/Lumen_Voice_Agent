@@ -910,3 +910,321 @@ Config already read `ELEVENLABS_VOICE_ID` from the environment as an override fo
 **Fix:**
 Added it to `.env.example`.
 **Files:** `.env.example`
+
+---
+
+## 69. Per-Turn Call Latency — Several Fixed Costs Stacking on Every Single Turn
+
+**Problem:**
+The caller-stops-speaking-to-first-agent-audio critical path carried a handful of fixed costs on every turn, across Twilio, Plivo, and the browser pipeline: `StreamingTranscriber.finish()` blocked on Deepgram's socket close, which has a 0.5s sleep built into the SDK; any agent with a tool configured (KB, interview, campaign, meeting booking, webhook) waited for the *entire* LLM completion before speaking a word, because tool-aware completions weren't streamed; a new ElevenLabs/OpenAI/Azure TTS client — and a new TLS handshake — was built per sentence instead of reused; and call setup ran its conversation-insert, functions lookup, KB-eligibility check, and meeting-tools check one after another instead of concurrently.
+
+**Fix:**
+- STT: `finish()` sends Deepgram a `Finalize` message and returns as soon as the flushed transcript arrives; the actual socket close happens in the background.
+- LLM: new `detect_tool_call_stream` streams tool-aware completions sentence-by-sentence for all three pipelines; `AsyncOpenAI` clients are cached per provider/key/base_url instead of rebuilt per call.
+- TTS: ElevenLabs client cached process-wide; its sync HTTP stream is consumed in a worker thread with thread-safe queue handoff instead of blocking the event loop; OpenAI TTS and Azure Speech stream audio out as generated instead of collecting the full response first.
+- Call setup: the conversation insert, functions lookup, KB eligibility, and meeting-tools check in `_setup_call` now run concurrently in both phone routers; admin config serves stale values and refreshes in the background instead of blocking on a Supabase read each time.
+**Files:** `app/voice/deepgram_service.py`, `app/voice/llm_service.py`, `app/voice/elevenlabs_service.py`, `app/voice/openai_tts_service.py`, `app/voice/azure_speech_tts_service.py`, `app/telephony/shared.py`, `app/routers/telephony_plivo.py`, `app/routers/telephony_twilio.py`, `app/routers/websockets.py`, `app/main.py`, `app/admin/admin_config_service.py`, `config.yaml`
+
+---
+
+## 70. No-Tools Phone Calls Silently Dropped the Phone-Specific System Prompt
+
+**Problem:**
+On a phone call for an agent with no tools configured, the LLM lost the phone-specific system context — agent name, HR interview/campaign context — that the tool-enabled path already built and used correctly.
+
+**Root Cause:**
+The no-tools branch passed `agent.get("system_prompt")` straight through as the override, instead of `base_system` — the already-assembled string that bakes in the phone context. The tools branch used `base_system` correctly; only the no-tools branch had this gap.
+
+**Fix:**
+Pass `base_system` on the no-tools path too, matching the tools path.
+**Files:** `app/routers/telephony_plivo.py`, `app/routers/telephony_twilio.py`
+
+---
+
+## 71. HR Interview Retry Re-Asked Questions Already Answered on a Prior Attempt
+
+**Problem:**
+When a failed/dropped interview call was retried, the candidate could be asked a question they had already answered on the earlier attempt.
+
+**Root Cause:**
+The question list rebuilt for a retry call included every configured question, with no check against what had already been recorded in a prior attempt.
+
+**Fix:**
+Skip questions already recorded in a prior call attempt when rebuilding the question list on retry.
+**Files:** `app/telephony/shared.py`
+
+---
+
+## 72. Cancelling a Scheduled Call Could Fail Silently and Keep Retrying Forever
+
+**Problem:**
+If the cancel-call request to the backend failed, the frontend gave no error — the call looked cancelled to the HR user, but the scheduler kept finding it and retrying.
+
+**Fix:**
+Added error/success feedback to the frontend cancel action so a failed cancel is visible instead of leaving a scheduled call silently pending.
+**Files:** `frontend/app/agents/page.tsx`
+
+---
+
+## 73. CI Test Pollution — `hr_campaign_repo`/`hr_repo` Froze a Mocked `get_supabase`
+
+**Problem:**
+Campaign/interview tests failed intermittently in CI depending on test run order, with a `KeyError` on some table name a test's fake Supabase client never registered.
+
+**Root Cause:**
+Both modules imported `get_supabase` by name at module level. If their first import in a test run happened to land inside another test's `app.core.database.get_supabase` mock (as in `test_call_reconciliation`'s local-import call path), they permanently bound to that test's fake client for the rest of the suite.
+
+**Fix:**
+Switched both to a local import on each call, matching the existing `admin_config_service` fix, so they always read the current, properly-scoped `get_supabase`.
+**Files:** `app/hr_campaigns/hr_campaign_repo.py`, `app/hr_campaigns/hr_repo.py`
+
+---
+
+## 74. Plivo Inbound Calls Failing Agent Lookup Due to Phone Number Format
+
+**Problem:**
+Every Plivo inbound call played "This number is not connected to an agent" even when the number was correctly assigned to an agent.
+
+**Root Cause:**
+Plivo's inbound voice webhook posts `"To"` without a leading `+`, but numbers are stored in E.164 with one — `get_number_by_phone`'s exact match never hit.
+
+**Fix:**
+Match against both the `+` and bare forms of the number.
+**Files:** `app/telephony/plivo/plivo_repo.py`
+
+---
+
+## 75. Plivo Inbound Calls Getting a Busy Tone From Unescaped XML
+
+**Problem:**
+Plivo inbound calls failed with a busy tone, even though the webhook returned 200 with the agent correctly resolved — no voice, no greeting, nothing.
+
+**Root Cause:**
+`plivo_voice_webhook` built the Stream URL for plain inbound calls by joining the `to`/`from` query params with a raw `&`, embedded directly as XML text content. A bare `&` is not valid XML, so Plivo's parser rejected the response outright. The campaign/interview Stream URLs never hit this because they only ever carry one query param.
+
+**Fix:**
+Escape the URL to `&amp;` before embedding it in the XML response.
+**Files:** `app/routers/telephony_plivo.py`
+
+---
+
+## 76. Zero Webhook-Level Test Coverage on Plivo Let #74/#75 Ship Without a Regression Guard
+
+**Problem:**
+Twilio's inbound/interview-outbound/campaign-outbound voice webhooks already had full test coverage proving they work the same for any custom agent, not just the built-in templates. Plivo's equivalent webhooks (`/plivo/voice`, `/plivo/outbound/voice`, `/plivo/campaign/outbound/voice`) had none at all — bugs #74 and #75 could only have been caught by a live phone call.
+
+**Fix:**
+Added `tests/test_plivo_voice_webhooks.py` (9 tests) covering inbound, interview-outbound, and campaign-outbound webhook construction and fallback paths, including a dedicated regression guard for the #75 ampersand-escaping bug, each run against a generic custom agent rather than "Meeting Assistant" to prove no agent-name special-casing exists anywhere in the routing path. Also extended `tests/test_telephony_shared.py` with inbound call-routing tests confirming `resolve_call_context` is purely agent-id-driven.
+**Files:** `tests/test_plivo_voice_webhooks.py`, `tests/test_telephony_shared.py`
+
+---
+
+## 77. No Way to Turn the Turn-Taking Heuristic Off, and It Missed Callers Trailing Off Mid-Number
+
+**Problem:**
+The unfinished-turn heuristic (added in #49) had no admin control — if it ever misbehaved for a particular setup, the only fix was a code change. It also didn't catch a caller trailing off mid-number (a phone number, a time, a price split across partials by a natural pause), so the plain silence timer could cut them off there too.
+
+**Fix:**
+Added a `turn_heuristic_enabled` admin config flag (default on) that Twilio and Plivo both read live; added a read-only `/api/admin/turn-heuristics` endpoint exposing the actual filler/connector/number word lists so the admin panel never hardcodes a second copy that could drift from the code; extended `sounds_unfinished()` to also flag a trailing bare number.
+**Files:** `app/admin/admin_config_service.py`, `app/routers/admin.py`, `app/voice/turn_heuristics.py`, `app/routers/telephony_plivo.py`, `app/routers/telephony_twilio.py`
+
+---
+
+## 78. Meeting Booking Closed Too Early by Default, and Accepted Times Off the Real Slot Grid
+
+**Problem:**
+New agents defaulted to a 5pm booking close, earlier than most people want for a bookable call window. Separately, `book_meeting`/`reschedule_meeting` would accept any time string the model proposed, including a time `check_availability` would never have actually offered — outside business hours, or off the half-hour grid.
+
+**Fix:**
+Moved `booking_hours_end`'s default from `17:00` to `21:00` (migration `0031`, with a backfill for existing agents still sitting on the old default — any agent that deliberately set a different closing time, including one that happens to also be `17:00`, keeps it). Added `_slot_is_on_grid()` and used it to reject `book_meeting`/`reschedule_meeting` for a time that isn't actually a valid slot, telling the model to call `check_availability` and offer a real one instead of silently booking the stray time.
+**Files:** `app/agents/agent_repo.py`, `app/integrations/meeting_tools.py`, `migrations/versions/0031_booking_hours_default_9pm.py`
+
+---
+
+## 79. `check_availability` Called Again After the Caller Already Picked a Time
+
+**Problem:**
+Once a caller picked one of the times the agent had just offered, the agent would re-check availability and read out a fresh list of alternatives instead of locking in the answer — sounded like it forgot what was just said, and cost an extra calendar round trip and LLM turn per re-check.
+
+**Root Cause:**
+The `check_availability` tool description told the model to call it "before offering or confirming any meeting time", with no exception for a time already offered in the same conversation.
+
+**Fix:**
+Tightened the tool description and the booking flow instructions: call `check_availability` once per day, and once the caller names one of the already-offered times, confirm it in one short sentence and move on — never re-check or re-list alternatives unless the caller asks for a different day.
+**Files:** `app/integrations/meeting_tools.py`
+
+---
+
+## 80. Global Toggle for Spoken Filler Phrases
+
+**Problem:**
+The delay-gated filler phrase (see #61/#64) had no admin control — every agent, on every call (phone and browser), always got it with no way to turn it off account-wide.
+
+**Fix:**
+Added an admin-controlled toggle (mirroring the turn-taking heuristic pattern from #77) that gates filler phrases uniformly at call start for every agent.
+**Files:** `app/admin/admin_config_service.py`, `app/routers/admin.py`, `app/routers/telephony_plivo.py`, `app/routers/telephony_twilio.py`, `app/routers/websockets.py`
+
+---
+
+*The entries below (81+) were found while auditing the full commit history for issues that had never been logged here at all — not just ones from a single session.*
+
+---
+
+## 81. Three Separate CI-Only Failures: Stale Embedding Mocks, Admin Config Fragility, Flaky Fixed Sleeps
+
+**Problem:**
+RAG/doc-ingestion tests still patched the old direct OpenAI client, but embedding calls had moved behind a shared `app.core.embeddings.embed()` helper — the mocks silently did nothing. Separately, `admin_config_service._load()` raised on any transient Supabase hiccup instead of falling back to the known-good defaults, aborting every call (every pipeline checks `voice_pipeline` at call setup) on a momentary blip. And several `test_twilio_stream_pipeline.py` tests gated on a fixed `time.sleep()` for a background task instead of polling, flaking on a slower CI runner.
+
+**Fix:**
+Repointed the stale mocks to the real embedding client; made `_load()` catch and fall back to `DEFAULTS` instead of raising; replaced the fixed sleeps with the existing `_wait_until()` poll helper used elsewhere in the file.
+**Files:** `tests/test_agents.py`, `tests/test_services.py`, `app/admin/admin_config_service.py`, `tests/test_twilio_stream_pipeline.py`
+
+---
+
+## 82. Filler Phrases Were Always Random, Never Matched the Situation
+
+**Problem:**
+The filler phrase played before a slow tool call/RAG lookup was picked at random from the agent's list every time, regardless of whether the caller had just asked a question or just given information — and a short list could repeat the exact same phrase back-to-back.
+
+**Fix:**
+Classify the caller's last message (question / info given / neither) with a cheap keyword check (no extra LLM call, since the filler must be picked before the real reply exists) and pick a filler that fits. `filler_phrases` lines can now be scoped with a `"question:"`/`"info:"`/`"default:"` prefix — unprefixed lines still work as before. Also tracks the last filler actually spoken per call and avoids repeating it back-to-back when the category has more than one option.
+**Files:** `app/voice/llm_service.py`, `app/routers/telephony_plivo.py`, `app/routers/telephony_twilio.py`, `app/routers/websockets.py`
+
+---
+
+## 83. Stale Pooled DB Connection Silently Dropped the Final Message of a Call
+
+**Problem:**
+On some calls, the very last message (assistant or user) never made it into the database — no error, no exception, just missing.
+
+**Root Cause:**
+A pooled Supabase connection that the remote host had already closed was reused for the final write; the request failed with `httpx.TransportError`, uncaught.
+
+**Fix:**
+Retry DB writes/reads once on a transient connection error, resetting the cached Supabase client first. Also logs exceptions from the fire-and-forget greeting/`run_pipeline` task instead of letting them disappear as "Task exception was never retrieved".
+**Files:** `app/conversations/message_repo.py`, `app/core/database.py`
+
+---
+
+## 84. Every Phone Turn Paid for an Embedding + pgvector Query Regardless of Relevance
+
+**Problem:**
+The Cascade/Classic/Realtime phone pipelines ran RAG/KB retrieval eagerly on every single turn, even turns with nothing to search for — an embedding call plus a pgvector query per turn, whether or not it was relevant.
+
+**Fix:**
+Replaced eager per-turn retrieval with an on-demand `search_knowledge_base` tool the model calls only when it actually needs it. Offering that tool is itself gated: with one KB document selected, any non-empty `kb_instructions` is enough; with two or more, a document is only searchable if `kb_instructions` actually names it. This is the origin of the document-naming rule that the frontend's auto-suggested KB instructions (Frontend #21) exists to satisfy.
+**Files:** `app/telephony/shared.py`, `app/routers/telephony_plivo.py`, `app/routers/telephony_twilio.py`
+
+---
+
+## 85. Candidates Asked for a Phone Number They Were Already Being Called On
+
+**Problem:**
+On outbound HR calls, the agent would ask the candidate for their phone number even though the call was already connected to that exact number.
+
+**Fix:**
+Inject the number being dialed into the call context so the agent knows it already has it, instead of asking.
+**Files:** `app/telephony/shared.py`
+
+---
+
+## 86. RAG Embedding Calls Crashed Live Retrieval When the Plain OpenAI Key Was Deactivated
+
+**Problem:**
+Unlike chat completions (which already had an Azure-first/OpenAI-fallback path), RAG embedding calls went straight to plain OpenAI with no fallback — deactivating that key crashed retrieval on every live call that needed it.
+
+**Fix:**
+Route embedding calls through Azure OpenAI first via a new `AZURE_OPENAI_EMBEDDING_DEPLOYMENT`, falling back to plain OpenAI only if Azure is unconfigured or fails.
+**Files:** `app/agents/agent_rag_service.py`
+
+---
+
+## 87. Browser Voice Calls Played a Filler Phrase on Every Tool Call, Even Instant Ones
+
+**Problem:**
+In the browser WebSocket pipeline, a filler phrase played unconditionally before every tool call, even when the webhook or lookup responded instantly — the same class of bug fixed for the phone pipelines in #64.
+
+**Fix:**
+A filler now only fires if nothing real has been said within `RETRIEVAL_FILLER_DELAY_SECONDS` (1.2s) of the lookup/LLM round-trip starting, and is cancelled as soon as real speech begins — mirroring the phone pipelines' existing behavior.
+**Files:** `app/routers/websockets.py`
+
+---
+
+## 88. `/admin` Served the Agents App's HTML Instead of the Admin Panel
+
+**Problem:**
+Visiting `/admin` loaded the Agents SPA, which then redirected unauthenticated visitors to `/signin` — the actual admin panel build was never reachable at all. Found while QA-testing the admin portal end-to-end in a real browser.
+
+**Root Cause:**
+Copy-paste bug: the `/admin` and `/admin/` routes pointed at `frontend/out/agents` instead of `frontend/out/admin`.
+
+**Fix:**
+Pointed both routes at the correct build directory.
+**Files:** `app/main.py`
+
+---
+
+## 89. Startup Prewarm Logged a Scary 401 by Hitting the Wrong OpenAI Account
+
+**Problem:**
+The startup prewarm ping hit plain OpenAI directly and logged a 401 error whenever that key was deactivated — even though Azure OpenAI (the actual primary provider for live LLM calls) was working fine.
+
+**Fix:**
+Prewarm Azure OpenAI instead of plain OpenAI at startup.
+**Files:** `app/main.py`
+
+---
+
+## 90. `check_availability` Ignored Afternoon-Only Requests
+
+**Problem:**
+Found in live testing: asking for an afternoon slot specifically didn't reliably surface afternoon availability — a free morning could fill the whole 5-slot-capped answer, so the agent wrongly told the caller the afternoon was unavailable.
+
+**Root Cause:**
+The tool had no way to raise the start of the day's scan, so the slot cap was always filled from the start of business hours first.
+
+**Fix:**
+Added an `after` argument (HH:MM) the model sets to `12:00`/`15:00` for an afternoon/late-afternoon request, raising the scan's start time for that day; a bad value just falls back to the normal booking hours.
+**Files:** `app/integrations/meeting_tools.py`
+
+---
+
+## 91. Realtime Phone Bridge Added a Duplicate `search_knowledge_base` Tool
+
+**Problem:**
+On the Realtime voice pipeline, a call could end up with two identical `search_knowledge_base` tool entries.
+
+**Root Cause:**
+The Realtime bridge added its own copy without checking whether `_setup_call` had already added one.
+
+**Fix:**
+Skip adding it again if `_setup_call` already did.
+**Files:** `app/voice/realtime_service.py`, `app/telephony/shared.py`
+
+---
+
+## 92. A Paid-Tier-Only ElevenLabs Voice Failed Every Call With No Audio and No Visible Error
+
+**Problem:**
+If the configured ElevenLabs voice was outside the connected account's actual plan (e.g. a paid-tier library voice on a free account), every call using TTS failed with a 402 from ElevenLabs — silently, with no audio ever reaching the caller, even though a transcript still got recorded as if everything had worked.
+
+**Root Cause:**
+The voice was only settable via the `ELEVENLABS_VOICE_ID` env var, with nothing checking whether that voice was actually usable on the connected account's plan.
+
+**Fix:**
+Added `GET /api/admin/elevenlabs-voices`, listing the account's actual voices with a `free` flag; added a live `tts_elevenlabs_voice_id` admin config key (empty = fall back to the env default), read by both the browser/WS and phone TTS call sites; admin UI voice picker defaults to free voices with an audio preview and a "show all" toggle for paid-tier ones.
+**Files:** `app/routers/admin.py`, `app/admin/admin_config_service.py`, `frontend/app/admin/page.tsx`
+
+---
+
+## 93. `duplicate_agent` Silently Dropped `hr_instructions` and `selected_kb_doc_ids`
+
+**Problem:**
+Duplicating an agent lost its "HR scheduler" instructions box and its selected knowledge-base documents — the copy looked the same in most fields but silently reset these two.
+
+**Root Cause:**
+`duplicate_agent` whitelist-copies specific fields from the source agent; `hr_instructions` and `selected_kb_doc_ids` were real columns it simply never included in that list.
+
+**Fix:**
+Added both fields to the copy. Covered by a direct unit test.
+**Files:** `app/agents/agent_repo.py`, `tests/test_agents.py`

@@ -33,7 +33,7 @@ class PlivoPhoneNumberUpdate(BaseModel):
     friendly_name: Optional[str] = None
     is_active: Optional[bool] = None
     plivo_account_id: Optional[str] = None
-    direction: Optional[str] = None  # inbound | outbound | both
+    direction: Optional[str] = None  # inbound | outbound | both | none
 
 class PlivoSettingsUpdate(BaseModel):
     auth_id: Optional[str] = None
@@ -94,8 +94,8 @@ async def update_plivo_phone_number_route(
     fields = body.model_dump(exclude_none=True)
     if fields.get("plivo_account_id") == "":
         fields["plivo_account_id"] = None
-    if "direction" in fields and fields["direction"] not in ("inbound", "outbound", "both"):
-        raise HTTPException(status_code=400, detail="direction must be inbound, outbound, or both")
+    if "direction" in fields and fields["direction"] not in ("inbound", "outbound", "both", "none"):
+        raise HTTPException(status_code=400, detail="direction must be inbound, outbound, both, or none")
     try:
         return await asyncio.to_thread(
             update_phone_number, number_id, current_user["sub"], **fields,
@@ -482,6 +482,8 @@ async def plivo_stream_endpoint(websocket: WebSocket):
     _speech_gen = 0
     _call_ended = False
     _call_failure_reason: str | None = None
+    _end_call_requested = False  # flips True once the end_call tool's grace period elapses uninterrupted
+    _end_call_task: asyncio.Task | None = None  # pending grace-period timer for the above, cancelled if the caller speaks again first
     # Last filler phrase actually spoken, so the next one can avoid
     # repeating it back-to-back - see pick_filler_phrase in llm_service.py.
     _last_filler: str | None = None
@@ -815,8 +817,27 @@ async def plivo_stream_endpoint(websocket: WebSocket):
                     from app.integrations.meeting_tools import MEETING_KINDS, execute_meeting_tool
                     from app.telephony.sms_email_capture import SMS_EMAIL_KINDS, execute_sms_email_tool
                     from app.voice.llm_service import tool_steps_to_messages
+                    from app.telephony.shared import schedule_end_call, END_CALL_GRACE_SECONDS
 
                     async def _dispatch_tool(fn: dict | None, args: dict) -> str:
+                        nonlocal _end_call_task
+                        if fn and fn.get("kind") == "internal_end_call":
+                            # end_call already said its goodbye as the spoken
+                            # text preceding this tool call in the same turn -
+                            # no further LLM round-trip needed, just arm the
+                            # (cancellable) hangup timer.
+                            if _retrieval_filler_task and not _retrieval_filler_task.done():
+                                _retrieval_filler_task.cancel()
+                            print(f"[Plivo] end_call tool invoked (reason={(args.get('reason') or '')!r}) - "
+                                  f"ending call in {END_CALL_GRACE_SECONDS}s unless the caller speaks again")
+                            if _end_call_task and not _end_call_task.done():
+                                _end_call_task.cancel()
+
+                            def _mark_end_call():
+                                nonlocal _end_call_requested
+                                _end_call_requested = True
+                            _end_call_task = schedule_end_call(_mark_end_call)
+                            return json.dumps({"ending": True})
                         if fn and fn.get("kind") == "internal_record_answer":
                             # Mirrors app/routers/telephony_twilio.py's fix - record_answer
                             # is always fast (a DB write), so the filler is cancelled
@@ -842,15 +863,23 @@ async def plivo_stream_endpoint(websocket: WebSocket):
                     # app/routers/telephony_twilio.py (see the comment there).
                     executed: list[tuple] = []
                     spoke_after_tools = False
+                    ended_by_tool = False
                     while tool_name and len(executed) < 3:
                         print(f"[Plivo] tool call {len(executed) + 1}: {tool_name}({tool_args})")
                         fn = next((f for f in _tool_functions if f["name"] == tool_name), None)
                         tool_result = await _dispatch_tool(fn, tool_args)
                         executed.append((tool_name, call_id, tool_args, tool_result))
+                        if fn and fn.get("kind") == "internal_end_call":
+                            # Don't ask the model for yet another turn after
+                            # this - it already said its goodbye as the text
+                            # preceding this tool call, and the hangup timer
+                            # is already armed.
+                            ended_by_tool = True
+                            break
                         tool_name, tool_args, call_id, spoke_after_tools = await _consume_detect(
                             conv_msgs + tool_steps_to_messages(executed)
                         )
-                    if tool_name or not spoke_after_tools:
+                    if not ended_by_tool and (tool_name or not spoke_after_tools):
                         # Step cap reached or the follow-up detect produced
                         # nothing to say - speak from the last tool result the
                         # proven way.
@@ -904,6 +933,14 @@ async def plivo_stream_endpoint(websocket: WebSocket):
             data = json.loads(raw)
             event = data.get("event")
 
+            # Only honor a pending end_call while the agent is neither mid-
+            # reply nor mid-turn - belt-and-suspenders alongside the
+            # cancel-on-speech-detected above, in case the grace period
+            # happened to elapse in the same instant a new turn started.
+            if _end_call_requested and not is_speaking and not is_processing:
+                print("[Plivo] Ending call - end_call tool requested hangup")
+                break
+
             if event == "start":
                 start_info = data.get("start") or {}
                 stream_id = start_info.get("streamId")
@@ -923,6 +960,14 @@ async def plivo_stream_endpoint(websocket: WebSocket):
                 from app.admin.admin_config_service import get as get_admin_config
                 TURN_HEURISTIC_ENABLED = (await asyncio.to_thread(get_admin_config, "turn_heuristic_enabled")) != "false"
                 FILLER_PHRASES_ENABLED = (await asyncio.to_thread(get_admin_config, "filler_phrases_enabled")) != "false"
+                # Offered by default on every call - gated by both the
+                # admin-wide kill switch and this agent's own toggle (the
+                # "Custom functions" card in the agents UI), either of which
+                # can turn it off. See app.telephony.shared.build_end_call_tool.
+                if (await asyncio.to_thread(get_admin_config, "end_call_tool_enabled")) != "false" \
+                        and agent.get("end_call_tool_enabled", True) is not False:
+                    from app.telephony.shared import build_end_call_tool
+                    _tool_functions = _tool_functions + [build_end_call_tool()]
                 if await asyncio.to_thread(get_admin_config, "voice_pipeline") == "realtime":
                     from app.telephony.shared import run_realtime_telephony_bridge
 
@@ -1045,6 +1090,14 @@ async def plivo_stream_endpoint(websocket: WebSocket):
                     silence_chunks = 0
                     _turn_extensions_used = 0
                     if _dg_stream is None:
+                        if _end_call_task and not _end_call_task.done():
+                            # Real speech just started - clear proof the call
+                            # isn't actually over, so cancel the pending
+                            # end_call hangup outright rather than let it
+                            # fire underneath this new turn.
+                            print("[Plivo] Caller started speaking - cancelling pending end_call hangup")
+                            _end_call_task.cancel()
+                            _end_call_task = None
                         try:
                             _dg_stream = get_streaming_transcriber()
                             await _dg_stream.start()
@@ -1118,6 +1171,8 @@ async def plivo_stream_endpoint(websocket: WebSocket):
     finally:
         if _active_task and not _active_task.done():
             _active_task.cancel()
+        if _end_call_task and not _end_call_task.done():
+            _end_call_task.cancel()
         if conversation_id:
             from app.telephony.sms_email_capture import unregister_reply_listeners
             unregister_reply_listeners(conversation_id)

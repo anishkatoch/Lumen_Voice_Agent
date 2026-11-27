@@ -35,6 +35,7 @@ class AgentUpdate(BaseModel):
     booking_hours_start: Optional[str] = None
     booking_hours_end: Optional[str] = None
     meeting_instructions: Optional[str] = None
+    end_call_tool_enabled: Optional[bool] = None
 
 class AgentFunctionCreate(BaseModel):
     name: str

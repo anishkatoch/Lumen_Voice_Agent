@@ -268,6 +268,10 @@ def build_meeting_system_context(agent: dict) -> str:
         "different day or explicitly want other options."
         "\nNever promise a time check_availability did not return, and never claim a meeting is "
         "booked unless book_meeting confirmed it."
+        "\nIf you genuinely lose track of something the caller already told you earlier in this "
+        "call (day, time, name, or email), ask only for that one missing piece - say something "
+        "like \"sorry, what time works for you again?\" - never ask them to restart the whole "
+        "booking or repeat everything from the beginning."
         "\nTo cancel or move an existing meeting you need the email address it was booked under. "
         "If the caller already gave their email earlier in this conversation (for example when "
         "booking), reuse it without asking again; only ask (and spell it back) when you do not "
@@ -358,7 +362,10 @@ async def _check_availability(args: dict, agent: dict, user_id: str) -> str:
     spoken = "; ".join(s.strftime("%A, %B %d at %I:%M %p") for s in slots)
     return (
         f"Open slots (each {int(agent.get('meeting_duration_minutes') or 30)} minutes): {spoken}. "
-        "Offer the caller two or three of these, not the whole list."
+        "If the caller asked for a day in general, offer two or three of these, not the whole "
+        "list. If the caller asked about one specific time and it is in this list, just confirm "
+        "that exact time is open and ask if they want to book it - do not also read out the "
+        "other times, that sounds like padding."
     )
 
 

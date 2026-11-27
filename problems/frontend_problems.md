@@ -297,3 +297,87 @@ The call-detail page's Conversation card sized to its own content, so a session 
 **Fix:**
 Gave the session layout a min-height and let the last card in the main column flex to fill it.
 **Files:** `frontend/app/globals.css`
+
+---
+
+## 20. Knowledge Base Dropdown Panel Clipped/Stuck
+
+**Problem:**
+The knowledge base document dropdown in the agent settings page looked stuck — visually cut off and effectively unusable, as if it had nowhere to render past a certain point.
+
+**Root Cause:**
+The shared `Section` component's `.section` class sets `overflow: hidden`, which clips any absolutely-positioned child meant to float over sibling content — including the KB dropdown's floating panel.
+
+**Fix:**
+Added an opt-in `overflowVisible` prop on `Section` that applies an inline `overflow: visible` override, scoped to just the Knowledge Base section so no other section's clipping behavior changes.
+**Files:** `frontend/app/agents/page.tsx`
+
+---
+
+## 21. No Prompt Generated When a Document Was Attached — Agent Couldn't Be Asked About It
+
+**Problem:**
+Attaching a document (e.g. a resume) to an agent gave no indication of what to type in "KB instructions", and the backend's own multi-document eligibility rule (`filter_kb_documents_by_instructions` — each document must be literally named in `kb_instructions` once two or more are selected) meant a vague instruction like "use the attached documents" silently made every document but the first ineligible for the call's `search_knowledge_base` tool.
+
+**Fix:**
+Added `suggestKbInstructions()`, which generates ready-to-use instruction text naming each attached document by display name. Wired into a `useEffect` that auto-fills the KB instructions box only when it's empty or still holds the last auto-generated text — never overwrites the persona's own edits — plus an explicit "Suggest instructions" / "Regenerate from attached documents" button and a hint line explaining the box is editable.
+**Files:** `frontend/app/agents/page.tsx`, `frontend/app/agents/suggestKbInstructions.ts`, `frontend/app/agents/suggestKbInstructions.test.ts`
+
+---
+
+## 22. Next.js Build Failure From a Non-Page Export in `page.tsx`
+
+**Problem:**
+`npm run build` broke after `suggestKbInstructions` was exported from `app/agents/page.tsx` — Next.js's App Router only allows specific named exports (default, `generateMetadata`, etc.) from a file that also serves as a route's page.
+
+**Fix:**
+Moved `suggestKbInstructions` out of `page.tsx` into its own module (`suggestKbInstructions.ts`), imported from there instead.
+**Files:** `frontend/app/agents/page.tsx`, `frontend/app/agents/suggestKbInstructions.ts`, `frontend/app/agents/suggestKbInstructions.test.ts`
+
+---
+
+## 23. Admin Panel Tabs Capped at an Unnecessarily Narrow Max-Width
+
+**Problem:**
+The admin Providers/Storage/KB Access tabs were capped to a fixed max-width, leaving large empty margins on wider screens instead of using the available space.
+
+**Fix:**
+Removed the fixed max-width caps on those tabs so their content fills the screen; also increased the system prompt textarea's min-height so longer prompts show without scrolling.
+**Files:** `frontend/app/admin/page.tsx`, `frontend/app/globals.css`
+
+---
+
+## 24. Browser Voice Calls Buffered a Whole Sentence Before Playback and Could Get Stuck in SPEAKING
+
+**Problem:**
+Browser voice calls had avoidable latency and a state bug: PCM audio was buffered for an entire sentence before any of it played, mic chunks were sent in oversized 250ms blocks, and a reply that produced no audio at all could leave the frontend stuck in the SPEAKING state indefinitely.
+
+**Fix:**
+Schedule PCM chunks for playback the moment they arrive instead of buffering a whole sentence first; only report `playback_ended` after the server's `audio_end` so a mid-reply gap can't truncate the answer; stop getting stuck in SPEAKING when a reply produces no audio; dropped mic chunk size from 250ms to 100ms with `config.yaml` VAD counts synced to match (500ms end-of-turn silence, matching the phone pipelines).
+**Files:** `frontend/hooks/useVoiceAgent.ts`, `config.yaml`
+
+---
+
+*The entries below (25+) were found while auditing the full commit history for issues that had never been logged here at all — not just ones from a single session.*
+
+---
+
+## 25. Textarea Fields Capped at 74 Characters Wide, Leaving Unused Space on Wide Screens
+
+**Problem:**
+The system prompt and other textareas were stuck narrower than their own container, leaving a visibly empty strip on the right on wide screens.
+
+**Fix:**
+Let textarea fields fill their column width instead of capping at `74ch`.
+**Files:** `frontend/app/globals.css`
+
+---
+
+## 26. Admin Panel Tabs Were Too Narrow for Their Content (Earlier Pass)
+
+**Problem:**
+The admin Providers/Storage/Status/KB Access tabs were capped at 680-760px, leaving the column mostly empty on wide screens.
+
+**Fix:**
+Widened those tabs to 980-1100px. (Later fully removed the caps instead of just widening them further — see #23.)
+**Files:** `frontend/app/admin/page.tsx`

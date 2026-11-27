@@ -118,12 +118,13 @@ class RealtimeSession:
             "audio_end_ms": max(audio_end_ms, 0),
         })
 
-    async def send_tool_result(self, call_id: str, output: str):
+    async def send_tool_result(self, call_id: str, output: str, create_response: bool = True):
         await self._send({
             "type": "conversation.item.create",
             "item": {"type": "function_call_output", "call_id": call_id, "output": output},
         })
-        await self.create_response()
+        if create_response:
+            await self.create_response()
 
     async def events(self) -> AsyncGenerator[dict, None]:
         async for raw in self._ws:

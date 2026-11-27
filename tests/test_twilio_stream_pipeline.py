@@ -163,6 +163,17 @@ def mock_pipeline(mocker):
 
     mocker.patch("app.voice.llm_service.generate_response_stream", side_effect=fake_generate_response_stream)
 
+    # Every call now has at least the built-in end_call tool (see
+    # app.telephony.shared.build_end_call_tool), so _tool_functions is never
+    # empty and run_pipeline always takes the tool-aware detect_tool_call_stream
+    # path, never the plain generate_response_stream one above - mocked here
+    # too so a test that doesn't care about tool-calling still gets a plain
+    # spoken reply with no tool call, same as before this tool existed.
+    async def fake_detect_tool_call_stream(conv_messages, system, tools):
+        yield ("text", "Sure, I can help with that.")
+
+    mocker.patch("app.voice.llm_service.detect_tool_call_stream", side_effect=fake_detect_tool_call_stream)
+
     async def fake_text_to_speech_twilio(text):
         yield bytes([0xFF]) * 80  # one small mu-law chunk
 
@@ -736,21 +747,22 @@ class TestBargeInStopsGenerationAndSpeech:
 
         generation_state = {"cancelled": False, "yielded": []}
 
-        async def slow_multi_sentence_stream(
-            user_message, session_history, rag_context, long_term_memory,
-            system_prompt_override=None, kb_instructions=None,
-        ):
+        async def slow_multi_sentence_stream(conv_messages, system, tools):
             sentences = ["Sentence one.", "Sentence two.", "Sentence three.", "Sentence four."]
             try:
                 for s in sentences:
                     generation_state["yielded"].append(s)
-                    yield s
+                    yield ("text", s)
                     await asyncio.sleep(0.4)
             except asyncio.CancelledError:
                 generation_state["cancelled"] = True
                 raise
 
-        mocker.patch("app.voice.llm_service.generate_response_stream", side_effect=slow_multi_sentence_stream)
+        # The agent's own tools are empty, but every call also has the
+        # built-in end_call tool now (see app.telephony.shared.build_end_call_tool),
+        # so run_pipeline always takes the tool-aware detect_tool_call_stream
+        # path rather than the plain generate_response_stream one.
+        mocker.patch("app.voice.llm_service.detect_tool_call_stream", side_effect=slow_multi_sentence_stream)
 
         tts_calls = []
 
@@ -823,19 +835,19 @@ class TestCallEndCancelsInFlightResponse:
 
         generation_state = {"cancelled": False}
 
-        async def slow_multi_sentence_stream(
-            user_message, session_history, rag_context, long_term_memory,
-            system_prompt_override=None, kb_instructions=None,
-        ):
+        async def slow_multi_sentence_stream(conv_messages, system, tools):
             try:
                 for s in ["Sentence one.", "Sentence two.", "Sentence three."]:
-                    yield s
+                    yield ("text", s)
                     await asyncio.sleep(0.4)
             except asyncio.CancelledError:
                 generation_state["cancelled"] = True
                 raise
 
-        mocker.patch("app.voice.llm_service.generate_response_stream", side_effect=slow_multi_sentence_stream)
+        # Every call also has the built-in end_call tool now (see
+        # app.telephony.shared.build_end_call_tool), so run_pipeline always
+        # takes the tool-aware detect_tool_call_stream path.
+        mocker.patch("app.voice.llm_service.detect_tool_call_stream", side_effect=slow_multi_sentence_stream)
 
         tts_calls = []
 
@@ -1017,14 +1029,14 @@ class TestRetrievalFiller:
 
         import asyncio
 
-        async def slow_generate_response_stream(
-            user_message, session_history, rag_context, long_term_memory,
-            system_prompt_override=None, kb_instructions=None,
-        ):
+        async def slow_detect_tool_call_stream(conv_messages, system, tools):
             await asyncio.sleep(1.5)  # longer than RETRIEVAL_FILLER_DELAY_SECONDS (1.2s)
-            yield "Here is your order status."
+            yield ("text", "Here is your order status.")
 
-        mocker.patch("app.voice.llm_service.generate_response_stream", side_effect=slow_generate_response_stream)
+        # Every call also has the built-in end_call tool now (see
+        # app.telephony.shared.build_end_call_tool), so run_pipeline always
+        # takes the tool-aware detect_tool_call_stream path.
+        mocker.patch("app.voice.llm_service.detect_tool_call_stream", side_effect=slow_detect_tool_call_stream)
 
         from app.main import app
         client = TestClient(app)

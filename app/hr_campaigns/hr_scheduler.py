@@ -28,8 +28,9 @@ async def _initiate_outbound_call(interview: dict, settings: dict, base_url: str
     # We need a 'from' number - use the first active attached phone number for this user+agent
     from app.core.database import get_supabase
     db = get_supabase()
-    # direction='inbound' numbers are answer-only - never dialed from (same
-    # rule as twilio_repo.get_from_number / plivo_repo.get_from_number).
+    # direction='inbound' numbers are answer-only and direction='none' numbers
+    # aren't used by Lumen at all - neither is ever dialed from (same rule as
+    # twilio_repo.get_from_number / plivo_repo.get_from_number).
     from_result = (
         db.table("twilio_phone_numbers")
         .select("phone_number, twilio_account_id")
@@ -37,6 +38,7 @@ async def _initiate_outbound_call(interview: dict, settings: dict, base_url: str
         .eq("agent_id", interview["agent_id"])
         .eq("is_active", True)
         .neq("direction", "inbound")
+        .neq("direction", "none")
         .limit(1)
         .execute()
     )
@@ -48,6 +50,7 @@ async def _initiate_outbound_call(interview: dict, settings: dict, base_url: str
             .eq("user_id", interview["user_id"])
             .eq("is_active", True)
             .neq("direction", "inbound")
+            .neq("direction", "none")
             .limit(1)
             .execute()
         )

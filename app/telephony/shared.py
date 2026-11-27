@@ -14,6 +14,19 @@ import re
 
 PHONE_WEBHOOK_MAX_TIMEOUT_S = 15
 
+# Grace period between the end_call tool firing and the call actually being
+# torn down. The farewell line the model spoke right before calling the tool
+# has already been fully SENT to the provider by that point, but "sent" isn't
+# "played" - Twilio/Plivo still have to actually play those queued audio
+# frames out over the phone line, and there is no ack telling us when that
+# finishes. Closing the connection too soon would truncate the caller's last
+# bit of audio mid-word, which is exactly the failure mode this feature must
+# never cause - so this errs generous rather than tight. Cancelled (see
+# schedule_end_call) the instant the caller is heard speaking again, so a
+# "wait, actually..." right after the goodbye overrides the hangup instead of
+# the call ending underneath them.
+END_CALL_GRACE_SECONDS = 3.0
+
 # Shared pooled HTTP client for webhook tool calls. Webhooks fire mid-turn
 # (the caller is waiting on the line), and a fresh httpx.AsyncClient per call
 # paid a new TCP+TLS handshake every time; the pool reuses connections to
@@ -280,6 +293,66 @@ def build_record_answer_tool(questions: list[dict]) -> dict:
     }
 
 
+def build_end_call_tool() -> dict:
+    """Synthetic tool (same shape/convention as build_record_answer_tool and
+    build_kb_search_tool) offered on EVERY phone call by default. Each router
+    (telephony_twilio.py/telephony_plivo.py) adds this only when BOTH the
+    admin-wide 'end_call_tool_enabled' kill switch and the agent's own
+    'end_call_tool_enabled' column (default true, toggled from the "Custom
+    functions" card in the agents UI) allow it. Lets the model hang up the
+    call itself once the conversation has genuinely finished, instead of the
+    caller sitting on an open line nobody is using.
+
+    Deliberately does nothing by itself beyond flagging intent - no audio, no
+    immediate hangup. The description below is the only thing standing
+    between this and a call getting cut off mid-sentence, so it is written
+    to push the model toward speaking its goodbye FIRST, as an ordinary
+    reply, in the same turn, and only calling this tool right after. The
+    actual hangup is deferred by END_CALL_GRACE_SECONDS and aborted outright
+    if the caller is heard speaking again before that elapses - see
+    schedule_end_call and its call sites in telephony_twilio.py /
+    telephony_plivo.py / this file's own run_realtime_telephony_bridge."""
+    return {
+        "name": "end_call",
+        "kind": "internal_end_call",
+        "description": (
+            "End the phone call. Only call this once the conversation is genuinely "
+            "over - for example the caller has said goodbye, thanks, or bye, has "
+            "explicitly asked to end the call or hang up, or there is truly nothing "
+            "left to discuss and they are not waiting on you for anything. Always "
+            "speak a short, natural closing line out loud FIRST, as your normal "
+            "reply (e.g. \"Thanks for calling, take care!\"), and only call this "
+            "tool right after that line in the same turn - never before it, and "
+            "never silently with nothing said. Do NOT call this if the caller is "
+            "still asking something, might still want to talk, or you are not "
+            "completely sure the conversation is finished - when in doubt, keep "
+            "talking instead of ending the call."
+        ),
+        "parameters": [
+            {"name": "reason", "type": "string",
+             "description": "Brief internal note on why the call is ending, e.g. "
+                             "'caller said goodbye'. Never say this out loud."},
+        ],
+    }
+
+
+def schedule_end_call(set_requested) -> "asyncio.Task":
+    """Returns a running, cancellable task that calls set_requested() (no
+    args) after END_CALL_GRACE_SECONDS elapses uninterrupted. Each pipeline
+    passes a tiny closure that flips its own local '_end_call_requested'
+    flag - the flag/task pair itself has to live in each call's own scope
+    (Twilio/Plivo cascade, the Realtime bridge), since each already has its
+    own receive loop and its own caller-speech detection to cancel this
+    against; only the delay/cancel mechanics are shared here."""
+    async def _wait():
+        try:
+            await asyncio.sleep(END_CALL_GRACE_SECONDS)
+        except asyncio.CancelledError:
+            return
+        set_requested()
+    return asyncio.create_task(_wait())
+
+
 def _normalize_doc_ref(text: str) -> str:
     """Collapse case/punctuation/extension differences so a document's
     display_name can be matched against free-form kb_instructions text -
@@ -365,8 +438,13 @@ def build_kb_search_tool(documents: list[dict]) -> dict:
         "kind": "internal_kb_search",
         "description": (
             "Search the knowledge base for information relevant to the caller's "
-            "question. Call this before answering anything you are not already "
-            "certain about from the conversation so far."
+            "question. You have no real knowledge of what these documents contain "
+            "until you call this - call it before answering ANY question about "
+            "their subject matter, even one you feel confident about, instead of "
+            "guessing from general/training knowledge. Only skip it for things "
+            "already established earlier in this same conversation (e.g. the "
+            "conversation's own history, or a document excerpt already returned "
+            "by an earlier call to this tool this turn)."
         ),
         "parameters": params,
     }
@@ -516,8 +594,22 @@ async def run_realtime_telephony_bridge(
     _failure_reason: str | None = None
     _active_item_id: str | None = None
     _bytes_out_for_item: dict[str, int] = {}
+    _end_call_requested = False  # flips True once the end_call tool's grace period elapses uninterrupted
+    _end_call_task: "asyncio.Task | None" = None  # pending grace-period timer for the above, cancelled if the caller speaks again first
 
     async def _execute_tool(name: str, args: dict) -> str:
+        nonlocal _end_call_task
+        if name == "end_call":
+            print(f"[{log_label}] end_call tool invoked (reason={(args.get('reason') or '')!r}) - "
+                  f"ending call in {END_CALL_GRACE_SECONDS}s unless the caller speaks again")
+            if _end_call_task and not _end_call_task.done():
+                _end_call_task.cancel()
+
+            def _mark_end_call():
+                nonlocal _end_call_requested
+                _end_call_requested = True
+            _end_call_task = schedule_end_call(_mark_end_call)
+            return json.dumps({"ending": True})
         if name == "search_knowledge_base":
             restrict_ids = resolve_kb_search_doc_ids(args, _kb_documents)
             full_rag, _ = await retrieve_phone_rag_context(
@@ -548,7 +640,7 @@ async def run_realtime_telephony_bridge(
         return await execute_webhook_request(fn, args)
 
     async def _drain_realtime_events():
-        nonlocal _active_item_id, _failure_reason
+        nonlocal _active_item_id, _failure_reason, _end_call_task
         try:
             async for event in session.events():
                 etype = event.get("type")
@@ -563,6 +655,10 @@ async def run_realtime_telephony_bridge(
                     await send_audio_frame(delta_b64)
 
                 elif etype == "input_audio_buffer.speech_started":
+                    if _end_call_task and not _end_call_task.done():
+                        print(f"[{log_label}] Caller started speaking - cancelling pending end_call hangup")
+                        _end_call_task.cancel()
+                        _end_call_task = None
                     if _active_item_id:
                         await session.cancel_response()
                         elapsed_ms = int(_bytes_out_for_item.get(_active_item_id, 0) / session.bytes_per_ms)
@@ -590,7 +686,12 @@ async def run_realtime_telephony_bridge(
                         args = {}
                     print(f"[{log_label}] Realtime tool call: {name}({args})")
                     result = await _execute_tool(name, args)
-                    await session.send_tool_result(call_id, result)
+                    # end_call already said its goodbye as the preceding text
+                    # in this same model turn - asking the model to react to
+                    # the tool result would just prompt a redundant (and
+                    # possibly off-script) follow-up reply right as the call
+                    # is ending, so skip create_response for it alone.
+                    await session.send_tool_result(call_id, result, create_response=(name != "end_call"))
 
                 elif etype == "response.done":
                     _active_item_id = None
@@ -612,6 +713,13 @@ async def run_realtime_telephony_bridge(
             raw = await websocket.receive_text()
             data = json.loads(raw)
             event = data.get("event")
+            # Only honor a pending end_call once the model isn't mid-item
+            # (no in-flight audio item) - belt-and-suspenders alongside the
+            # speech_started cancellation above, in case the grace period
+            # elapsed in the same instant the caller started a new turn.
+            if _end_call_requested and not _active_item_id:
+                print(f"[{log_label}] Ending call - end_call tool requested hangup")
+                break
             if event == "media":
                 payload = parse_media_payload(data)
                 if payload:
@@ -625,6 +733,8 @@ async def run_realtime_telephony_bridge(
         if "disconnect" not in str(e).lower():
             _failure_reason = str(e)[:500]
     finally:
+        if _end_call_task and not _end_call_task.done():
+            _end_call_task.cancel()
         drain_task.cancel()
         await session.close()
 

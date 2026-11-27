@@ -72,7 +72,7 @@ async def update_admin_config(request: Request, current_user: dict = Depends(get
         "azure_openai_deployment", "azure_openai_embedding_deployment", "azure_openai_transcribe_deployment",
         "stt_model", "tts_elevenlabs_model_id", "azure_speech_voice", "realtime_model",
         "call_retry_interval_minutes", "call_retry_max_attempts",
-        "turn_heuristic_enabled", "filler_phrases_enabled",
+        "turn_heuristic_enabled", "filler_phrases_enabled", "end_call_tool_enabled",
     }
     updates = {k: str(v) for k, v in body.items() if k in ALLOWED}
     if not updates:
