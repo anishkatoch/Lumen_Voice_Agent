@@ -319,6 +319,14 @@ export const API = {
   adminRejectKb: (id: string) => API.request(`/api/admin/kb-requests/${id}/reject`, { method: "POST" }),
   adminRevokeKb: (userId: string) => API.request(`/api/admin/users/${userId}/revoke-kb`, { method: "POST" }),
   adminKbUsers: () => API.request<KbPermittedUser[]>("/api/admin/kb-users"),
+
+  // Feedback (user-reported issues + general feedback, admin review)
+  submitFeedback: (data: { type: "issue" | "feedback"; message: string; agent_id?: string }) =>
+    API.request<Feedback>("/api/feedback", { method: "POST", body: JSON.stringify(data) }),
+  myFeedback: () => API.request<Feedback[]>("/api/feedback/mine"),
+  adminFeedback: () => API.request<Feedback[]>("/api/admin/feedback"),
+  adminResolveFeedback: (id: string) => API.request<Feedback>(`/api/admin/feedback/${id}/resolve`, { method: "POST" }),
+  adminReopenFeedback: (id: string) => API.request<Feedback>(`/api/admin/feedback/${id}/reopen`, { method: "POST" }),
 };
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -376,6 +384,7 @@ export interface Agent {
   booking_hours_start?: string;
   booking_hours_end?: string;
   meeting_instructions?: string | null;
+  end_call_tool_enabled?: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -455,6 +464,20 @@ export interface KbPermittedUser {
   can_upload_global_kb: boolean;
   granted_at?: string | null;
   granted_by?: string | null;
+}
+
+export interface Feedback {
+  id: string;
+  user_id: string;
+  user_email: string;
+  agent_id?: string | null;
+  agent_name?: string | null;
+  type: "issue" | "feedback";
+  message: string;
+  status: "open" | "resolved";
+  created_at: string;
+  resolved_at?: string | null;
+  resolved_by?: string | null;
 }
 
 export interface HRCandidate {

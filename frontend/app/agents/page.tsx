@@ -100,6 +100,7 @@ function IconSprite() {
         <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.7" /><circle cx="12" cy="12" r="1.7" /><circle cx="19" cy="12" r="1.7" /></symbol>
         <symbol id="i-edit" viewBox="0 0 24 24"><path d="M4 20h4L18.4 9.6a2.1 2.1 0 0 0-3-3L5 17v3Z" /><path d="M13.8 6.8l3.4 3.4" /></symbol>
         <symbol id="i-calendar" viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="16" rx="2.2" /><path d="M8 3v4M16 3v4M3.5 10h17" /></symbol>
+        <symbol id="i-flag" viewBox="0 0 24 24"><path d="M5 3v18" /><path d="M5 4h12l-2.5 4L17 12H5" /></symbol>
       </defs>
     </svg>
   );
@@ -274,9 +275,13 @@ function Topbar({ crumb, search, isDark, onToggleTheme, userEmail, onOpenAccount
   );
 }
 
-function AccountModal({ onClose, userName, userEmail, onSignOut }: {
-  onClose: () => void; userName: string; userEmail: string; onSignOut: () => void;
+function AccountModal({ onClose, userName, userEmail, agents, onSignOut }: {
+  onClose: () => void; userName: string; userEmail: string; agents: Agent[]; onSignOut: () => void;
 }) {
+  const [showFeedback, setShowFeedback] = useState(false);
+  if (showFeedback) {
+    return <FeedbackModal onClose={onClose} agents={agents} />;
+  }
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal" style={{ width: 300 }} onClick={e => e.stopPropagation()}>
@@ -301,8 +306,79 @@ function AccountModal({ onClose, userName, userEmail, onSignOut }: {
             }}>
             <Icon name="copy" /> Copy email
           </button>
+          <button className="btn btn-outline btn-block" style={{ marginBottom: 8 }} onClick={() => setShowFeedback(true)}>
+            <Icon name="flag" /> Report an issue / Feedback
+          </button>
           <button className="btn btn-ghost btn-block" onClick={onSignOut}>
             <Icon name="logout" /> Sign out
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function FeedbackModal({ onClose, agents }: { onClose: () => void; agents: Agent[] }) {
+  const [type, setType] = useState<"issue" | "feedback">("issue");
+  const [agentId, setAgentId] = useState("");
+  const [message, setMessage] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState("");
+
+  const submit = async () => {
+    if (!message.trim()) {
+      setErr(type === "issue" ? "Please describe the issue" : "Please share your feedback");
+      return;
+    }
+    setLoading(true); setErr("");
+    try {
+      await API.submitFeedback({ type, message: message.trim(), agent_id: agentId || undefined });
+      pushToast(type === "issue" ? "Issue reported - thanks for letting us know" : "Thanks for your feedback!");
+      onClose();
+    } catch (e: unknown) {
+      setErr(e instanceof Error ? e.message : "Failed to send");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal" onClick={e => e.stopPropagation()}>
+        <div className="modal-head"><h3>Report an issue / Feedback</h3><button className="icon-btn" onClick={onClose}><Icon name="x" /></button></div>
+        <div className="modal-body">
+          <div className="field">
+            <label>What&apos;s this about?</label>
+            <div className="chip-row" style={{ marginBottom: 0 }}>
+              <button type="button" className="chip-btn" onClick={() => setType("issue")}
+                style={type === "issue" ? { background: "var(--accent)", borderColor: "var(--accent)", color: "var(--accent-ink)" } : undefined}>
+                Report an issue
+              </button>
+              <button type="button" className="chip-btn" onClick={() => setType("feedback")}
+                style={type === "feedback" ? { background: "var(--accent)", borderColor: "var(--accent)", color: "var(--accent-ink)" } : undefined}>
+                Share feedback
+              </button>
+            </div>
+          </div>
+          <div className="field">
+            <label>Related agent (optional)</label>
+            <select className="select" value={agentId} onChange={e => setAgentId(e.target.value)}>
+              <option value="">Not specific to one agent</option>
+              {agents.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+            </select>
+          </div>
+          <div className="field" style={{ marginBottom: 0 }}>
+            <label>{type === "issue" ? "Describe the issue" : "Your feedback"}</label>
+            <textarea className="textarea" style={{ minHeight: 100 }} value={message} onChange={e => setMessage(e.target.value)}
+              placeholder={type === "issue" ? "What went wrong, and what were you doing when it happened?" : "Tell us what you think or what could be better"}
+              rows={4} onKeyDown={e => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) submit(); }} />
+          </div>
+          {err && <div style={{ color: "var(--danger)", fontSize: 13, marginTop: 10 }}>{err}</div>}
+        </div>
+        <div className="modal-foot">
+          <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+          <button className="btn btn-primary" onClick={submit} disabled={loading}>
+            <Icon name="flag" />{loading ? "Sending..." : "Send"}
           </button>
         </div>
       </div>
@@ -746,7 +822,7 @@ function AgentPhoneNumbersSection({ agentId }: { agentId: string }) {
     provider: "twilio" | "plivo";
   };
   const directionLabel = (d?: string) =>
-    d === "inbound" ? "Inbound only" : d === "outbound" ? "Outbound only" : "Inbound and outbound";
+    d === "inbound" ? "Inbound only" : d === "outbound" ? "Outbound only" : d === "none" ? "Not in use (free for another agent)" : "Inbound and outbound";
   const [rows, setRows] = useState<NumberRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
@@ -1208,6 +1284,8 @@ function AgentDetail({ agent, onBack, onUpdate, onDuplicate, onGoToKb, onGoToInt
   const [editingFunc, setEditingFunc] = useState<AgentFunction | null>(null);
   const [expandedFuncs, setExpandedFuncs] = useState<Set<string>>(new Set());
   const [showDelete, setShowDelete] = useState(false);
+  const [endCallEnabled, setEndCallEnabled] = useState(agent.end_call_tool_enabled ?? true);
+  const [endCallToggling, setEndCallToggling] = useState(false);
 
   useEffect(() => {
     setName(agent.name); setPrompt(agent.system_prompt ?? DEFAULT_SYSTEM_PROMPT);
@@ -1224,6 +1302,7 @@ function AgentDetail({ agent, onBack, onUpdate, onDuplicate, onGoToKb, onGoToInt
     setBookingStart(agent.booking_hours_start ?? "09:00");
     setBookingEnd(agent.booking_hours_end ?? "21:00");
     setMeetingInstructions(agent.meeting_instructions ?? "");
+    setEndCallEnabled(agent.end_call_tool_enabled ?? true);
     API.googleCalendarStatus()
       .then(s => { setCalendarConnected(s.connected); setCalendarEmail(s.email); })
       .catch(() => setCalendarConnected(null));
@@ -1269,6 +1348,21 @@ function AgentDetail({ agent, onBack, onUpdate, onDuplicate, onGoToKb, onGoToInt
     setFuncsLoading(true);
     try { setFunctions(await API.agentFunctions(agent.id)); } catch { /* ignore */ }
     setFuncsLoading(false);
+  };
+
+  // Persists instantly (like deleting a real function does), rather than
+  // waiting on the big "Save" button, so removing/re-adding end_call reads
+  // as a direct action on its card.
+  const toggleEndCall = async (enabled: boolean) => {
+    setEndCallToggling(true);
+    try {
+      const updated = await API.updateAgent(agent.id, { end_call_tool_enabled: enabled });
+      onUpdate(updated);
+      setEndCallEnabled(enabled);
+      pushToast(enabled ? "End call tool reconnected" : "End call tool removed");
+    } catch (e: unknown) {
+      pushToast(e instanceof Error ? e.message : "Could not update end call tool", "error");
+    } finally { setEndCallToggling(false); }
   };
 
   const saveAgent = async () => {
@@ -1508,6 +1602,33 @@ Confident, not pushy
               <div style={{ color: "var(--ink-faint)", fontSize: 13 }}>Loading...</div>
             ) : (
               <>
+                <div style={{ marginBottom: 8 }}>
+                  <div className="card" style={{ padding: "12px 14px" }}>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <span style={{ fontSize: 14, fontWeight: 600, color: "var(--ink)" }}>End call</span>
+                        <span className={`pill ${endCallEnabled ? "pill-success" : "pill-neutral"}`}>
+                          {endCallEnabled ? "Connected" : "Disconnected"}
+                        </span>
+                      </div>
+                      <div style={{ display: "flex", gap: 10 }}>
+                        {endCallEnabled ? (
+                          <button className="link-btn" style={{ color: "var(--danger)" }} disabled={endCallToggling}
+                            onClick={() => toggleEndCall(false)}>Remove</button>
+                        ) : (
+                          <button className="link-btn" disabled={endCallToggling}
+                            onClick={() => toggleEndCall(true)}>Add back</button>
+                        )}
+                      </div>
+                    </div>
+                    <p style={{ fontSize: 12, color: "var(--ink-muted)", margin: "8px 0 0" }}>
+                      Built-in tool - lets this agent hang up a phone call itself once the conversation
+                      has genuinely finished. Attached automatically; remove it here if you don&apos;t
+                      want this agent ending calls on its own, or add it back any time.
+                    </p>
+                  </div>
+                </div>
+
                 {functions.map(fn => (
                   <div key={fn.id} style={{ marginBottom: 8 }}>
                     {editingFunc?.id === fn.id ? (
@@ -2881,6 +3002,7 @@ function PhoneNumbersView({ agents }: { agents: Agent[] }) {
                     <option value="both">Inbound and outbound</option>
                     <option value="inbound">Inbound only</option>
                     <option value="outbound">Outbound only</option>
+                    <option value="none">None (free for another agent)</option>
                   </select>
                   <button className="btn btn-danger btn-sm" onClick={() => handleDelete(num.id)}><Icon name="trash" size={13} />Delete</button>
                 </div>
@@ -3087,6 +3209,7 @@ function PhoneNumbersView({ agents }: { agents: Agent[] }) {
                     <option value="both">Inbound and outbound</option>
                     <option value="inbound">Inbound only</option>
                     <option value="outbound">Outbound only</option>
+                    <option value="none">None (free for another agent)</option>
                   </select>
                   <button className="btn btn-danger btn-sm" onClick={() => handleDeletePlivo(num.id)}><Icon name="trash" size={13} />Delete</button>
                 </div>
@@ -3405,7 +3528,7 @@ export default function AgentsPage() {
         />
       )}
       {showAccount && (
-        <AccountModal onClose={() => setShowAccount(false)} userName={userName} userEmail={userEmail} onSignOut={handleSignOut} />
+        <AccountModal onClose={() => setShowAccount(false)} userName={userName} userEmail={userEmail} agents={agents} onSignOut={handleSignOut} />
       )}
       <ToastHost />
     </div>

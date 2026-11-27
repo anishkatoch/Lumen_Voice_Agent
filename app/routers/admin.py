@@ -237,6 +237,30 @@ async def admin_get_account_conversation_qa(user_id: str, conversation_id: str, 
     from app.routers.conversations import build_qa_payload
     return await build_qa_payload(convo.data[0].get("call_sid"))
 
+@router.get("/api/admin/feedback")
+async def admin_list_feedback(current_user: dict = Depends(get_current_user)):
+    _require_admin(current_user)
+    from app.feedback.feedback_repo import get_all_feedback
+    return await asyncio.to_thread(get_all_feedback)
+
+@router.post("/api/admin/feedback/{feedback_id}/resolve")
+async def admin_resolve_feedback(feedback_id: str, current_user: dict = Depends(get_current_user)):
+    _require_admin(current_user)
+    from app.feedback.feedback_repo import resolve_feedback
+    try:
+        return await asyncio.to_thread(resolve_feedback, feedback_id, current_user["sub"])
+    except RuntimeError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+@router.post("/api/admin/feedback/{feedback_id}/reopen")
+async def admin_reopen_feedback(feedback_id: str, current_user: dict = Depends(get_current_user)):
+    _require_admin(current_user)
+    from app.feedback.feedback_repo import reopen_feedback
+    try:
+        return await asyncio.to_thread(reopen_feedback, feedback_id)
+    except RuntimeError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
 @router.post("/api/admin/test-llm")
 async def admin_test_llm(current_user: dict = Depends(get_current_user)):
     """Fires one real, minimal completion through the currently configured LLM

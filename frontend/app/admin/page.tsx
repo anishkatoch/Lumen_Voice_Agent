@@ -4,7 +4,7 @@ import {
   Settings, Plug, HardDrive, KeyRound, LogOut, Check, X, RefreshCw,
   Eye, EyeOff, Loader2, Zap, Mic, Cpu, ChevronRight, CheckCircle2,
   XCircle, Activity, PlayCircle, Phone, ArrowLeft, Search, Clock,
-  Calendar, DollarSign,
+  Calendar, DollarSign, Flag,
 } from "lucide-react";
 
 const BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8004";
@@ -59,6 +59,7 @@ interface AdminConfig {
   call_retry_max_attempts:     string;
   turn_heuristic_enabled: string;
   filler_phrases_enabled: string;
+  end_call_tool_enabled: string;
 }
 
 interface TurnHeuristicWords {
@@ -72,6 +73,14 @@ interface KbRequest {
   status: string; created_at: string;
 }
 interface KbUser { user_id: string; granted_at?: string | null; }
+
+interface FeedbackItem {
+  id: string; user_id: string; user_email: string;
+  agent_id: string | null; agent_name: string | null;
+  type: "issue" | "feedback"; message: string;
+  status: "open" | "resolved"; created_at: string;
+  resolved_at?: string | null; resolved_by?: string | null;
+}
 
 interface ProviderStatus { configured: boolean; endpoint?: string | null; deployment?: string | null; }
 interface SystemStatus {
@@ -127,13 +136,14 @@ interface AdminConversationQA {
   questions: { question: string; answered: boolean; answer: string | null }[];
 }
 
-type Tab = "providers" | "storage" | "kb" | "status" | "calls";
+type Tab = "providers" | "storage" | "kb" | "status" | "calls" | "feedback";
 const NAV_ITEMS: { id: Tab; label: string; icon: typeof Plug }[] = [
   { id: "providers", label: "Providers", icon: Plug },
   { id: "calls",     label: "Call Analytics", icon: Phone },
   { id: "status",    label: "System status", icon: Activity },
   { id: "storage",   label: "Storage",   icon: HardDrive },
   { id: "kb",        label: "KB Access", icon: KeyRound },
+  { id: "feedback",  label: "Feedback",  icon: Flag },
 ];
 
 // Curated model lists so the admin picks from models that actually exist,
@@ -724,6 +734,24 @@ function ProvidersTab({ config, status, onSave }: {
         </div>
       </Section>
 
+      <Section title="End call tool (phone calls)">
+        <Notice>
+          Every agent is given a built-in &quot;end_call&quot; tool it can use to hang up a phone call
+          itself once the conversation has genuinely finished (the caller says goodbye, asks to hang
+          up, or there is nothing left to discuss). It always speaks a closing line first, and the
+          hangup is cancelled outright if the caller speaks again before it happens - but if anything
+          about automatic hangups ever misbehaves, turn this off here for every agent, existing and
+          future, without a redeploy. Individual agents can also remove (or re-add) it on their own
+          from the &quot;Custom functions&quot; section of their agent page - this switch overrides that
+          per-agent setting whenever it is off.
+        </Notice>
+        <div style={{ marginTop: 14 }}>
+          <RadioGroup label="Let agents end calls automatically" value={local.end_call_tool_enabled}
+            onChange={set("end_call_tool_enabled")}
+            options={[{ value: "true", label: "On" }, { value: "false", label: "Off" }]} />
+        </div>
+      </Section>
+
       {err && <p style={{ color: "var(--danger)", fontSize: 13, marginBottom: 12 }}>{err}</p>}
       <SaveButton saving={saving} saved={saved} onClick={handleSave} label="Save provider settings" />
     </div>
@@ -873,6 +901,95 @@ function KbAccessTab() {
                 onClick={async () => { await api(`/api/admin/users/${u.user_id}/revoke-kb`, { method: "POST" }); load(); }}>
                 Revoke
               </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Feedback Tab ──────────────────────────────────────────────────────────────
+function FeedbackTab() {
+  const [items, setItems] = useState<FeedbackItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [statusFilter, setStatusFilter] = useState<"open" | "resolved" | "all">("open");
+  const [typeFilter, setTypeFilter] = useState<"all" | "issue" | "feedback">("all");
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try { setItems(await api<FeedbackItem[]>("/api/admin/feedback")); } catch { /* ignore */ }
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const openCount = items.filter(i => i.status === "open").length;
+  const filtered = items.filter(i =>
+    (statusFilter === "all" || i.status === statusFilter) &&
+    (typeFilter === "all" || i.type === typeFilter)
+  );
+
+  const resolve = async (id: string) => { await api(`/api/admin/feedback/${id}/resolve`, { method: "POST" }); load(); };
+  const reopen  = async (id: string) => { await api(`/api/admin/feedback/${id}/reopen`,  { method: "POST" }); load(); };
+
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 18, flexWrap: "wrap" }}>
+        <div className="segmented">
+          {(["open", "resolved", "all"] as const).map(t => (
+            <button key={t} className={statusFilter === t ? "active" : ""} onClick={() => setStatusFilter(t)}>
+              {t === "open" ? `Open${openCount ? ` (${openCount})` : ""}` : t === "resolved" ? "Resolved" : "All"}
+            </button>
+          ))}
+        </div>
+        <div className="segmented">
+          {(["all", "issue", "feedback"] as const).map(t => (
+            <button key={t} className={typeFilter === t ? "active" : ""} onClick={() => setTypeFilter(t)}>
+              {t === "all" ? "All types" : t === "issue" ? "Issues" : "Feedback"}
+            </button>
+          ))}
+        </div>
+        <button className="icon-btn" aria-label="Refresh" onClick={load}>
+          <RefreshCw size={15} />
+        </button>
+      </div>
+
+      {loading ? (
+        <p style={{ fontSize: 13.5, textAlign: "center", padding: "32px 0", color: "var(--ink-muted)" }}>Loading…</p>
+      ) : filtered.length === 0 ? (
+        <div className="empty"><p>Nothing here yet.</p></div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {filtered.map(item => (
+            <div key={item.id} className="card" style={{
+              padding: "14px 16px",
+              borderColor: item.status === "open" ? "var(--warning)" : undefined,
+              background: item.status === "open" ? "var(--warning-soft)" : undefined,
+            }}>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+                <div style={{ flex: 1, minWidth: 220 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6, flexWrap: "wrap" }}>
+                    <span className={`pill ${item.type === "issue" ? "pill-danger" : "pill-success"}`}>
+                      {item.type === "issue" ? "Issue" : "Feedback"}
+                    </span>
+                    {item.agent_name && <span className="pill pill-neutral">{item.agent_name}</span>}
+                  </div>
+                  <p style={{ fontSize: 13.5, color: "var(--ink)", lineHeight: 1.5, whiteSpace: "pre-wrap" }}>{item.message}</p>
+                  <p style={{ fontSize: 12, color: "var(--ink-muted)", marginTop: 6 }}>
+                    {item.user_email} · {new Date(item.created_at).toLocaleString()}
+                  </p>
+                </div>
+                <div>
+                  {item.status === "open" ? (
+                    <button className="btn btn-success btn-sm" onClick={() => resolve(item.id)}>
+                      <Check size={13} /> Mark resolved
+                    </button>
+                  ) : (
+                    <button className="btn btn-ghost btn-sm" onClick={() => reopen(item.id)}>Reopen</button>
+                  )}
+                </div>
+              </div>
             </div>
           ))}
         </div>
@@ -1419,6 +1536,7 @@ export default function AdminPage() {
     status:    { title: "System status",      sub: "What's actually configured and what the next call will use." },
     storage:   { title: "Storage limits",     sub: "Set how much document storage users and agents can use." },
     kb:        { title: "Knowledge base access", sub: "Review requests and manage who can use the global Knowledge Base." },
+    feedback:  { title: "Feedback & issues", sub: "Issues reported and feedback shared by users from the console." },
   };
 
   // ── Admin dashboard ─────────────────────────────────────────────────────────
@@ -1482,6 +1600,7 @@ export default function AdminPage() {
             {tab === "calls" && <CallAnalyticsTab />}
             {tab === "status" && <StatusTab />}
             {tab === "kb" && <KbAccessTab />}
+            {tab === "feedback" && <FeedbackTab />}
           </div>
         </div>
       </div>

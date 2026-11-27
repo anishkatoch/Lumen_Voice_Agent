@@ -117,6 +117,7 @@ from app.routers import (
     kb as kb_router,
     user_kb as user_kb_router,
     admin as admin_router,
+    feedback as feedback_router,
     ingest as ingest_router,
     websockets as websockets_router,
     integrations as integrations_router,
@@ -132,6 +133,7 @@ app.include_router(hr_campaigns_router.router)
 app.include_router(kb_router.router)
 app.include_router(user_kb_router.router)
 app.include_router(admin_router.router)
+app.include_router(feedback_router.router)
 app.include_router(ingest_router.router)
 app.include_router(websockets_router.router)
 app.include_router(integrations_router.router)
