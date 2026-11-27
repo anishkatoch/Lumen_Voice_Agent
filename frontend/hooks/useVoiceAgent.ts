@@ -185,8 +185,8 @@ export function useVoiceAgent() {
     // and the OS switching its default mic - re-list so the picker (and a
     // previously-selected id that vanished) stay accurate.
     const handler = () => refreshInputDevices();
-    navigator.mediaDevices.addEventListener?.("devicechange", handler);
-    return () => navigator.mediaDevices.removeEventListener?.("devicechange", handler);
+    navigator.mediaDevices?.addEventListener?.("devicechange", handler);
+    return () => navigator.mediaDevices?.removeEventListener?.("devicechange", handler);
   }, [refreshInputDevices]);
 
   const setInputDevice = useCallback((deviceId: string) => {

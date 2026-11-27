@@ -403,3 +403,17 @@ After #97 (backend log) added feedback reporting, it only lived behind a single 
 **Fix:**
 Added a "Report an Issue" tab to the console's main navigation (rail + mobile tab bar), listing the user's own past reports via the existing but previously unused `GET /api/feedback/mine`, with a "New report" button that opens the same submission form. Left the account-menu entry in place.
 **Files:** `frontend/app/agents/page.tsx`
+
+---
+
+## 29. Deploy Pipeline Broken by an Unguarded `navigator.mediaDevices` Access
+
+**Problem:**
+CI's frontend test job failed on every run after #27 - `useVoiceAgent.test.ts` crashed with `Cannot read properties of undefined (reading 'addEventListener')`, which blocked the Build step and skipped the Hugging Face deploy entirely. The same crash would hit a real browser too: any environment where `navigator.mediaDevices` itself is `undefined` (older browsers, or a non-HTTPS context) rather than just missing the `devicechange` event.
+
+**Root Cause:**
+The `?.` in `navigator.mediaDevices.addEventListener?.(...)` only guards the method call, not the `.mediaDevices` property access before it - if `navigator.mediaDevices` is `undefined`, accessing `.addEventListener` on it throws immediately, before the optional call ever gets a chance to no-op.
+
+**Fix:**
+Changed to `navigator.mediaDevices?.addEventListener?.(...)` (and the matching `removeEventListener` cleanup), guarding the property access itself.
+**Files:** `frontend/hooks/useVoiceAgent.ts`
