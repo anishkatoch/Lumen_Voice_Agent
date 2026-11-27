@@ -36,6 +36,7 @@ async def _transcribe(file_tuple: tuple) -> str | None:
             deployment = get_config("azure_openai_transcribe_deployment") or AZURE_OPENAI_TRANSCRIBE_DEPLOYMENT
             resp = await _azure_openai.audio.transcriptions.create(
                 model=deployment, file=file_tuple, language="en",
+                prompt="Transcribe in English.",
             )
             text = resp.text.strip()
             return text if text else None
@@ -44,6 +45,7 @@ async def _transcribe(file_tuple: tuple) -> str | None:
     try:
         resp = await _openai.audio.transcriptions.create(
             model="whisper-1", file=file_tuple, language="en",
+            prompt="Transcribe in English.",
         )
         text = resp.text.strip()
         return text if text else None

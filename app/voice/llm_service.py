@@ -540,7 +540,7 @@ def build_system_prompt(
     base = system_prompt_override if system_prompt_override else _DEFAULT_SYSTEM
     if "{{current_time}}" in base:
         base = base.replace("{{current_time}}", datetime.now().strftime("%A, %B %d, %Y %I:%M %p"))
-    parts = [base]
+    parts = ["Always respond in English unless the caller explicitly asks you to switch languages.", base]
     if long_term_memory:
         parts.append(f"\nWhat you know about this user:\n{long_term_memory}")
     if rag_context:
