@@ -435,8 +435,10 @@ async def _run_realtime_agent_session(
     # prompt block without re-querying the integration.
     from app.integrations.meeting_tools import build_meeting_system_context
     _has_meeting_tools = any(f.get("kind") == "internal_book_meeting" for f in tool_functions)
+    from app.telephony.shared import SMART_RESPONSE_INSTRUCTIONS
     instructions = (
         "Always respond in English unless the caller explicitly asks you to switch languages.\n\n"
+        + (SMART_RESPONSE_INSTRUCTIONS if agent.get("smart_response_enabled", True) else "")
         + (f"Your name is {name}. If asked your name, say {name}.\n\n" if name else "")
         + (agent.get("system_prompt") or "")
         + (f"\n\n--- HR INSTRUCTIONS ---\n{hr}" if hr else "")
@@ -664,8 +666,10 @@ async def agent_websocket_endpoint(websocket: WebSocket, agent_id: str, token: s
     # would be found).
     _kb = (agent.get("kb_instructions") or "").strip() if _kb_documents else ""
     _name = (agent.get("name") or "").strip()
+    from app.telephony.shared import SMART_RESPONSE_INSTRUCTIONS
     agent_system_prompt = (
-        (f"Your name is {_name}. If asked your name, say {_name}.\n\n" if _name else "")
+        (SMART_RESPONSE_INSTRUCTIONS if agent.get("smart_response_enabled", True) else "")
+        + (f"Your name is {_name}. If asked your name, say {_name}.\n\n" if _name else "")
         + (agent.get("system_prompt") or "")
         + (f"\n\n--- HR INSTRUCTIONS ---\n{_hr}" if _hr else "")
         + (f"\n\n--- KNOWLEDGE BASE INSTRUCTIONS ---\n{_kb}" if _kb else "")

@@ -502,6 +502,17 @@ async def record_question_answer(
         await asyncio.to_thread(record_answer, campaign_candidate_id, question_id, question_text, answer_text)
 
 
+# Per-agent opt-out via agents.smart_response_enabled (default true) - see
+# migrations/versions/0034_agent_smart_response.py.
+SMART_RESPONSE_INSTRUCTIONS = (
+    "Match the length and depth of your answer to what was actually asked - give a direct, "
+    "focused answer first instead of listing everything you know on the topic. When there's a "
+    "natural, relevant next question the caller might want answered, offer it briefly rather "
+    "than assuming they want it. If the caller's request is ambiguous or could mean more than "
+    "one thing, ask a short clarifying question before answering instead of guessing.\n\n"
+)
+
+
 def build_phone_system_prompt(agent: dict, extra_system_context: str) -> str:
     """Combine the agent's own name + persona prompt + hr_instructions +
     call-specific context into the base system prompt string for a phone
@@ -522,6 +533,7 @@ def build_phone_system_prompt(agent: dict, extra_system_context: str) -> str:
     name = (agent.get("name") or "").strip()
     return (
         "Always respond in English unless the caller explicitly asks you to switch languages.\n\n"
+        + (SMART_RESPONSE_INSTRUCTIONS if agent.get("smart_response_enabled", True) else "")
         + (f"Your name is {name}. If asked your name, say {name}.\n\n" if name else "")
         + (agent.get("system_prompt") or "")
         + (f"\n\n--- HR INSTRUCTIONS ---\n{hr}" if hr else "")

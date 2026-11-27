@@ -236,6 +236,7 @@ def duplicate_agent(agent_id: str, user_id: str) -> dict:
         "booking_hours_end": src.get("booking_hours_end", "21:00"),
         "meeting_instructions": src.get("meeting_instructions"),
         "end_call_tool_enabled": src.get("end_call_tool_enabled", True),
+        "smart_response_enabled": src.get("smart_response_enabled", True),
     }).execute()
     if not result.data:
         raise RuntimeError("Failed to duplicate agent")
@@ -248,7 +249,7 @@ def update_agent(agent_id: str, user_id: str, **fields) -> dict:
                "selected_kb_doc_ids", "hr_instructions", "filler_phrases",
                "meeting_booking_enabled", "meeting_duration_minutes", "meeting_buffer_minutes",
                "meeting_timezone", "booking_hours_start", "booking_hours_end",
-               "meeting_instructions", "end_call_tool_enabled"}
+               "meeting_instructions", "end_call_tool_enabled", "smart_response_enabled"}
     update = {k: v for k, v in fields.items() if k in allowed}
     update["updated_at"] = datetime.now(timezone.utc).isoformat()
     db = get_supabase()

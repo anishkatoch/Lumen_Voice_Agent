@@ -385,6 +385,7 @@ export interface Agent {
   booking_hours_end?: string;
   meeting_instructions?: string | null;
   end_call_tool_enabled?: boolean;
+  smart_response_enabled?: boolean;
   created_at: string;
   updated_at: string;
 }

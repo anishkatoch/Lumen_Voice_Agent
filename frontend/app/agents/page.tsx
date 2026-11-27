@@ -1304,6 +1304,8 @@ function AgentDetail({ agent, onBack, onUpdate, onDuplicate, onGoToKb, onGoToInt
   const [showDelete, setShowDelete] = useState(false);
   const [endCallEnabled, setEndCallEnabled] = useState(agent.end_call_tool_enabled ?? true);
   const [endCallToggling, setEndCallToggling] = useState(false);
+  const [smartResponseEnabled, setSmartResponseEnabled] = useState(agent.smart_response_enabled ?? true);
+  const [smartResponseToggling, setSmartResponseToggling] = useState(false);
 
   useEffect(() => {
     setName(agent.name); setPrompt(agent.system_prompt ?? DEFAULT_SYSTEM_PROMPT);
@@ -1321,6 +1323,7 @@ function AgentDetail({ agent, onBack, onUpdate, onDuplicate, onGoToKb, onGoToInt
     setBookingEnd(agent.booking_hours_end ?? "21:00");
     setMeetingInstructions(agent.meeting_instructions ?? "");
     setEndCallEnabled(agent.end_call_tool_enabled ?? true);
+    setSmartResponseEnabled(agent.smart_response_enabled ?? true);
     API.googleCalendarStatus()
       .then(s => { setCalendarConnected(s.connected); setCalendarEmail(s.email); })
       .catch(() => setCalendarConnected(null));
@@ -1381,6 +1384,18 @@ function AgentDetail({ agent, onBack, onUpdate, onDuplicate, onGoToKb, onGoToInt
     } catch (e: unknown) {
       pushToast(e instanceof Error ? e.message : "Could not update end call tool", "error");
     } finally { setEndCallToggling(false); }
+  };
+
+  const toggleSmartResponse = async (enabled: boolean) => {
+    setSmartResponseToggling(true);
+    try {
+      const updated = await API.updateAgent(agent.id, { smart_response_enabled: enabled });
+      onUpdate(updated);
+      setSmartResponseEnabled(enabled);
+      pushToast(enabled ? "Smart responses enabled" : "Smart responses disabled");
+    } catch (e: unknown) {
+      pushToast(e instanceof Error ? e.message : "Could not update smart responses", "error");
+    } finally { setSmartResponseToggling(false); }
   };
 
   const saveAgent = async () => {
@@ -1643,6 +1658,34 @@ Confident, not pushy
                       Built-in tool - lets this agent hang up a phone call itself once the conversation
                       has genuinely finished. Attached automatically; remove it here if you don&apos;t
                       want this agent ending calls on its own, or add it back any time.
+                    </p>
+                  </div>
+                </div>
+
+                <div style={{ marginBottom: 8 }}>
+                  <div className="card" style={{ padding: "12px 14px" }}>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <span style={{ fontSize: 14, fontWeight: 600, color: "var(--ink)" }}>Smart responses</span>
+                        <span className={`pill ${smartResponseEnabled ? "pill-success" : "pill-neutral"}`}>
+                          {smartResponseEnabled ? "On" : "Off"}
+                        </span>
+                      </div>
+                      <div style={{ display: "flex", gap: 10 }}>
+                        {smartResponseEnabled ? (
+                          <button className="link-btn" style={{ color: "var(--danger)" }} disabled={smartResponseToggling}
+                            onClick={() => toggleSmartResponse(false)}>Turn off</button>
+                        ) : (
+                          <button className="link-btn" disabled={smartResponseToggling}
+                            onClick={() => toggleSmartResponse(true)}>Turn on</button>
+                        )}
+                      </div>
+                    </div>
+                    <p style={{ fontSize: 12, color: "var(--ink-muted)", margin: "8px 0 0" }}>
+                      Matches answer length to what was actually asked instead of dumping everything
+                      it knows, offers a relevant follow-up question when there&apos;s a natural one,
+                      and asks for clarification instead of guessing when the caller&apos;s request is
+                      ambiguous. On by default for every agent.
                     </p>
                   </div>
                 </div>
