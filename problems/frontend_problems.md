@@ -381,3 +381,25 @@ The admin Providers/Storage/Status/KB Access tabs were capped at 680-760px, leav
 **Fix:**
 Widened those tabs to 980-1100px. (Later fully removed the caps instead of just widening them further — see #23.)
 **Files:** `frontend/app/admin/page.tsx`
+
+---
+
+## 27. Browser Mic Missed Quiet Speech on Bluetooth Headsets
+
+**Problem:**
+Bluetooth mics - especially once switched into the low-quality HFP call profile - could come in too quiet to cross the server-side VAD threshold, which looked exactly like the agent never hearing the caller.
+
+**Fix:**
+Enabled `autoGainControl`, added a device picker so a specific input can be chosen, and auto-restart the mic if the active device disconnects mid-call.
+**Files:** `frontend/hooks/useVoiceAgent.ts`, `frontend/app/agents/page.tsx`
+
+---
+
+## 28. "Report an Issue" Buried in the Account Menu, No Dedicated Tab in the Console
+
+**Problem:**
+After #97 (backend log) added feedback reporting, it only lived behind a single button in the account dropdown - no dedicated place in the console's main navigation, and no way for a user to see their own past reports or their status.
+
+**Fix:**
+Added a "Report an Issue" tab to the console's main navigation (rail + mobile tab bar), listing the user's own past reports via the existing but previously unused `GET /api/feedback/mine`, with a "New report" button that opens the same submission form. Left the account-menu entry in place.
+**Files:** `frontend/app/agents/page.tsx`

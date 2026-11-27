@@ -1228,3 +1228,58 @@ Duplicating an agent lost its "HR scheduler" instructions box and its selected k
 **Fix:**
 Added both fields to the copy. Covered by a direct unit test.
 **Files:** `app/agents/agent_repo.py`, `tests/test_agents.py`
+
+---
+
+## 94. Agents Had No Way to End a Call Themselves
+
+**Problem:**
+Once a phone conversation had genuinely concluded, the agent had no way to hang up - it could only keep talking or wait for the caller to hang up first, on every pipeline (Twilio, Plivo, and the Realtime bridge).
+
+**Fix:**
+Added a built-in `end_call` tool the model can call once a conversation has genuinely finished, gated by an admin-level switch and a per-agent `end_call_tool_enabled` toggle (on by default, with an "Add back"/"Remove" control on the agent page). A grace period lets the caller speak again and cancel the hangup before it actually happens. Wired into Twilio, Plivo, and the Realtime bridge.
+**Files:** `app/routers/telephony_twilio.py`, `app/routers/telephony_plivo.py`, `app/routers/websockets.py`, `app/telephony/twilio/twilio_repo.py`, `app/telephony/plivo/plivo_repo.py`, `app/telephony/shared.py`, `app/voice/realtime_service.py`, `app/agents/agent_repo.py`, `app/routers/agents.py`, `migrations/versions/0032_agent_end_call_toggle.py`, `frontend/app/agents/page.tsx`
+
+---
+
+## 95. Realtime Voice Pipeline Had No Language Pin, Could Drift Into the Caller's Language Mid-Call
+
+**Problem:**
+`input_audio_transcription` had no language hint, so Whisper auto-detected the caller's spoken language per utterance, and the session instructions gave the model no language guidance either - a call could silently drift out of English.
+
+**Fix:**
+Pinned transcription to `en` and added an instruction telling the model to always respond in English unless the caller explicitly asks to switch.
+**Files:** `app/routers/websockets.py`, `app/telephony/shared.py`, `app/voice/realtime_service.py`
+
+---
+
+## 96. Cascade Pipeline Followed an STT Mis-Transcription Into Hindi/Marathi
+
+**Problem:**
+Reproduced via a real browser call: the Azure/OpenAI transcriber occasionally transliterates Indian-accented English into Devanagari script even with `language=en` set, and the cascade LLM prompt had no language guard, so the model followed the mis-transcription into Hindi/Marathi instead of staying in English.
+
+**Fix:**
+Added a prompt hint biasing transcription toward English, plus the same "always respond in English unless asked" guard already used on the Realtime pipeline (see #95).
+**Files:** `app/voice/llm_service.py`, `app/voice/openai_whisper_service.py`
+
+---
+
+## 97. No Way for Users to Report an Issue or Share Feedback
+
+**Problem:**
+If something went wrong in a call or in the console, a user had no way to tell anyone - there was no feedback channel at all, and admins had no visibility into what users were running into.
+
+**Fix:**
+Added `POST /api/feedback` (optionally tagged to an agent) and `GET /api/feedback/mine`, backed by a new `feedback` table; a "Report an issue / Feedback" entry in the console's account menu opens a modal to submit one; admins review, resolve, and reopen reports from a new Feedback tab in the admin portal.
+**Files:** `app/feedback/feedback_repo.py`, `app/routers/feedback.py`, `app/routers/admin.py`, `app/main.py`, `migrations/versions/0033_agent_feedback.py`, `frontend/app/agents/page.tsx`, `frontend/app/admin/page.tsx`, `frontend/lib/api.ts`
+
+---
+
+## 98. No Per-Agent Control Over Answer Length or Depth
+
+**Problem:**
+Agents had no way to match how much they said to what was actually asked - a narrow question could get a long answer dumping everything the agent knew, with no clarifying question when the caller's request was ambiguous.
+
+**Fix:**
+Added `smart_response_enabled` (on by default), which instructs the model to answer at the depth the question actually calls for, offer a relevant follow-up only when there's a natural one, and ask a short clarifying question instead of guessing on ambiguous requests. Added a per-agent toggle in the UI.
+**Files:** `app/telephony/shared.py`, `app/routers/websockets.py`, `app/agents/agent_repo.py`, `app/routers/agents.py`, `migrations/versions/0034_agent_smart_response.py`, `frontend/app/agents/page.tsx`, `frontend/lib/api.ts`
