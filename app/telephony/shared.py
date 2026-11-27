@@ -521,7 +521,8 @@ def build_phone_system_prompt(agent: dict, extra_system_context: str) -> str:
     kb = (agent.get("kb_instructions") or "").strip()
     name = (agent.get("name") or "").strip()
     return (
-        (f"Your name is {name}. If asked your name, say {name}.\n\n" if name else "")
+        "Always respond in English unless the caller explicitly asks you to switch languages.\n\n"
+        + (f"Your name is {name}. If asked your name, say {name}.\n\n" if name else "")
         + (agent.get("system_prompt") or "")
         + (f"\n\n--- HR INSTRUCTIONS ---\n{hr}" if hr else "")
         + (f"\n\n--- KNOWLEDGE BASE INSTRUCTIONS ---\n{kb}" if kb else "")

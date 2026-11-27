@@ -436,7 +436,8 @@ async def _run_realtime_agent_session(
     from app.integrations.meeting_tools import build_meeting_system_context
     _has_meeting_tools = any(f.get("kind") == "internal_book_meeting" for f in tool_functions)
     instructions = (
-        (f"Your name is {name}. If asked your name, say {name}.\n\n" if name else "")
+        "Always respond in English unless the caller explicitly asks you to switch languages.\n\n"
+        + (f"Your name is {name}. If asked your name, say {name}.\n\n" if name else "")
         + (agent.get("system_prompt") or "")
         + (f"\n\n--- HR INSTRUCTIONS ---\n{hr}" if hr else "")
         + (f"\n\n--- KNOWLEDGE BASE INSTRUCTIONS ---\n{kb}" if kb else "")

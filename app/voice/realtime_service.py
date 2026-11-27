@@ -74,7 +74,7 @@ class RealtimeSession:
                 "voice": self.voice,
                 "input_audio_format": self.audio_format,
                 "output_audio_format": self.audio_format,
-                "input_audio_transcription": {"model": "whisper-1"},
+                "input_audio_transcription": {"model": "whisper-1", "language": "en"},
                 "turn_detection": {"type": "server_vad"},
                 "tools": self.tools,
                 "tool_choice": "auto" if self.tools else "none",
