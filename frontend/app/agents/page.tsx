@@ -697,7 +697,10 @@ function Section({ title, children, extra, overflowVisible }: { title: string; c
 --------------------------------------------------------------------------- */
 
 function VoiceDock({ agentId, agentName, docIds }: { agentId: string; agentName: string; docIds: string[] }) {
-  const { state, connected, chat, error, connect, disconnect, startMic, stopMic, isMicActive } = useVoiceAgent();
+  const {
+    state, connected, chat, error, connect, disconnect, startMic, stopMic, isMicActive,
+    inputDevices, selectedDeviceId, setInputDevice,
+  } = useVoiceAgent();
   const orbRef = useRef<HTMLDivElement>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
 
@@ -787,6 +790,21 @@ function VoiceDock({ agentId, agentName, docIds }: { agentId: string; agentName:
             ))
           )}
           <div ref={chatEndRef} />
+        </div>
+      )}
+
+      {inputDevices.length > 0 && (
+        <div className="field" style={{ marginTop: 14, marginBottom: 0 }}>
+          <label style={{ fontSize: 11, color: "var(--rail-ink-muted)" }}>Microphone</label>
+          <select className="select" value={selectedDeviceId} onChange={e => setInputDevice(e.target.value)}>
+            <option value="">System default</option>
+            {inputDevices.map((d, i) => (
+              <option key={d.deviceId} value={d.deviceId}>{d.label || `Microphone ${i + 1}`}</option>
+            ))}
+          </select>
+          <p style={{ fontSize: 11, color: "var(--rail-ink-muted)", marginTop: 4, lineHeight: 1.4 }}>
+            If a Bluetooth headset isn&apos;t picking up your voice, try switching it here, or select your device&apos;s built-in mic instead.
+          </p>
         </div>
       )}
 

@@ -39,6 +39,24 @@ export function useVoiceAgent() {
   const audioCtxRef = useRef<AudioContext | null>(null);
   const workletRef = useRef<AudioWorkletNode | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  // Mirrors isMicActive synchronously - startMic/stopMic need the CURRENT
+  // value the instant they run (e.g. from a device-ended event fired well
+  // after the render that created them), and reading React state from a
+  // stale closure there would see an outdated value.
+  const isMicActiveRef = useRef(false);
+  const setMicActive = useCallback((v: boolean) => { isMicActiveRef.current = v; setIsMicActive(v); }, []);
+  // Populated once startMic is defined below, so setInputDevice (defined
+  // earlier) and the device-ended auto-recovery handler can call the latest
+  // startMic without depending on it directly (which would recreate both of
+  // those on every mic start/stop and complicate their own dependencies).
+  const startMicRef = useRef<() => void>(() => {});
+
+  // Input device picker: which mic to use, and the list to choose from.
+  // Labels are blank until mic permission has been granted once, so this is
+  // refreshed again right after a successful getUserMedia call.
+  const [inputDevices, setInputDevices] = useState<MediaDeviceInfo[]>([]);
+  const [selectedDeviceId, setSelectedDeviceIdState] = useState<string>("");
+  const selectedDeviceIdRef = useRef<string>("");
 
   // Playback - PCM chunks are scheduled on the AudioContext timeline the
   // moment they arrive, so the reply starts playing as soon as the first
@@ -152,6 +170,35 @@ export function useVoiceAgent() {
       wsRef.current.send(JSON.stringify({ type: "set_rag_scope", scope }));
     }
   }, []);
+
+  // ── Input device list ────────────────────────────────────────────────
+  const refreshInputDevices = useCallback(async () => {
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      setInputDevices(devices.filter(d => d.kind === "audioinput"));
+    } catch { /* enumerateDevices can fail before any permission is granted - ignore */ }
+  }, []);
+
+  useEffect(() => {
+    refreshInputDevices();
+    // Covers both a Bluetooth headset connecting/disconnecting mid-session
+    // and the OS switching its default mic - re-list so the picker (and a
+    // previously-selected id that vanished) stay accurate.
+    const handler = () => refreshInputDevices();
+    navigator.mediaDevices.addEventListener?.("devicechange", handler);
+    return () => navigator.mediaDevices.removeEventListener?.("devicechange", handler);
+  }, [refreshInputDevices]);
+
+  const setInputDevice = useCallback((deviceId: string) => {
+    selectedDeviceIdRef.current = deviceId;
+    setSelectedDeviceIdState(deviceId);
+    // Switch live if a call is already in progress, instead of making the
+    // person stop and restart the mic themselves to pick it up.
+    if (isMicActiveRef.current) {
+      stopMicInternal();
+      startMicRef.current?.();
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const connect = useCallback(async (opts?: { agentId?: string; docIds?: string[] }) => {
     let token = getToken();
@@ -298,23 +345,50 @@ export function useVoiceAgent() {
     streamRef.current = null;
     audioCtxRef.current?.close();
     audioCtxRef.current = null;
-    setIsMicActive(false);
+    setMicActive(false);
   }
 
   const stopMic = useCallback(stopMicInternal, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const startMic = useCallback(async () => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
-    if (isMicActive) { stopMicInternal(); return; }
+    if (isMicActiveRef.current) { stopMicInternal(); return; }
 
     let stream: MediaStream | null = null;
     let ctx: AudioContext | null = null;
     let blobUrl: string | null = null;
     try {
+      const deviceId = selectedDeviceIdRef.current;
       stream = await navigator.mediaDevices.getUserMedia({
-        audio: { sampleRate: SAMPLE_RATE, channelCount: 1, echoCancellation: true, noiseSuppression: true },
+        audio: {
+          sampleRate: SAMPLE_RATE, channelCount: 1,
+          echoCancellation: true, noiseSuppression: true,
+          // Bluetooth headset mics (especially once the OS switches them
+          // into the low-quality HFP/hands-free call profile) can come in
+          // much quieter than a laptop's built-in mic. Without this, that
+          // quiet signal can fail to cross the server-side Silero VAD
+          // threshold at all, which looks exactly like "it's not picking up
+          // what I'm saying" even though audio is being sent.
+          autoGainControl: true,
+          ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
+        },
       });
       streamRef.current = stream;
+      // Labels are blank on first permission grant - now that it's granted,
+      // a re-list will include them so the picker shows real device names.
+      refreshInputDevices();
+
+      // If the active device disconnects mid-call (e.g. a Bluetooth headset
+      // drops, or the OS reroutes audio when a cable is unplugged), the
+      // browser ends this track rather than silently feeding zeros - recover
+      // automatically instead of leaving the mic dead with no indication why.
+      stream.getAudioTracks()[0]?.addEventListener("ended", () => {
+        if (streamRef.current !== stream) return; // superseded by a newer stream already
+        console.warn("[Mic] Active input device ended unexpectedly - restarting mic");
+        stopMicInternal();
+        setError("Microphone disconnected - reconnecting...");
+        setTimeout(() => startMicRef.current?.(), 400);
+      });
 
       ctx = new AudioContext({ sampleRate: SAMPLE_RATE });
       audioCtxRef.current = ctx;
@@ -362,14 +436,16 @@ export function useVoiceAgent() {
 
       // source → worklet only; do NOT connect worklet to destination (would cause feedback)
       source.connect(worklet);
-      setIsMicActive(true);
+      setMicActive(true);
     } catch (err) {
       // Clean up on any failure
       stream?.getTracks().forEach(t => t.stop());
       ctx?.close();
       setError(err instanceof Error ? err.message : "Microphone access denied");
     }
-  }, [isMicActive]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => { startMicRef.current = () => { startMic(); }; }, [startMic]);
 
   useEffect(() => () => {
     stopMicInternal();
@@ -397,5 +473,6 @@ export function useVoiceAgent() {
     state, connected, transcript, reply, chat, conversationId, error, isMicActive,
     ragScope, setRagScope,
     connect, disconnect, startMic, stopMic, sendTextMessage,
+    inputDevices, selectedDeviceId, setInputDevice,
   };
 }
