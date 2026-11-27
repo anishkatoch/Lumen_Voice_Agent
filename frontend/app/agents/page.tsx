@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
-import { API, Agent, AgentFunction, FunctionParameter, PhoneNumber, TwilioAccount, PlivoPhoneNumber, PlivoAccount, HRCandidate, HRInterview } from "@/lib/api";
+import { API, Agent, AgentFunction, FunctionParameter, PhoneNumber, TwilioAccount, PlivoPhoneNumber, PlivoAccount, HRCandidate, HRInterview, Feedback } from "@/lib/api";
 import { getUser, clearTokens } from "@/lib/auth";
 import { useVoiceAgent } from "@/hooks/useVoiceAgent";
 import { suggestKbInstructions } from "./suggestKbInstructions";
@@ -184,7 +184,7 @@ function useConsoleMode() {
    Navigation shell: Rail (desktop), TabBar (mobile), Topbar, Account modal
 --------------------------------------------------------------------------- */
 
-type View = "agents" | "knowledge-base" | "sessions" | "phone-numbers" | "integrations";
+type View = "agents" | "knowledge-base" | "sessions" | "phone-numbers" | "integrations" | "feedback";
 
 const NAV_ITEMS: { id: View; label: string; shortLabel: string; icon: string }[] = [
   { id: "agents", label: "Agents", shortLabel: "Agents", icon: "grid" },
@@ -192,6 +192,7 @@ const NAV_ITEMS: { id: View; label: string; shortLabel: string; icon: string }[]
   { id: "sessions", label: "Call Analytics", shortLabel: "Calls", icon: "activity" },
   { id: "phone-numbers", label: "Phone Numbers", shortLabel: "Numbers", icon: "phone" },
   { id: "integrations", label: "Integrations", shortLabel: "Connect", icon: "zap" },
+  { id: "feedback", label: "Report an Issue", shortLabel: "Feedback", icon: "flag" },
 ];
 
 function Rail({ view, onView, agentCount, userEmail, userName, onOpenAccount }: {
@@ -318,7 +319,7 @@ function AccountModal({ onClose, userName, userEmail, agents, onSignOut }: {
   );
 }
 
-function FeedbackModal({ onClose, agents }: { onClose: () => void; agents: Agent[] }) {
+function FeedbackModal({ onClose, agents, onSubmitted }: { onClose: () => void; agents: Agent[]; onSubmitted?: () => void }) {
   const [type, setType] = useState<"issue" | "feedback">("issue");
   const [agentId, setAgentId] = useState("");
   const [message, setMessage] = useState("");
@@ -334,6 +335,7 @@ function FeedbackModal({ onClose, agents }: { onClose: () => void; agents: Agent
     try {
       await API.submitFeedback({ type, message: message.trim(), agent_id: agentId || undefined });
       pushToast(type === "issue" ? "Issue reported - thanks for letting us know" : "Thanks for your feedback!");
+      onSubmitted?.();
       onClose();
     } catch (e: unknown) {
       setErr(e instanceof Error ? e.message : "Failed to send");
@@ -3474,6 +3476,64 @@ function IntegrationsView() {
   );
 }
 
+function FeedbackView({ agents }: { agents: Agent[] }) {
+  const [items, setItems] = useState<Feedback[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [showModal, setShowModal] = useState(false);
+
+  const load = async () => {
+    setLoading(true);
+    try { setItems(await API.myFeedback()); } catch { /* ignore */ }
+    setLoading(false);
+  };
+
+  useEffect(() => { load(); }, []);
+
+  return (
+    <div className="view">
+      <div className="view-head">
+        <div>
+          <h1 className="view-title">Report an Issue</h1>
+          <p className="view-sub">Report a problem or share feedback - our team reviews every report.</p>
+        </div>
+        <button className="btn btn-primary" onClick={() => setShowModal(true)}>
+          <Icon name="flag" /> New report
+        </button>
+      </div>
+
+      {loading ? (
+        <div className="empty"><p>Loading...</p></div>
+      ) : items.length === 0 ? (
+        <div className="empty"><p>You haven&apos;t reported anything yet.</p></div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {items.map(item => (
+            <div key={item.id} className="card" style={{ padding: "14px 16px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6, flexWrap: "wrap" }}>
+                <span className={`pill ${item.type === "issue" ? "pill-danger" : "pill-success"}`}>
+                  {item.type === "issue" ? "Issue" : "Feedback"}
+                </span>
+                <span className={`pill ${item.status === "open" ? "pill-warning" : "pill-neutral"}`}>
+                  {item.status === "open" ? "Open" : "Resolved"}
+                </span>
+                {item.agent_name && <span className="pill pill-neutral">{item.agent_name}</span>}
+              </div>
+              <p style={{ fontSize: 13.5, color: "var(--ink)", lineHeight: 1.5, whiteSpace: "pre-wrap" }}>{item.message}</p>
+              <p style={{ fontSize: 12, color: "var(--ink-muted)", marginTop: 6 }}>
+                {new Date(item.created_at).toLocaleString()}
+              </p>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {showModal && (
+        <FeedbackModal onClose={() => setShowModal(false)} agents={agents} onSubmitted={load} />
+      )}
+    </div>
+  );
+}
+
 /* ---------------------------------------------------------------------------
    Main page
 --------------------------------------------------------------------------- */
@@ -3541,7 +3601,7 @@ export default function AgentsPage() {
 
   const crumbMap: Record<View, string> = {
     agents: "Agents", "knowledge-base": "Knowledge Base", sessions: "Call Analytics", "phone-numbers": "Phone Numbers",
-    integrations: "Integrations",
+    integrations: "Integrations", feedback: "Report an Issue",
   };
 
   const goTo = (v: View) => { setView(v); setSelectedAgent(null); setQuery(""); };
@@ -3577,6 +3637,7 @@ export default function AgentsPage() {
           {view === "sessions" && <SessionsView agents={agents} />}
           {view === "phone-numbers" && <PhoneNumbersView agents={agents} />}
           {view === "integrations" && <IntegrationsView />}
+          {view === "feedback" && <FeedbackView agents={agents} />}
         </div>
       </div>
 
